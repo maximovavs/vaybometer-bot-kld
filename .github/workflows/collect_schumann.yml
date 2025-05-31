@@ -13,7 +13,7 @@ jobs:
       - name: 📥 Checkout repo
         uses: actions/checkout@v3
         with:
-          repository: maximovavs/vaybometer-bot
+          repository: maximovavs/vaybometer-bot-kld
           ssh-strict: true
           persist-credentials: true
           clean: true
