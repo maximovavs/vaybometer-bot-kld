@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from lunar import get_day_lunar_info        # ваши данные
 
 TZ = pendulum.timezone("Asia/Nicosia")
-CAT_EMO = {"haircut": "✂️", "travel": "✈️", "shopping": "🛍", "health": "❤️"}
+CAT_EMO = {"стрижка": "✂️", "путешевствия": "✈️", "покупки": "🛍", "здровье": "❤️"}
 
 
 # ───────── helpers ────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ def astro_events(offset_days: int = 1) -> List[str]:
     # фаза + советы
     if phase:
         lines.append(phase)
-    lines.extend(f"• {t}" for t in tips)
+    lines.extend(f"{t}" for t in tips)
 
     # ближайшее событие
     nxt = rec.get("next_event", "").strip()
