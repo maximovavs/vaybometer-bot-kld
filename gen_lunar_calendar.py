@@ -198,7 +198,7 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
 
         cal[d.to_date_string()] = {
             "phase_name"     : name,
-            "phase"          : f"{emoji} {name} в {sign} ({illum}% освещ.)",
+            "phase"          : f"{emoji} {name} , {sign}", #"phase"          : f"{emoji} {name} в {sign} ({illum}% освещ.)",
             "percent"        : illum,
             "sign"           : sign,
             "phase_time"     : phase_time,
