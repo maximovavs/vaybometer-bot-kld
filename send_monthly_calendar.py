@@ -21,10 +21,10 @@ CAL_FILE          = "lunar_calendar.json"
 MIN_VOC_MINUTES   = 15
 MOON_EMOJI        = "🌙"
 
-TOKEN   = os.getenv("TELEGRAM_TOKEN_KLD", "")
-CHAT_ID = os.getenv("CHANNEL_ID_KLD",  "")
+TOKEN   = os.getenv("TELEGRAM_TOKEN_KLG", "")
+CHAT_ID = os.getenv("CHANNEL_ID_KLG",  "")
 if not TOKEN or not CHAT_ID:
-    raise RuntimeError("TELEGRAM_TOKEN_KLD / CHANNEL_ID_KLD не заданы")
+    raise RuntimeError("TELEGRAM_TOKEN_KLG / CHANNEL_ID_KLG не заданы")
 
 # ── helpers ────────────────────────────────────────────────────────────────
 def _parse_dt(s: str, year: int):
