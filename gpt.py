@@ -119,7 +119,7 @@ def gpt_blurb(culprit: str) -> Tuple[str, List[str]]:
     )
     text = resp.choices[0].message.content.strip().splitlines()
     # Парсим первую строку как summary, далее берём до 3 непустых советов
-    lines = [l.strip("-• ").strip() for l in text if l.strip()]
+    lines = [l.strip("").strip() for l in text if l.strip()]
     summary = lines[0] if lines else f"Если завтра что-то пойдёт не так, вините {culprit}! 😉"
     tips = lines[1:4]
     # Если GPT вернул меньше 2 советов — дополняем случайными
