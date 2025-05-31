@@ -21,8 +21,8 @@ CAL_FILE          = "lunar_calendar.json"
 MIN_VOC_MINUTES   = 15
 MOON_EMOJI        = "🌙"
 
-TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
-CHAT_ID = os.getenv("CHANNEL_ID",  "")
+TOKEN   = os.getenv("TELEGRAM_TOKEN_KLD", "")
+CHAT_ID = os.getenv("CHANNEL_ID_KLD",  "")
 if not TOKEN or not CHAT_ID:
     raise RuntimeError("TELEGRAM_TOKEN / CHANNEL_ID не заданы")
 
@@ -89,7 +89,7 @@ def build_voc_list(data: Dict[str, Any], year: int) -> str:
         t2 = _parse_dt(rec["end"],   year)
         if (t2 - t1).in_minutes() < MIN_VOC_MINUTES:
             continue
-        items.append(f"• {t1.format('DD.MM HH:mm')}  →  {t2.format('DD.MM HH:mm')}")
+        items.append(f"{t1.format('DD.MM HH:mm')}  →  {t2.format('DD.MM HH:mm')}")
     if not items:
         return ""
     return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(items)
