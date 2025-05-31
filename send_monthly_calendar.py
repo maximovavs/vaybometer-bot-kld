@@ -24,7 +24,7 @@ MOON_EMOJI        = "🌙"
 TOKEN   = os.getenv("TELEGRAM_TOKEN_KLD", "")
 CHAT_ID = os.getenv("CHANNEL_ID_KLD",  "")
 if not TOKEN or not CHAT_ID:
-    raise RuntimeError("TELEGRAM_TOKEN / CHANNEL_ID не заданы")
+    raise RuntimeError("TELEGRAM_TOKEN_KLD / CHANNEL_ID_KLD не заданы")
 
 # ── helpers ────────────────────────────────────────────────────────────────
 def _parse_dt(s: str, year: int):
