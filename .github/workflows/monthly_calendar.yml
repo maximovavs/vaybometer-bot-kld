@@ -92,6 +92,6 @@ jobs:
     - name: 📨 Send monthly summary
       if: env.RUN_CALENDAR == 'yes'
       env:
-        TELEGRAM_TOKEN_KLD: ${{ secrets.TELEGRAM_TOKEN_KLD }}
-        CHANNEL_ID_KLD:     ${{ secrets.CHANNEL_ID_KLD }}
+        TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
+        CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
       run: python send_monthly_calendar.py
