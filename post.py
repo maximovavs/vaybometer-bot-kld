@@ -151,7 +151,7 @@ def build_msg() -> str:
     P.append("✅ <b>Рекомендации</b>")
     while len(tips) < 3: tips.append("Наслаждайтесь вечером и берите тепло 😊")
     for t in tips[:3]:
-        P.append(f"• {t}")
+        P.append(f"{t}")
     P.append("———")
     P.append(f"📚 {get_fact(TOMORROW)}")
     return "\n".join(P)
