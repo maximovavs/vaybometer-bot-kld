@@ -52,4 +52,4 @@ jobs:
           AMBEE_KEY:       ${{ secrets.AMBEE_KEY }}
           COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
           COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
-        run: python post.py
+        run: python post_kld.py
