@@ -108,7 +108,7 @@ def get_air() -> Dict[str, Any]:
     return merge_air_sources(_src_iqair(), _src_openmeteo())
 
 # ────────── Sea Surface Temperature ─────────────────────────────────
-def get_sst() -> Optional[float]:
+def get_sst(lat, lon) -> Optional[float]:
     j = _get(
         "https://api.open-meteo.com/v1/forecast",
         latitude=LAT, longitude=LON,
