@@ -83,8 +83,8 @@ async def main() -> None:
         return
 
     # Переопределяем переменные окружения, чтобы send_message_common знал, куда слать:
-    os.environ["TELEGRAM_TOKEN"] = token
-    os.environ["CHANNEL_ID"]   = channel_id
+    os.environ["TELEGRAM_TOKEN_KLG"] = token
+    os.environ["CHANNEL_ID_KLG"]   = channel_id
 
     # Строим готовый текст:
     msg = build_msg_common(
