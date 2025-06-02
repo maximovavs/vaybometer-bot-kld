@@ -28,15 +28,10 @@ post_common.py  •  Общая логика формирования и отп�
 """
 
 from __future__ import annotations
-import asyncio
-import json
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pendulum
-import requests
-from requests.exceptions import RequestException
 from telegram import Bot, error as tg_err, constants
 
 from utils      import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji
@@ -78,16 +73,16 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         sch["cached"] = False
         return sch
 
-    cache_path = Path(__file__).parent / "schumann_hourly.json"
+    cache_path = __import__("pathlib").Path(__file__).parent / "schumann_hourly.json"
     if cache_path.exists():
         try:
-            arr = json.loads(cache_path.read_text(encoding="utf-8"))
+            arr = __import__("json").loads(cache_path.read_text(encoding="utf-8"))
             if arr:
                 last = arr[-1]
                 pts  = arr[-24:]
                 freqs = [p["freq"] for p in pts if p.get("freq") is not None]
                 if len(freqs) >= 2:
-                    avg   = sum(freqs[:-1]) / (len(freqs)-1)
+                    avg   = sum(freqs[:-1]) / (len(freqs) - 1)
                     delta = freqs[-1] - avg
                     trend = "↑" if delta >= 0.1 else "↓" if delta <= -0.1 else "→"
                 else:
@@ -179,15 +174,14 @@ def build_message(
     """
     Шаги:
       1) Заголовок
-      2) Температура Балтийского моря (get_sst над sea_cities[0])
+      2) Рейтинг «морских» городов (погода + SST)
       3) Прогноз для «главного города» (Калининград)
-      4) Рейтинг «морских» городов
-      5) Рейтинг «теплых / холодных» городов
-      6) Качество воздуха + пыльца
-      7) Геомагнитка + Шуман
-      8) Астрособытия (offset_days=1, show_all_voc=True)
-      9) GPT-блок «Вывод» & «Рекомендации» (замена «вините погода» → «вините погоду»)
-     10) Факт (get_fact(TOMORROW))
+      4) Рейтинг «теплых / холодных» городов (не-морские)
+      5) Качество воздуха + пыльца
+      6) Геомагнитка + Шуман
+      7) Астрособытия (offset_days=1, show_all_voc=True)
+      8) GPT-блок «Вывод» & «Рекомендации» (замена «вините погода» → «вините погоду»)
+      9) Факт (get_fact(TOMORROW, region_name))
     """
     P: List[str] = []
     TODAY = pendulum.now(tz).date()
@@ -197,69 +191,90 @@ def build_message(
     header = f"<b>🌅 {region_name}: погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>"
     P.append(header)
 
-    # 2) Температура Балтийского моря
-    sea_lat, sea_lon = sea_cities[0][1]
-    if (sst := get_sst(sea_lat, sea_lon)) is not None:
-        P.append(f"🌊 Темп. моря: {sst:.1f} °C")
-    else:
-        P.append("🌊 Темп. моря: н/д")
+    # 2) Рейтинг «морских» городов (завтрашняя tday/tnight + описание + SST)
+    temps_sea_per_city: Dict[str, Tuple[float, float, int, Optional[float]]] = {}
+    for city, (lat, lon) in sea_cities:
+        # 2.1 Получаем завтрашние t_max, t_min
+        tday, tnight = fetch_tomorrow_temps(lat, lon, tz=tz.name)
+        if tday is None:
+            # если не удалось получить прогноз — пропускаем город
+            continue
+
+        # 2.2 Выясняем код погоды на завтра
+        wdata = get_weather(lat, lon)
+        if wdata:
+            wc_list = wdata.get("daily", {}).get("weathercode", [])
+            if len(wc_list) > 1:
+                wcode = wc_list[1]
+            elif wc_list:
+                wcode = wc_list[0]
+            else:
+                wcode = 0
+        else:
+            wcode = 0
+
+        # 2.3 Получаем SST “у берега” для этого города
+        try:
+            sst_city = get_sst(lat, lon)
+        except Exception as e:
+            logging.warning("Ошибка get_sst для %s: %s", city, e)
+            sst_city = None
+
+        temps_sea_per_city[city] = (tday, tnight or tday, wcode, sst_city)
+
+    if temps_sea_per_city:
+        P.append(f"🎖️ <b>{sea_label}</b>")
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        # сортируем по дневной температуре, убывание
+        sorted_sea = sorted(
+            temps_sea_per_city.items(),
+            key=lambda kv: kv[1][0],
+            reverse=True
+        )[:5]
+
+        for i, (city, (tday, tnight, wcode, sst_city)) in enumerate(sorted_sea):
+            desc = code_desc(wcode)
+            if sst_city is not None:
+                P.append(
+                    f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}, море: {sst_city:.1f} °C"
+                )
+            else:
+                P.append(
+                    f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}, море: н/д"
+                )
+        P.append("———")
 
     # 3) Прогноз для «главного города» (Калининград)
-    main_city_name, main_coords = ("Калининград", (KLD_LAT, KLD_LON))
-    lat, lon = main_coords
+    main_city_name, (m_lat, m_lon) = "Калининград", (KLD_LAT, KLD_LON)
 
-    day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=tz.name)
-    w = get_weather(lat, lon) or {}
-    cur = w.get("current", {})
+    day_max, night_min = fetch_tomorrow_temps(m_lat, m_lon, tz=tz.name)
+    w_main = get_weather(m_lat, m_lon) or {}
+    cur = w_main.get("current", {})
 
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
     else:
         avg_temp = cur.get("temperature", 0)
 
-    wind_kmh = cur.get("windspeed", 0.0)
-    wind_deg = cur.get("winddirection", 0.0)
-    press    = cur.get("pressure", 1013)
-    clouds   = cur.get("clouds", 0)
+    wind_kmh   = cur.get("windspeed", 0.0)
+    wind_deg   = cur.get("winddirection", 0.0)
+    press_main = cur.get("pressure", 1013)
+    clouds_main= cur.get("clouds", 0)
 
     P.append(
-        f"🏙️ {main_city_name}: Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds)} "
+        f"🏙️ {main_city_name}: Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds_main)} "
         f"• 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) "
-        f"• 💧 {press:.0f} гПа {pressure_arrow(w.get('hourly', {}))}"
+        f"• 💧 {press_main:.0f} гПа {pressure_arrow(w_main.get('hourly', {}))}"
     )
     P.append("———")
 
-    # 4) Рейтинг «морских» городов
-    temps_sea: Dict[str, Tuple[float, float, int]] = {}
-    for city, (la, lo) in sea_cities:
-        d, n = fetch_tomorrow_temps(la, lo, tz=tz.name)
-        if d is None:
-            continue
-        wcodes = get_weather(la, lo) or {}
-        daily_codes = wcodes.get("daily", {}).get("weathercode", [])
-        code_tmr = daily_codes[1] if len(daily_codes) > 1 else 0
-        temps_sea[city] = (d, n or d, code_tmr or 0)
-
-    if temps_sea:
-        P.append(f"🎖️ <b>{sea_label}</b>")
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-        sorted_sea = sorted(
-            temps_sea.items(),
-            key=lambda kv: kv[1][0],  # сортировка по дневной температуре
-            reverse=True
-        )[:5]
-        for i, (city, (tday, tnight, wcode)) in enumerate(sorted_sea):
-            desc = code_desc(wcode)
-            P.append(f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}")
-        P.append("———")
-
-    # 5) Рейтинг «теплых / холодных» городов
+    # 4) Рейтинг «теплых / холодных» (не-морские города)
     temps_other: Dict[str, Tuple[float, float]] = {}
-    for city, (la, lo) in other_cities:
-        d, n = fetch_tomorrow_temps(la, lo, tz=tz.name)
-        if d is None:
+    for city, (lat, lon) in other_cities:
+        tmax2, tmin2 = fetch_tomorrow_temps(lat, lon, tz=tz.name)
+        if tmax2 is None:
             continue
-        temps_other[city] = (d, n or d)
+        temps_other[city] = (tmax2, tmin2 or tmax2)
 
     if temps_other:
         P.append(f"🔥 <b>Тёплые города</b>")
@@ -273,7 +288,7 @@ def build_message(
             P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
         P.append("———")
 
-    # 6) Качество воздуха + пыльца
+    # 5) Качество воздуха + пыльца
     air = get_air() or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
@@ -289,7 +304,7 @@ def build_message(
         )
     P.append("———")
 
-    # 7) Геомагнитка + Шуман
+    # 6) Геомагнитка + Шуман
     kp, kp_state = get_kp()
     if kp is not None:
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
@@ -299,7 +314,7 @@ def build_message(
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # 8) Астрособытия (offset_days=1: завтрашний день, show_all_voc=True → показываем VoC даже <15 мин)
+    # 7) Астрособытия (offset_days=1: завтрашний день, show_all_voc=True → показываем VoC даже <15 мин)
     P.append("🌌 <b>Астрособытия</b>")
     astro_lines = astro_events(offset_days=1, show_all_voc=True)
     if astro_lines:
@@ -308,10 +323,9 @@ def build_message(
         P.append("— нет данных —")
     P.append("———")
 
-    # 9) GPT-блок: «Вывод» и «Рекомендации»
+    # 8) GPT-блок: «Вывод» и «Рекомендации»
     summary, tips = gpt_blurb("погода")
-
-    # Если есть «вините погода», меняем на «вините погоду»
+    # Исправляем «вините погода» → «вините погоду»
     summary = summary.replace("вините погода", "вините погоду")
 
     P.append(f"📜 <b>Вывод</b>\n{summary}")
@@ -321,8 +335,8 @@ def build_message(
         P.append(f"• {t}")
     P.append("———")
 
-    # 10) Факт (учитываем регион неявно через общую библиотеку фактов)
-    P.append(f"📚 {get_fact(TOMORROW)}")
+    # 9) Факт (учитываем регион)
+    P.append(f"📚 {get_fact(TOMORROW, region_name)}")
 
     return "\n".join(P)
 
