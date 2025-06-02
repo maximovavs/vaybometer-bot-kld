@@ -210,7 +210,7 @@ def build_message(
     w = get_weather(lat, lon) or {}
     cur = w.get("current", {})
 
-    # Попытаемся взять «ощущается как» при наличии в ответе актуального источника
+    # Попытаемся взять «ощущается как» при наличии в ответе
     feels = cur.get("feels_like", None)
 
     if day_max is not None and night_min is not None:
@@ -293,7 +293,8 @@ def build_message(
         P.append("———")
 
     # 6) Качество воздуха + пыльца (координаты главного города)
-    air = get_air(KLD_LAT, KLD_LON) or {}
+    #    get_air не принимает аргументы, поэтому просто вызов без параметров
+    air = get_air() or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
     P.append(
@@ -314,6 +315,7 @@ def build_message(
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
     else:
         P.append("🧲 Геомагнитка: н/д")
+
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
@@ -338,7 +340,7 @@ def build_message(
         P.append(f"• {t}")
     P.append("———")
 
-    # 10) Факт (передаем регион для get_fact)
+    # 10) Факт (передаём регион для get_fact)
     P.append(f"📚 {get_fact(TOMORROW, region_name)}")
 
     return "\n".join(P)
