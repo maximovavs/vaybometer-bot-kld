@@ -22,8 +22,8 @@ post_common.py  •  Общая логика формирования и отп�
 — get_pollen (из pollen.py)
 — get_schumann_with_fallback (локальная функция)
 — astro_events (из astro.py)
-— gpt_blurb (из gpt.py)
 — get_day_lunar_info (из lunar.py)
+— gpt_blurb (из gpt.py)
 — get_fact (из utils.py)
 """
 
@@ -105,6 +105,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
     # если и это не прокатило, вернём оригинал (возможно пустой)
     return sch
 
+
 def schumann_line(sch: Dict[str, Any]) -> str:
     """
     Формирует строку «Шуман» с цветовым индикатором:
@@ -134,10 +135,10 @@ def code_desc(code: int) -> str:
     WMO Weather Interpretation Codes → краткое описание на русском + эмодзи.
     """
     WMO_DESC = {
-        0: "☀️ ясно",
-        1: "⛅ част. облач.",
-        2: "☁️ облачно",
-        3: "🌥 пасмурно",
+        0:  "☀️ ясно",
+        1:  "⛅ част. облач.",
+        2:  "☁️ облачно",
+        3:  "🌥 пасмурно",
         45: "🌫 туман",
         48: "🌫 изморозь",
         51: "🌦 слаб. морось",
@@ -146,6 +147,7 @@ def code_desc(code: int) -> str:
         95: "⛈ гроза",
     }
     return WMO_DESC.get(code, "—")
+
 
 def pressure_arrow(hourly: Dict[str, Any]) -> str:
     """
@@ -206,11 +208,9 @@ def build_message(
         P.append("🌊 Темп. моря: н/д")
 
     # 3) Прогноз для «главного города» (Калининград)
-    #    Впрочем, мы можем явно указать main_city как «Калининград»
     main_city_name, main_coords = ("Калининград", (54.710, 20.452))
     lat, lon = main_coords
 
-    # Достаём завтра дн./ночь по координатам main_coords
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=tz.name)
     w = get_weather(lat, lon) or {}
     cur = w.get("current", {})
@@ -238,7 +238,6 @@ def build_message(
         if d is None:
             continue
         wcodes = get_weather(la, lo) or {}
-        # индекс 1 в daily.weathercode соответствует завтрашней погоде
         code_tmr = None
         daily_codes = wcodes.get("daily", {}).get("weathercode", [])
         if len(daily_codes) > 1:
@@ -248,7 +247,6 @@ def build_message(
     if temps_sea:
         P.append(f"🎖️ <b>{sea_label}</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-        # Сортируем по убыванию дневной температуры, берём топ-5
         sorted_sea = sorted(
             temps_sea.items(),
             key=lambda kv: kv[1][0],  # сортировка по дневной t
@@ -266,14 +264,14 @@ def build_message(
         if d is None:
             continue
         temps_other[city] = (d, n or d)
+
     if temps_other:
         P.append(f"🔥 <b>Тёплые города</b>")
-        # три самых тёплых по дневной t
         top_warm = sorted(temps_other.items(), key=lambda kv: kv[1][0], reverse=True)[:3]
         for city, (d, n) in top_warm:
             P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
+
         P.append(f"❄️ <b>Холодные города</b>")
-        # три самых холодных
         top_cold = sorted(temps_other.items(), key=lambda kv: kv[1][0])[:3]
         for city, (d, n) in top_cold:
             P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
@@ -305,14 +303,15 @@ def build_message(
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    
-    # Для ежедневного поста: всегда показываем VoC, даже <15 минут
-P.append("🌌 <b>Астрособытия</b>")
-astro_lines = astro_events(offset_days=0, show_all_voc=True)
-if astro_lines:
-    P.extend(astro_lines)
-else:
-    P.append("— нет данных —")
+    # 8) Астрособытия
+    P.append("🌌 <b>Астрособытия</b>")
+    # Здесь в ежедневном посте мы должны передать show_all_voc=True,
+    # но сам вызов с флагом оставляем в post_kld.py (или там, где вызываете build_message)
+    astro_lines = astro_events(offset_days=1, show_all_voc=True)
+    if astro_lines:
+        P.extend(astro_lines)
+    else:
+        P.append("— нет данных —")
     P.append("———")
 
     # 9) GPT-блок: «Вывод» и «Рекомендации»
@@ -324,8 +323,8 @@ else:
         P.append(f"• {t}")
     P.append("———")
 
-    # 10) Случайный факт
-    P.append(f"📚 {get_fact(TOMORROW)}")
+    # 10) Случайный факт (по региону; get_fact принимает два аргумента: date и region_name)
+    P.append(f"📚 {get_fact(TOMORROW, region_name)}")
 
     return "\n".join(P)
 
