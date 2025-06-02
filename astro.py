@@ -60,10 +60,10 @@ def _format_general_day(rec: Dict[str, Any], date_obj: pendulum.Date) -> Optiona
 
 
 CAT_EMOJI = {
-    "haircut":  "✂️",
-    "travel":   "✈️",
-    "shopping": "🛍️",
-    "health":   "❤️",
+    "Стрижка":  "✂️",
+    "Путешествия":   "✈️",
+    "Покупки": "🛍️",
+    "Здоровье":   "❤️",
 }
 
 
@@ -90,7 +90,7 @@ def _format_categories(rec: Dict[str, Any], date_obj: pendulum.Date) -> List[str
     return lines
 
 
-def astro_events(offset_days: int = 0) -> List[str]:
+def astro_events(offset_days: int = 1) -> List[str]:
     """
     Формирует список строк «Астрособытия» для поста.
 
