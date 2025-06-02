@@ -305,13 +305,14 @@ def build_message(
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # 8) Астрособытия
-    P.append("🌌 <b>Астрособытия</b>")
-    astro_lines = astro_events()  # уже форматирует VoC, фазу, категории
-    if astro_lines:
-        P.extend(astro_lines)
-    else:
-        P.append("— нет данных —")
+    
+    # Для ежедневного поста: всегда показываем VoC, даже <15 минут
+P.append("🌌 <b>Астрособытия</b>")
+astro_lines = astro_events(offset_days=0, show_all_voc=True)
+if astro_lines:
+    P.extend(astro_lines)
+else:
+    P.append("— нет данных —")
     P.append("———")
 
     # 9) GPT-блок: «Вывод» и «Рекомендации»
