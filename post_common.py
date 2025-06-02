@@ -167,9 +167,7 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
 
 # ─────────────────────────── Core Builder ──────────────────────────────────
 
-
-
-    def build_message(
+def build_message(
     region_name: str,
     chat_id: int,
     sea_label: str,
@@ -187,9 +185,9 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
       5) Рейтинг «теплых / холодных» городов
       6) Качество воздуха + пыльца
       7) Геомагнитка + Шуман
-      8) Астрособытия (отображаем и VoC <15 мин)
-      9) GPT-блок «Вывод» & «Рекомендации» (с заменой «вините погода» → «вините погоду»)
-     10) Факт (get_fact(TOMORROW, region_name))
+      8) Астрособытия (offset_days=1, show_all_voc=True)
+      9) GPT-блок «Вывод» & «Рекомендации» (замена «вините погода» → «вините погоду»)
+     10) Факт (get_fact(TOMORROW))
     """
     P: List[str] = []
     TODAY = pendulum.now(tz).date()
@@ -207,7 +205,7 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
         P.append("🌊 Темп. моря: н/д")
 
     # 3) Прогноз для «главного города» (Калининград)
-    main_city_name, main_coords = ("Калининград", (54.710, 20.452))
+    main_city_name, main_coords = ("Калининград", (KLD_LAT, KLD_LON))
     lat, lon = main_coords
 
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=tz.name)
@@ -291,7 +289,7 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
         )
     P.append("———")
 
-    # 7) Геомагнетизм + Шуман
+    # 7) Геомагнитка + Шуман
     kp, kp_state = get_kp()
     if kp is not None:
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})")
@@ -323,8 +321,8 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
         P.append(f"• {t}")
     P.append("———")
 
-    # 10) Факт (учитываем регион)
-    P.append(f"📚 {get_fact(TOMORROW, region_name)}")
+    # 10) Факт (учитываем регион неявно через общую библиотеку фактов)
+    P.append(f"📚 {get_fact(TOMORROW)}")
 
     return "\n".join(P)
 
