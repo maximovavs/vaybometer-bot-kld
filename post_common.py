@@ -50,12 +50,21 @@ from gpt        import gpt_blurb
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+
+# ─────────────────────────────── Constants ────────────────────────────────────
+
+# Примерные координаты Калининграда (центр города)
+KLD_LAT = 54.710426
+KLD_LON = 20.452214
+
+
 # ───────────────────────────── Schumann Data ──────────────────────────────────
+
 def get_schumann_with_fallback() -> Dict[str, Any]:
     """
     Пытаемся получить текущие значения Шумана.
     Если их нет, читаем последние 24 часа из schumann_hourly.json и
-    вычисляем тренд +/-/→. Возвращаем структуру:
+    вычисляем тренд (+/−/→). Возвращаем структуру:
         {
           "freq": float или None,
           "amp":  float или None,
@@ -117,6 +126,7 @@ def schumann_line(sch: Dict[str, Any]) -> str:
         emoji = "🟢"
     return f"{emoji} Шуман: {f:.2f} Гц / {amp:.1f} pT {sch['trend']}"
 
+
 # ───────────────────────── Helpers ──────────────────────────────────────────
 
 def code_desc(code: int) -> str:
@@ -152,6 +162,7 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
         return "↓"
     return "→"
 
+
 # ─────────────────────────── Core Builder ──────────────────────────────────
 
 def build_message(
@@ -167,8 +178,8 @@ def build_message(
     Формируем итоговый текст сообщения. Шаги:
 
     1) Заголовок с датой (по часовому поясу tz).
-    2) Температура Балтийского моря (get_sst() → меняется для Калиниграда).
-    3) Прогноз для «главного города» (Калининград) — берем из sea_cities[1] или явно.
+    2) Температура Балтийского моря (get_sst() — теперь с координатами Калининграда).
+    3) Прогноз для «главного города» (Калининград).
     4) Рейтинг «морских» городов (дн./ночь/погода).
     5) Рейтинг «теплых» и «холодных» городов из other_cities.
     6) Качество воздуха + пыльца.
@@ -188,22 +199,21 @@ def build_message(
     P.append(header)
 
     # 2) Температура Балтийского моря
-    #    get_sst() уже возвращает температуру для Балтийского моря
-    if (sst := get_sst()) is not None:
+    #    get_sst() теперь требует координаты; передаём KLD_LAT и KLD_LON
+    if (sst := get_sst(KLD_LAT, KLD_LON)) is not None:
         P.append(f"🌊 Темп. моря: {sst:.1f} °C")
+    else:
+        P.append("🌊 Темп. моря: н/д")
 
     # 3) Прогноз для «главного города» (Калининград)
-    #    Предположим, что main_city — это второй в sea_cities (Янтарный), 
-    #    но в общем случае можем брать явно по имени:
-    main_city_name, main_coords = ("Калининград", (54.710, 20.452))  # пример
-    # Если вы хотите, чтобы «главным» был один из sea_cities, просто поменяйте:
-    # main_city_name, main_coords = sea_cities[?]
-
+    #    Впрочем, мы можем явно указать main_city как «Калининград»
+    main_city_name, main_coords = ("Калининград", (54.710, 20.452))
     lat, lon = main_coords
+
+    # Достаём завтра дн./ночь по координатам main_coords
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=tz.name)
     w = get_weather(lat, lon) or {}
     cur = w.get("current", {})
-    # Берем среднюю, если удалось, иначе из cur
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
     else:
@@ -297,7 +307,7 @@ def build_message(
 
     # 8) Астрособытия
     P.append("🌌 <b>Астрособытия</b>")
-    astro_lines = astro_events()  # уже форматирует правильно
+    astro_lines = astro_events()  # уже форматирует VoC, фазу, категории
     if astro_lines:
         P.extend(astro_lines)
     else:
