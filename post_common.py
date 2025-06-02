@@ -167,7 +167,9 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
 
 # ─────────────────────────── Core Builder ──────────────────────────────────
 
-def build_message(
+
+
+    def build_message(
     region_name: str,
     chat_id: int,
     sea_label: str,
@@ -177,18 +179,17 @@ def build_message(
     tz: pendulum.Timezone
 ) -> str:
     """
-    Формируем итоговый текст сообщения. Шаги:
-
-    1) Заголовок с датой (по часовому поясу tz).
-    2) Температура Балтийского моря (get_sst() — теперь на координатах Балтийска).
-    3) Прогноз для «главного города» (Калининград).
-    4) Рейтинг «морских» городов (дн./ночь/погода).
-    5) Рейтинг «теплых» и «холодных» городов.
-    6) Качество воздуха + пыльца.
-    7) Геомагнитка + Шуман.
-    8) Астрособытия (astro_events с show_all_voc=True).
-    9) GPT-блок «Вывод» и «Рекомендации».
-    10) Факт (get_fact(TOMORROW, region_name)).
+    Шаги:
+      1) Заголовок
+      2) Температура Балтийского моря (get_sst над sea_cities[0])
+      3) Прогноз для «главного города» (Калининград)
+      4) Рейтинг «морских» городов
+      5) Рейтинг «теплых / холодных» городов
+      6) Качество воздуха + пыльца
+      7) Геомагнитка + Шуман
+      8) Астрособытия (отображаем и VoC <15 мин)
+      9) GPT-блок «Вывод» & «Рекомендации» (с заменой «вините погода» → «вините погоду»)
+     10) Факт (get_fact(TOMORROW, region_name))
     """
     P: List[str] = []
     TODAY = pendulum.now(tz).date()
@@ -199,8 +200,7 @@ def build_message(
     P.append(header)
 
     # 2) Температура Балтийского моря
-    #    Берём координаты первого «морского» города (sea_cities[0]), обычно это Балтийск.
-    sea_lat, sea_lon = sea_cities[0][1]  # sea_cities[0] = ("Балтийск", (54.649, 20.055))
+    sea_lat, sea_lon = sea_cities[0][1]
     if (sst := get_sst(sea_lat, sea_lon)) is not None:
         P.append(f"🌊 Темп. моря: {sst:.1f} °C")
     else:
@@ -213,6 +213,7 @@ def build_message(
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=tz.name)
     w = get_weather(lat, lon) or {}
     cur = w.get("current", {})
+
     if day_max is not None and night_min is not None:
         avg_temp = (day_max + night_min) / 2
     else:
@@ -230,17 +231,15 @@ def build_message(
     )
     P.append("———")
 
-    # 4) Рейтинг «морских» городов: дн./ночь/погода
+    # 4) Рейтинг «морских» городов
     temps_sea: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in sea_cities:
         d, n = fetch_tomorrow_temps(la, lo, tz=tz.name)
         if d is None:
             continue
         wcodes = get_weather(la, lo) or {}
-        code_tmr = None
         daily_codes = wcodes.get("daily", {}).get("weathercode", [])
-        if len(daily_codes) > 1:
-            code_tmr = daily_codes[1]
+        code_tmr = daily_codes[1] if len(daily_codes) > 1 else 0
         temps_sea[city] = (d, n or d, code_tmr or 0)
 
     if temps_sea:
@@ -248,7 +247,7 @@ def build_message(
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         sorted_sea = sorted(
             temps_sea.items(),
-            key=lambda kv: kv[1][0],  # сортировка по дневной т°
+            key=lambda kv: kv[1][0],  # сортировка по дневной температуре
             reverse=True
         )[:5]
         for i, (city, (tday, tnight, wcode)) in enumerate(sorted_sea):
@@ -256,7 +255,7 @@ def build_message(
             P.append(f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}")
         P.append("———")
 
-    # 5) Рейтинг «теплых / холодных» городов из other_cities
+    # 5) Рейтинг «теплых / холодных» городов
     temps_other: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in other_cities:
         d, n = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -302,7 +301,7 @@ def build_message(
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # 8) Астрособытия (offset_days=1 → «завтра», show_all_voc=True → даже если VoC < 15 мин)
+    # 8) Астрособытия (offset_days=1: завтрашний день, show_all_voc=True → показываем VoC даже <15 мин)
     P.append("🌌 <b>Астрособытия</b>")
     astro_lines = astro_events(offset_days=1, show_all_voc=True)
     if astro_lines:
@@ -313,7 +312,8 @@ def build_message(
 
     # 9) GPT-блок: «Вывод» и «Рекомендации»
     summary, tips = gpt_blurb("погода")
-    # Исправляем «вините погода» → «вините погоду»
+
+    # Если есть «вините погода», меняем на «вините погоду»
     summary = summary.replace("вините погода", "вините погоду")
 
     P.append(f"📜 <b>Вывод</b>\n{summary}")
@@ -323,7 +323,7 @@ def build_message(
         P.append(f"• {t}")
     P.append("———")
 
-    # 10) Случайный факт (учитываем регион)
+    # 10) Факт (учитываем регион)
     P.append(f"📚 {get_fact(TOMORROW, region_name)}")
 
     return "\n".join(P)
