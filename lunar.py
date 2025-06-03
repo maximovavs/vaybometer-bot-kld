@@ -17,7 +17,7 @@ def get_day_lunar_info(d: pendulum.Date) -> Optional[Dict[str, Any]]:
     """
     Возвращает информацию по дате d из lunar_calendar.json.
 
-    JSON-запись для каждой даты должна содержать по крайней мере ключи:
+    JSON-запись для каждой даты должна содержать, как минимум, ключи:
       - "phase":            str
       - "percent":          int
       - "sign":             str
@@ -25,13 +25,11 @@ def get_day_lunar_info(d: pendulum.Date) -> Optional[Dict[str, Any]]:
       - "void_of_course":   Dict[str, str]
       - "next_event":       str
       - "advice":           List[str]
-      - "favorable_days":   Dict[str, Dict[str, List[int]]] 
-          где внутри каждой категории (например, "general", "shopping", и т. д.) 
-          есть под-ключи "favorable" и "unfavorable"
+      - "favorable_days":   Dict[str, Dict[str, List[int]]]
+      - "unfavorable_days": Dict[str, Dict[str, List[int]]]
 
-    Функция возвращает саму запись (словарь) из JSON либо None, если:
-      • файл lunar_calendar.json не найден или невалиден,
-      • для указанной даты d нет записи.
+    Новые категории (например, "shopping") просто будут в rec["favorable_days"] вместе с остальными.
+    Если файла нет или для даты нет записи, возвращает None.
     """
     fn = Path(__file__).parent / "lunar_calendar.json"
     if not fn.exists():
@@ -42,17 +40,16 @@ def get_day_lunar_info(d: pendulum.Date) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
 
-    # Строковый ключ в формате "YYYY-MM-DD"
     key = d.format("YYYY-MM-DD")
     rec = data.get(key)
     if not rec:
         return None
 
-    # Возвращаем всю структуру записи «как есть»
+    # Возвращаем запись «как есть»
     return rec
 
 
-# Тестовый запуск
+# Локальный тест
 if __name__ == "__main__":
     today = pendulum.now().date()
     from pprint import pprint
