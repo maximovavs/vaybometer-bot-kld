@@ -105,31 +105,44 @@ def gpt_blurb(culprit: str) -> Tuple[str, List[str]]:
     • tips — список до 3 коротких советов с эмодзи.
     """
     tips_pool = CULPRITS.get(culprit, {}).get("tips", [])
-    # Если нет API-ключа или нет указанных советов — берём случайные из словаря
+
+    # Если нет API-ключа, библиотеки OpenAI или подсказок для данного culprint, берём случайные советы
     if not OPENAI_KEY or not OpenAI or not tips_pool:
         summary = f"Если завтра что-то пойдёт не так, вините {culprit}! 😉"
         return summary, random.sample(tips_pool, min(3, len(tips_pool)))
 
-    # Если ключ есть, делаем упрощённый запрос к GPT-4o-mini
+    # Если ключ есть — формируем упрощённый запрос к GPT-4o-mini
     prompt = (
-        f"Действуй как health coach со знаниями функциональной медицины, напиши одной строкой: "
-        f"«Если завтра что-то пойдёт не так, вините {culprit}!». "
+        f"Действуй как health coach со знаниями функциональной медицины. "
+        f"Напиши одной строкой: «Если завтра что-то пойдёт не так, вините {culprit}!». "
         "После точки — короткий позитив ≤12 слов. Затем ровно 3 совета ≤12 слов с эмодзи."
     )
+
     client = OpenAI(api_key=OPENAI_KEY)
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.6,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw_lines = resp.choices[0].message.content.strip().splitlines()
-    lines = [line.strip() for line in raw_lines if line.strip()]
-    # первая строка — summary, следующие до 3 строк — советы
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.6,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_content = resp.choices[0].message.content.strip()
+    except Exception:
+        # В случае ошибки GPT-фиговых возвращаем фоллбэк
+        summary = f"Если завтра что-то пойдёт не так, вините {culprit}! 😉"
+        return summary, random.sample(tips_pool, min(3, len(tips_pool)))
+
+    # Разбиваем ответ на строки и убираем пустые
+    lines = [line.strip() for line in raw_content.splitlines() if line.strip()]
+
+    # Первая строка — summary
     summary = lines[0] if lines else f"Если завтра что-то пойдёт не так, вините {culprit}! 😉"
+
+    # Следующие до 3 строк — советы
     tips = lines[1:4]
 
-    # Если GPT вернул менее 2 советов, дополняем случайными
+    # Если GPT вернул меньше 2 советов, дополним случайными из словаря
     if len(tips) < 2:
         remaining = [t for t in tips_pool if t not in tips]
         tips += random.sample(remaining, min(3 - len(tips), len(remaining)))
+
     return summary, tips
