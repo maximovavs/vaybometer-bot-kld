@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 pollen.py
 ~~~~~~~~~
@@ -20,20 +19,18 @@ from typing import Dict, Any, Optional
 from utils import _get
 
 # ───────────────────────── Constants ───────────────────────────────────────
-
-# Если координаты не переданы, можно оставить дефолт на случай Кипра;
-# для Калининграда лучше явно передать lat, lon в вызове.
-DEFAULT_LAT = 34.707   # Лимассол (Kypros)
+# По умолчанию — Лимассол (Кипр). Для Калининграда лучше передавать lat, lon явно.
+DEFAULT_LAT = 34.707   # Limassol
 DEFAULT_LON = 33.022
 
 # ────────────────────── Уровень риска пыльцы ──────────────────────────────
 def _risk_level(val: Optional[float]) -> str:
     """
-    По максимальной концентрации(pollen) возвращает:
-      <10  → "низкий"
-      <30  → "умеренный"
-      <70  → "высокий"
-      ≥70  → "экстремальный"
+    По максимальной концентрации возвращает:
+      < 10  → "низкий"
+      < 30  → "умеренный"
+      < 70  → "высокий"
+      ≥ 70  → "экстремальный"
       None → "н/д"
     """
     if val is None:
@@ -46,17 +43,17 @@ def _risk_level(val: Optional[float]) -> str:
         return "высокий"
     return "экстремальный"
 
+
 def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[Dict[str, Any]]:
     """
-    Запрашивает концентрации пыльцы (birch/grass/ragweed) из Open-Meteo Air Quality API.
-    Возвращает:
+    Запрашивает концентрации пыльцы (birch, grass, ragweed) из Open-Meteo Air Quality API.
+    Возвращает либо None (если нет данных или формат изменился), либо словарь:
       {
-        "tree":  float | None,   # берёза
-        "grass": float | None,   # трава
-        "weed":  float | None,   # амброзия
-        "risk":  str             # уровень риска "низкий"/"умеренный"/"высокий"/"экстремальный"/"н/д"
+        "tree":  float | None,   # берёза (birch_pollen)
+        "grass": float | None,   # трава (grass_pollen)
+        "weed":  float | None,   # амброзия (ragweed_pollen)
+        "risk":  str             # уровень риска: "низкий"/"умеренный"/"высокий"/"экстремальный"/"н/д"
       }
-    Если данных нет (ошибка API или неверный формат) — возвращает None.
     """
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
@@ -68,7 +65,7 @@ def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[D
 
     j = _get(url, **params)
     if not j or "hourly" not in j:
-        logging.warning("Pollen API: нет данных или изменился формат ответа")
+        logging.warning("Pollen API: нет данных или формат ответа изменился")
         return None
 
     try:
@@ -77,13 +74,25 @@ def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[D
         grass_arr = hourly.get("grass_pollen", [])
         weed_arr  = hourly.get("ragweed_pollen", [])
 
-        # Берём первый часовой отсчёт (если есть и ≥ 0), иначе None
-        tree  = tree_arr[0]  if (tree_arr  and tree_arr[0]  is not None and tree_arr[0]  >= 0) else None
-        grass = grass_arr[0] if (grass_arr and grass_arr[0] is not None and grass_arr[0] >= 0) else None
-        weed  = weed_arr[0]  if (weed_arr  and weed_arr[0]  is not None and weed_arr[0]  >= 0) else None
+        # Берём первый часовой отсчёт, если он ≥ 0
+        tree = (
+            float(tree_arr[0])
+            if isinstance(tree_arr, list) and tree_arr and tree_arr[0] is not None and tree_arr[0] >= 0
+            else None
+        )
+        grass = (
+            float(grass_arr[0])
+            if isinstance(grass_arr, list) and grass_arr and grass_arr[0] is not None and grass_arr[0] >= 0
+            else None
+        )
+        weed = (
+            float(weed_arr[0])
+            if isinstance(weed_arr, list) and weed_arr and weed_arr[0] is not None and weed_arr[0] >= 0
+            else None
+        )
 
         # Рассчитываем риск по максимальной из доступных концентраций
-        max_val = max(x for x in (tree or 0, grass or 0, weed or 0))
+        max_val = max(x for x in (tree or 0.0, grass or 0.0, weed or 0.0))
         return {
             "tree":  round(tree,  1) if tree  is not None else None,
             "grass": round(grass, 1) if grass is not None else None,
@@ -95,8 +104,10 @@ def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[D
         logging.warning("Pollen parse error: %s", e)
         return None
 
+
 if __name__ == "__main__":
     from pprint import pprint
+
     # Пример для Калининграда
     print("Пыльца для Калининграда:")
     pprint(get_pollen(54.71, 20.45))
