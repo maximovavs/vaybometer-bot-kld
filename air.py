@@ -26,7 +26,7 @@ from utils import _get  # утилита для HTTP-запросов (_get_retr
 
 # ────────── Константы ───────────────────────────────────────────────
 # API AQI: IQAir использует координаты пользователя,
-# но для нашего бота мы передаём lat и lon непосредственно вызовам.
+# но для нашего бота мы передаём lat и lon непосредственно
 AIR_KEY = os.getenv("AIRVISUAL_KEY")
 
 # Путь для кеша Kp
@@ -78,9 +78,9 @@ def _kp_state(kp: float) -> str:
       < 5 → "неспокойно"
       ≥ 5 → "буря"
     """
-    if kp < 3:
+    if kp < 3.0:
         return "спокойно"
-    if kp < 5:
+    if kp < 5.0:
         return "неспокойно"
     return "буря"
 
@@ -89,7 +89,7 @@ def _kp_state(kp: float) -> str:
 def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
     Запрашивает качество воздуха через IQAir API для указанных lat, lon.
-    Возвращает словарь {"aqi": ..., "pm25": ..., "pm10": ...} или None при ошибке.
+    Возвращает словарь {"aqi": float, "pm25": float, "pm10": float} или None при ошибке.
     """
     if not AIR_KEY:
         return None
@@ -109,10 +109,16 @@ def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
     try:
         pollution = resp["data"]["current"]["pollution"]
-        aqi_val = pollution.get("aqius", "н/д")
-        pm25_val = pollution.get("p2")
-        pm10_val = pollution.get("p1")
-        return {"aqi": aqi_val, "pm25": pm25_val, "pm10": pm10_val}
+        aqi_val = pollution.get("aqius", None)
+        pm25_val = pollution.get("p2", None)
+        pm10_val = pollution.get("p1", None)
+
+        # Приводим к нужным типам
+        aqi_float = float(aqi_val) if aqi_val is not None else None
+        pm25_float = float(pm25_val) if pm25_val is not None else None
+        pm10_float = float(pm10_val) if pm10_val is not None else None
+
+        return {"aqi": aqi_float, "pm25": pm25_float, "pm10": pm10_float}
     except Exception as e:
         logging.warning("IQAir parse error: %s", e)
         return None
@@ -121,7 +127,7 @@ def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
     Запрашивает качество воздуха через Open-Meteo Air-Quality API для указанных lat, lon.
-    Возвращает {"aqi": ..., "pm25": ..., "pm10": ...} или None при ошибке.
+    Возвращает {"aqi": float|"н/д", "pm25": float|None, "pm10": float|None} или None при ошибке.
     """
     try:
         resp = _get(
@@ -145,14 +151,19 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         pm10_raw = hourly.get("pm10", [])
 
         # Берём первый элемент, если он есть, иначе "н/д"/None
-        aqi_val = aqi_raw[0] if aqi_raw else "н/д"
-        pm25_val = pm25_raw[0] if pm25_raw else None
-        pm10_val = pm10_raw[0] if pm10_raw else None
+        aqi_val = aqi_raw[0] if isinstance(aqi_raw, list) and aqi_raw else None
+        pm25_val = pm25_raw[0] if isinstance(pm25_raw, list) and pm25_raw else None
+        pm10_val = pm10_raw[0] if isinstance(pm10_raw, list) and pm10_raw else None
 
-        # Нормализуем значения
-        aqi_norm = aqi_val if isinstance(aqi_val, (int, float)) and aqi_val >= 0 else "н/д"
-        pm25_norm = pm25_val if isinstance(pm25_val, (int, float)) and pm25_val >= 0 else None
-        pm10_norm = pm10_val if isinstance(pm10_val, (int, float)) and pm10_val >= 0 else None
+        # Нормализуем
+        aqi_norm: Union[float, str]
+        if isinstance(aqi_val, (int, float)) and aqi_val >= 0:
+            aqi_norm = float(aqi_val)
+        else:
+            aqi_norm = "н/д"
+
+        pm25_norm = float(pm25_val) if isinstance(pm25_val, (int, float)) and pm25_val >= 0 else None
+        pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and pm10_val >= 0 else None
 
         return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm}
     except Exception as e:
@@ -166,30 +177,37 @@ def merge_air_sources(
 ) -> Dict[str, Any]:
     """
     Объединяет результаты двух источников AQI (приоритет src1 → src2).
-    Возвращает словарь {"lvl": ..., "aqi": ..., "pm25": ..., "pm10": ...}.
-    Если в обоих None/невалидных значений, возвращаем "н/д" / None по умолчанию.
+    Возвращает словарь {"lvl": str, "aqi": float|"н/д", "pm25": float|None, "pm10": float|None}.
+    Если оба источника не дали валидного значения для ключа, остаётся "н/д"/None.
     """
     base: Dict[str, Union[str, float, None]] = {
         "aqi": "н/д",
         "pm25": None,
         "pm10": None
     }
+
+    # Ключи, которые надо смержить
     for key in ("aqi", "pm25", "pm10"):
         v1 = src1.get(key) if src1 else None
         if v1 not in (None, "н/д"):
             base[key] = v1
         else:
             v2 = src2.get(key) if src2 else None
-            base[key] = v2 if v2 not in (None, "н/д") else base[key]
+            if v2 not in (None, "н/д"):
+                base[key] = v2
+            # иначе оставляем базовое значение
+
+    # Добавляем категорию уровня AQI
     base["lvl"] = _aqi_level(base["aqi"])  # type: ignore
+
     return base  # type: ignore
 
 
 def get_air(lat: float, lon: float) -> Dict[str, Any]:
     """
     Возвращает объединённые данные качества воздуха по координатам:
-      {"lvl": ..., "aqi": ..., "pm25": ..., "pm10": ...}
-    Никогда не бросает исключение, при ошибках API → возвращает значения по умолчанию.
+      {"lvl": str, "aqi": float|"н/д", "pm25": float|None, "pm10": float|None}
+    Никогда не бросает исключение; при ошибках API возвращает дефолтные значения.
     """
     try:
         src1 = _src_iqair(lat, lon)
@@ -209,7 +227,7 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
     """
     Запрашивает температуру поверхности моря (SST) по переданным координатам (lat, lon).
     Использует Open-Meteo с параметром hourly=sea_surface_temperature.
-    При ошибке (Timeout, HTTPError и т.п.) возвращает None и логирует warning.
+    При ошибке возвращает None.
     """
     try:
         resp = _get(
@@ -228,7 +246,7 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
 
     try:
         arr = resp["hourly"].get("sea_surface_temperature", [])
-        val = arr[0] if arr else None
+        val = arr[0] if isinstance(arr, list) and arr else None
         return float(val) if isinstance(val, (int, float)) else None
     except Exception as e:
         logging.warning("SST parse error: %s", e)
@@ -265,12 +283,12 @@ def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optiona
 
 def get_kp() -> Tuple[Optional[float], str]:
     """
-    Возвращает кортеж (kp_value, state) или (None, "н/д").
+    Возвращает кортеж (kp_value: float | None, state: str).
     Порядок:
-      1) Пытаемся получить список из KP_URLS (suточный или минутный формат).
-      2) Парсим raw_val; при успешном парсинге кешируем и возвращаем.
-      3) Если оба запроса неуспешны → извлекаем из кеша, если там есть валидное значение.
-      4) Иначе возвращаем (None, "н/д").
+      1) Запрос к каждому URL в KP_URLS с retry
+      2) Парсинг raw_val; при успехе — кеширование и возврат
+      3) Если оба запроса неудачны → попытка взять из кеша
+      4) Иначе → (None, "н/д")
     """
     for url in KP_URLS:
         data = _fetch_kp_data(url)
@@ -280,16 +298,16 @@ def get_kp() -> Tuple[Optional[float], str]:
         try:
             raw_val: Any = None
             # Сценарии:
-            #  - Суточный формат: [[...], [...]]
-            #  - Минутный формат: [{...}, {...}]
+            #  - Суточный формат: список списков [[...], [...], ...]
+            #  - Минутный формат: список словарей [{...}, {...}, ...]
             if isinstance(data, list) and data:
                 first = data[0]
-                if isinstance(first, list):
-                    # [[...], [...]]
+                if isinstance(first, list) and len(data) > 1:
+                    # Суточный формат: берем вторую строку (data[1]), последний столбец
                     entry = data[1]
                     raw_val = entry[-1]
                 elif isinstance(first, dict):
-                    # [{...}, {...}]
+                    # Минутный формат: берем первый элемент
                     entry = first
                     raw_val = entry.get("kp_index") or entry.get("estimated_kp") or entry.get("kp")
 
@@ -305,7 +323,7 @@ def get_kp() -> Tuple[Optional[float], str]:
         except Exception as e:
             logging.warning("Kp parse error %s: %s", url, e)
 
-    # Фоллбэк: кеш
+    # Фоллбэк: берём из кеша
     cached_kp, ts = _load_kp_cache()
     if cached_kp is not None:
         logging.info("Using cached Kp=%s ts=%s", cached_kp, ts)
