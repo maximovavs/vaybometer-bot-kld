@@ -46,6 +46,9 @@ from astro      import astro_events
 from lunar      import get_day_lunar_info
 from gpt        import gpt_blurb
 
+# Импортируем настройки региона
+from settings_klg import SEA_SST_COORD
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
@@ -177,7 +180,7 @@ def build_message(
     """
     Шаги:
       1) Заголовок
-      2) Температура Балтийского моря (get_sst над sea_cities[0])
+      2) Температура Балтийского моря (get_sst над SEA_SST_COORD)
       3) Прогноз для «главного города» (Калининград)
       4) Рейтинг «морских» городов (с SST per-city)
       5) Рейтинг «теплых / холодных» городов
@@ -197,8 +200,8 @@ def build_message(
     header = f"<b>🌅 {region_name}: погода на завтра ({TOMORROW.format('DD.MM.YYYY')})</b>"
     P.append(header)
 
-    # 2) Температура Балтийского моря (центральная точка из sea_cities[0])
-    sea_lat, sea_lon = sea_cities[0][1]
+    # 2) Температура Балтийского моря (центр залива из SEA_SST_COORD)
+    sea_lat, sea_lon = SEA_SST_COORD
     if (sst_main := get_sst(sea_lat, sea_lon)) is not None:
         P.append(f"🌊 Темп. моря (центр залива): {sst_main:.1f} °C")
     else:
@@ -389,7 +392,7 @@ def build_message(
 
     # 9) Формируем блок «Вывод»
     P.append("📜 <b>Вывод</b>")
-    P.append(f"Если что -то пойдет не так, вините {culprit_text}! 😉")
+    P.append(f"Если что-то пойдет не так, вините {culprit_text}! 😉")
     P.append("———")
 
     # 10) «Рекомендации» (GPT-фоллбэк или health-coach) с тем же виновником
