@@ -46,7 +46,7 @@ from astro      import astro_events
 from lunar      import get_day_lunar_info
 from gpt        import gpt_blurb
 
-# Импортируем настройки региона
+# импортируем нашу точку для SST
 from settings_klg import SEA_SST_COORD
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -58,8 +58,6 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 KLD_LAT = 54.710426
 KLD_LON = 20.452214
 
-
-# ───────────────────────────── Schumann Data ──────────────────────────────────
 
 def get_schumann_with_fallback() -> Dict[str, Any]:
     """
@@ -103,7 +101,6 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         except Exception as e:
             logging.warning("Schumann cache parse error: %s", e)
 
-    # если и это не прокатило, вернём оригинал (возможно пустой)
     return sch
 
 
@@ -128,8 +125,6 @@ def schumann_line(sch: Dict[str, Any]) -> str:
         emoji = "🟢"
     return f"{emoji} Шуман: {f:.2f} Гц / {amp:.1f} pT {sch['trend']}"
 
-
-# ───────────────────────── Helpers ──────────────────────────────────────────
 
 def code_desc(code: int) -> str:
     """
@@ -165,8 +160,6 @@ def pressure_arrow(hourly: Dict[str, Any]) -> str:
         return "↓"
     return "→"
 
-
-# ─────────────────────────── Core Builder ──────────────────────────────────
 
 def build_message(
     region_name: str,
