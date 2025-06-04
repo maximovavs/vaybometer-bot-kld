@@ -132,12 +132,12 @@ def code_desc(code: int) -> str:
     """
     WMO_DESC = {
         0:  "☀️ ясно",
-        1:  "⛅ част. облач.",
+        1:  "⛅ ч. облач.",
         2:  "☁️ облачно",
         3:  "🌥 пасмурно",
         45: "🌫 туман",
         48: "🌫 изморозь",
-        51: "🌦 слаб. морось",
+        51: "🌦 морось",
         61: "🌧 дождь",
         71: "❄️ снег",
         95: "⛈ гроза",
@@ -261,10 +261,10 @@ def build_message(
             desc = code_desc(wcode)
             if sst_city is not None:
                 P.append(
-                    f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}, 🌊 {sst_city:.1f} °C"
+                    f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f}, {desc}, 🌊 {sst_city:.1f}"
                 )
             else:
-                P.append(f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}")
+                P.append(f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f}, {desc}")
         P.append("———")
 
     # 5) Рейтинг «теплых / холодных» городов
@@ -276,12 +276,12 @@ def build_message(
         temps_other[city] = (d, n or d)
 
     if temps_other:
-        P.append(f"🔥 <b>Тёплые города</b>")
+        P.append(f"🔥 <b>Тёплые города,°C</b>")
         top_warm = sorted(temps_other.items(), key=lambda kv: kv[1][0], reverse=True)[:3]
         for city, (d, n) in top_warm:
             P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
 
-        P.append(f"❄️ <b>Холодные города</b>")
+        P.append(f"❄️ <b>Холодные города,°C</b>")
         top_cold = sorted(temps_other.items(), key=lambda kv: kv[1][0])[:3]
         for city, (d, n) in top_cold:
             P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
