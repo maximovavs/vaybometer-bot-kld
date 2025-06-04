@@ -226,19 +226,20 @@ def get_air(lat: float, lon: float) -> Dict[str, Any]:
 def get_sst(lat: float, lon: float) -> Optional[float]:
     """
     Запрашивает температуру поверхности моря (SST) по переданным координатам (lat, lon).
-    Использует Open-Meteo с параметром hourly=sea_surface_temperature.
+    Использует Open-Meteo Marine API:
+      https://marine-api.open-meteo.com/v1/marine
     При ошибке возвращает None.
     """
     try:
         resp = _get(
-            "https://api.open-meteo.com/v1/forecast",
+            "https://marine-api.open-meteo.com/v1/marine",
             latitude=lat,
             longitude=lon,
             hourly="sea_surface_temperature",
             timezone="UTC"
         )
     except Exception as e:
-        logging.warning("SST request error: %s", e)
+        logging.warning("Marine SST request error: %s", e)
         return None
 
     if not resp or "hourly" not in resp:
@@ -246,12 +247,11 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
 
     try:
         arr = resp["hourly"].get("sea_surface_temperature", [])
-        val = arr[0] if isinstance(arr, list) and arr else None
+        val = arr[0] if arr else None
         return float(val) if isinstance(val, (int, float)) else None
     except Exception as e:
-        logging.warning("SST parse error: %s", e)
+        logging.warning("Marine SST parse error: %s", e)
         return None
-
 
 # ────────── Kp-индекс с retry и кешем ──────────────────────────────
 def _load_kp_cache() -> Tuple[Optional[float], Optional[int]]:
