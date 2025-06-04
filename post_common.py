@@ -32,7 +32,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pendulum
 from telegram import Bot, error as tg_err, constants
@@ -68,7 +68,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
           "amp":  float или None,
           "trend": "↑"/"↓"/"→",
           "high": bool,
-          "cached": bool
+          "cached": bool,
         }
     """
     sch = get_schumann()
@@ -85,7 +85,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
                 pts  = arr[-24:]
                 freqs = [p["freq"] for p in pts if p.get("freq") is not None]
                 if len(freqs) >= 2:
-                    avg   = sum(freqs[:-1]) / (len(freqs)-1)
+                    avg   = sum(freqs[:-1]) / (len(freqs) - 1)
                     delta = freqs[-1] - avg
                     trend = "↑" if delta >= 0.1 else "↓" if delta <= -0.1 else "→"
                 else:
@@ -184,9 +184,11 @@ def build_message(
       6) Качество воздуха + пыльца
       7) Геомагнитка + Шуман
       8) Астрособытия (offset_days=1, show_all_voc=True)
-      9) GPT-блок «Вывод» & «Рекомендации» (замена «вините погода» → «вините погоду»)
-     10) Факт (get_fact(TOMORROW, region_name))
+      9) Динамический «Вывод»: «Вините …»
+     10) Рекомендации (GPT-фоллбэк или health-coach) с тем же «виновником»
+     11) Факт (get_fact(TOMORROW, region_name))
     """
+
     P: List[str] = []
     TODAY = pendulum.now(tz).date()
     TOMORROW = TODAY.add(days=1)
@@ -208,50 +210,48 @@ def build_message(
 
     day_max, night_min = fetch_tomorrow_temps(lat, lon, tz=tz.name)
     w_main = get_weather(lat, lon) or {}
-    cur     = w_main.get("current", {})
+    cur_main = w_main.get("current", {})
 
-    # Попытаемся взять «ощущается как» при наличии
-    feels = cur.get("feels_like", None)
+    feels = cur_main.get("feels_like", None)
 
     if day_max is not None and night_min is not None:
-        avg_temp = (day_max + night_min) / 2
+        avg_temp_main = (day_max + night_min) / 2
     else:
-        avg_temp = cur.get("temperature", 0)
+        avg_temp_main = cur_main.get("temperature", 0)
 
-    wind_kmh = cur.get("windspeed", 0.0)
-    wind_deg = cur.get("winddirection", 0.0)
-    press    = cur.get("pressure", 1013)
-    clouds   = cur.get("clouds", 0)
-    arrow    = pressure_arrow(w_main.get("hourly", {}))
+    wind_kmh_main = cur_main.get("windspeed", 0.0)
+    wind_deg_main = cur_main.get("winddirection", 0.0)
+    press_main    = cur_main.get("pressure", 1013)
+    clouds_main   = cur_main.get("clouds", 0)
+
+    arrow_main = pressure_arrow(w_main.get("hourly", {}))
 
     if feels is not None:
         P.append(
-            f"🏙️ {main_city_name}: {avg_temp:.0f} °C (ощущается как {feels:.0f} °C) • "
-            f"{clouds_word(clouds)} • 💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • "
-            f"💧 {press:.0f} гПа {arrow}"
+            f"🏙️ {main_city_name}: {avg_temp_main:.0f} °C (ощущается как {feels:.0f} °C) • "
+            f"{clouds_word(clouds_main)} • 💨 {wind_kmh_main:.1f} км/ч ({compass(wind_deg_main)}) • "
+            f"💧 {press_main:.0f} гПа {arrow_main}"
         )
     else:
         P.append(
-            f"🏙️ {main_city_name}: Ср. темп: {avg_temp:.0f} °C • {clouds_word(clouds)} • "
-            f"💨 {wind_kmh:.1f} км/ч ({compass(wind_deg)}) • "
-            f"💧 {press:.0f} гПа {arrow}"
+            f"🏙️ {main_city_name}: Ср. темп: {avg_temp_main:.0f} °C • {clouds_word(clouds_main)} • "
+            f"💨 {wind_kmh_main:.1f} км/ч ({compass(wind_deg_main)}) • "
+            f"💧 {press_main:.0f} гПа {arrow_main}"
         )
     P.append("———")
 
     # 4) Рейтинг «морских» городов (добавляем SST per-city)
-    temps_sea: Dict[str, Tuple[float, float, int, Optional[float]]] = {}
+    temps_sea: Dict[str, Tuple[float, float, int, Any]] = {}
     for city, (la, lo) in sea_cities:
         d, n = fetch_tomorrow_temps(la, lo, tz=tz.name)
         if d is None:
             continue
-        wcodes     = get_weather(la, lo) or {}
-        daily_codes = wcodes.get("daily", {}).get("weathercode", [])
-        code_tmr   = daily_codes[1] if len(daily_codes) > 1 else 0
+        wcod = get_weather(la, lo) or {}
+        daily_codes = wcod.get("daily", {}).get("weathercode", [])
+        code_tmr = daily_codes[1] if (isinstance(daily_codes, list) and len(daily_codes) > 1) else 0
 
-        # получаем SST для каждого морского города
-        sst_city: Optional[float] = get_sst(la, lo)
-
-        temps_sea[city] = (d, n or d, code_tmr or 0, sst_city)
+        sst_city: Any = get_sst(la, lo)
+        temps_sea[city] = (d, n or d, code_tmr, sst_city)
 
     if temps_sea:
         P.append(f"🎖️ <b>{sea_label}</b>")
@@ -291,7 +291,7 @@ def build_message(
             P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
         P.append("———")
 
-    # 6) Качество воздуха + пыльца (координаты главного города)
+    # 6) Качество воздуха + Пыльца
     air = get_air(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
@@ -326,19 +326,80 @@ def build_message(
         P.append("— нет данных —")
     P.append("———")
 
-    # 9) GPT-блок: «Вывод» и «Рекомендации»
-    summary, tips = gpt_blurb("погода")
-    # Замена «вините погода» на «вините погоду»
-    summary = summary.replace("вините погода", "вините погоду")
+    # ────────────────────────────────────────────────────────────────────────
+    # 9) Динамический «Вывод» («Вините …»)
+    #
+    #  Логика выбора «виновника»:
+    #   1) Если Kp ≥ 5 («буря») → «магнитные бури»
+    #   2) Иначе, если max температура ≥ 30 → «жару»
+    #   3) Иначе, если min температура ≤ 5 → «резкое похолодание»
+    #   4) Иначе, если WMO-код завтра в {95, 71, 48} → 
+    #         «гроза» / «снег» / «изморозь»
+    #   5) Иначе → «астрологический фактор»
+    #
+    #   При выборе «астрологического фактора» из astro_lines берём первую
+    #   строку, где встречается «новолуние», «полнолуние» или «четверть»:
+    #   чистим от эмоджи и процентов, форматируем 
+    #   → «фазу луны — {PhaseName, Sign}».
+    culprit_text: str
 
-    P.append(f"📜 <b>Вывод</b>\n{summary}")
+    # 1) Проверяем геомагнитку
+    if kp is not None and kp_state.lower() == "буря":
+        culprit_text = "магнитные бури"
+    else:
+        # 2) Экстренная жара
+        if day_max is not None and day_max >= 30:
+            culprit_text = "жару"
+        # 3) Резкое похолодание
+        elif night_min is not None and night_min <= 5:
+            culprit_text = "резкое похолодание"
+        else:
+            # 4) Опасный WMO-код
+            daily_codes_main = w_main.get("daily", {}).get("weathercode", [])
+            tomorrow_code = (
+                daily_codes_main[1] 
+                if isinstance(daily_codes_main, list) and len(daily_codes_main) > 1 
+                else None
+            )
+            if tomorrow_code == 95:
+                culprit_text = "гроза"
+            elif tomorrow_code == 71:
+                culprit_text = "снег"
+            elif tomorrow_code == 48:
+                culprit_text = "изморозь"
+            else:
+                # 5) Астрологический фактор
+                culprit_text = None
+                for line in astro_lines:
+                    low = line.lower()
+                    if "новолуние" in low or "полнолуние" in low or "четверть" in low:
+                        clean = line
+                        # Убираем эмоджи луны
+                        for ch in ("🌑", "🌕", "🌓", "🌒", "🌙"):
+                            clean = clean.replace(ch, "")
+                        # Убираем процент «(...)»
+                        clean = clean.split("(")[0].strip()
+                        clean = clean.replace(" ,", ",").strip()
+                        clean = clean[0].upper() + clean[1:]  # заглавная первая буква
+                        culprit_text = f"фазу луны — {clean}"
+                        break
+                if not culprit_text:
+                    # Если нет астрологических данных, общий «неблагоприятный прогноз»
+                    culprit_text = "неблагоприятный прогноз погоды"
+
+    # 9) Формируем блок «Вывод»
+    P.append("📜 <b>Вывод</b>")
+    P.append(f"Вините {culprit_text}! 😉")
     P.append("———")
+
+    # 10) «Рекомендации» (GPT-фоллбэк или health-coach) с тем же виновником
     P.append("✅ <b>Рекомендации</b>")
-    for t in tips:
-        P.append(f"• {t}")
+    summary, tips = gpt_blurb(culprit_text)
+    for advice in tips[:3]:
+        P.append(f"• {advice.strip()}")
     P.append("———")
 
-    # 10) Факт (передаём регион для get_fact)
+    # 11) Факт дня (с регионом)
     P.append(f"📚 {get_fact(TOMORROW, region_name)}")
 
     return "\n".join(P)
