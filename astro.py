@@ -180,7 +180,7 @@ def astro_events(
             text = adv.strip()
             # Убираем возможную пронумерованную префикс-часть «1. », «2) » и т.п.
             text = re.sub(r'^\s*\d+[\.\)]\s*', '', text)
-            lines.append(f"• {text}")
+            lines.append(f"{text}")
 
     # 5) next_event
     next_ev = rec.get("next_event", "").strip()
