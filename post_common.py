@@ -132,8 +132,8 @@ def code_desc(code: int) -> str:
     """
     WMO_DESC = {
         0:  "☀️ ясно",
-        1:  "⛅ ч. облач.",
-        2:  "☁️ облачно",
+        1:  "⛅ ч.обл",
+        2:  "☁️ обл",
         3:  "🌥 пасмурно",
         45: "🌫 туман",
         48: "🌫 изморозь",
@@ -196,7 +196,7 @@ def build_message(
     # 2) Температура Балтийского моря (центр залива из SEA_SST_COORD)
     sea_lat, sea_lon = SEA_SST_COORD
     if (sst_main := get_sst(sea_lat, sea_lon)) is not None:
-        P.append(f"🌊 Темп. моря (центр залива): {sst_main:.1f} °C")
+        P.append(f"🌊 Темп. моря (центр залива): {sst_main:.1f}")
     else:
         P.append("🌊 Темп. моря (центр залива): н/д")
 
@@ -250,7 +250,7 @@ def build_message(
         temps_sea[city] = (d, n or d, code_tmr, sst_city)
 
     if temps_sea:
-        P.append(f"🎖️ <b>{sea_label}</b>")
+        P.append(f"🎖️ <b>{sea_label},°C</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         sorted_sea = sorted(
             temps_sea.items(),
@@ -392,7 +392,7 @@ def build_message(
     P.append("✅ <b>Рекомендации</b>")
     summary, tips = gpt_blurb(culprit_text)
     for advice in tips[:3]:
-        P.append(f"• {advice.strip()}")
+        P.append(f"{advice.strip()}")
     P.append("———")
 
     # 11) Факт дня (с регионом)
