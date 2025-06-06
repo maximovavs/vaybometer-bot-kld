@@ -131,16 +131,16 @@ def code_desc(code: int) -> str:
     WMO Weather Interpretation Codes → краткое описание на русском + эмодзи.
     """
     WMO_DESC = {
-        0:  "☀️",
-        1:  "⛅",
-        2:  "☁️",
-        3:  "🌥",
-        45: "🌫",
-        48: "🌫",
-        51: "🌦",
-        61: "🌧",
-        71: "❄️",
-        95: "⛈",
+        0:  "☀️ ясно",
+        1:  "⛅ част. облач.",
+        2:  "☁️ облачно",
+        3:  "🌥 пасмурно",
+        45: "🌫 туман",
+        48: "🌫 изморозь",
+        51: "🌦 слаб. морось",
+        61: "🌧 дождь",
+        71: "❄️ снег",
+        95: "⛈ гроза",
     }
     return WMO_DESC.get(code, "—")
 
@@ -176,7 +176,7 @@ def build_message(
       2) Температура Балтийского моря (get_sst над SEA_SST_COORD)
       3) Прогноз для «главного города» (Калининград)
       4) Рейтинг «морских» городов (с SST per-city)
-      5) Рейтинг «теплых / холодных» городов
+      5) Рейтинг «теплых / холодных» городов (добавлен код погоды)
       6) Качество воздуха + пыльца
       7) Геомагнитка + Шуман
       8) Астрособытия (offset_days=1, show_all_voc=True)
@@ -196,7 +196,7 @@ def build_message(
     # 2) Температура Балтийского моря (центр залива из SEA_SST_COORD)
     sea_lat, sea_lon = SEA_SST_COORD
     if (sst_main := get_sst(sea_lat, sea_lon)) is not None:
-        P.append(f"🌊 Темп. моря (центр залива): {sst_main:.1f}")
+        P.append(f"🌊 Темп. моря (центр залива): {sst_main:.1f} °C")
     else:
         P.append("🌊 Темп. моря (центр залива): н/д")
 
@@ -250,7 +250,7 @@ def build_message(
         temps_sea[city] = (d, n or d, code_tmr, sst_city)
 
     if temps_sea:
-        P.append(f"🎖️ <b>{sea_label},°C</b>")
+        P.append(f"🎖️ <b>{sea_label}</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         sorted_sea = sorted(
             temps_sea.items(),
@@ -261,30 +261,35 @@ def build_message(
             desc = code_desc(wcode)
             if sst_city is not None:
                 P.append(
-                    f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f}, {desc}, 🌊 {sst_city:.1f}"
+                    f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}, 🌊 {sst_city:.1f} °C"
                 )
             else:
-                P.append(f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f}, {desc}")
+                P.append(f"{medals[i]} {city}: {tday:.1f}/{tnight:.1f} °C, {desc}")
         P.append("———")
 
-    # 5) Рейтинг «теплых / холодных» городов
-    temps_other: Dict[str, Tuple[float, float]] = {}
+    # 5) Рейтинг «теплых / холодных» городов (добавлен код погоды)
+    temps_other: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in other_cities:
         d, n = fetch_tomorrow_temps(la, lo, tz=tz.name)
         if d is None:
             continue
-        temps_other[city] = (d, n or d)
+        wcod = get_weather(la, lo) or {}
+        daily_codes = wcod.get("daily", {}).get("weathercode", [])
+        code_tmr = daily_codes[1] if (isinstance(daily_codes, list) and len(daily_codes) > 1) else 0
+        temps_other[city] = (d, n or d, code_tmr)
 
     if temps_other:
-        P.append(f"🔥 <b>Тёплые города,°C</b>")
+        P.append(f"🔥 <b>Тёплые города</b>")
         top_warm = sorted(temps_other.items(), key=lambda kv: kv[1][0], reverse=True)[:3]
-        for city, (d, n) in top_warm:
-            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
+        for city, (d, n, code) in top_warm:
+            desc = code_desc(code)
+            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C, {desc}")
 
-        P.append(f"❄️ <b>Холодные города,°C</b>")
+        P.append(f"❄️ <b>Холодные города</b>")
         top_cold = sorted(temps_other.items(), key=lambda kv: kv[1][0])[:3]
-        for city, (d, n) in top_cold:
-            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C")
+        for city, (d, n, code) in top_cold:
+            desc = code_desc(code)
+            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C, {desc}")
         P.append("———")
 
     # 6) Качество воздуха + Пыльца
