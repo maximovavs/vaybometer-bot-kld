@@ -142,7 +142,7 @@ def code_desc(code: int) -> str:
         71: "❄️ снег",
         95: "⛈ гроза",
     }
-    return WMO_DESC.get(code, "—")
+    return WMO_DESC.get(code, "")
 
 
 def pressure_arrow(hourly: Dict[str, Any]) -> str:
@@ -283,13 +283,13 @@ def build_message(
         top_warm = sorted(temps_other.items(), key=lambda kv: kv[1][0], reverse=True)[:3]
         for city, (d, n, code) in top_warm:
             desc = code_desc(code)
-            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C, {desc}")
+            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C {desc}")
 
         P.append(f"❄️ <b>Холодные города</b>")
         top_cold = sorted(temps_other.items(), key=lambda kv: kv[1][0])[:3]
         for city, (d, n, code) in top_cold:
             desc = code_desc(code)
-            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C, {desc}")
+            P.append(f"   • {city}: {d:.1f}/{n:.1f} °C {desc}")
         P.append("———")
 
     # 6) Качество воздуха + Пыльца
