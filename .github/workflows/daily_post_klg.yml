@@ -3,7 +3,7 @@ name: 🇷🇺 Kaliningrad daily post
 on:
   schedule:
     # 12:00 UTC → 17:00 Asia/Nicosia
-    - cron: '0 16 * * *'
+    - cron: '0 15 * * *'
   workflow_dispatch:
 
 jobs:
