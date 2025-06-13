@@ -30,7 +30,7 @@ def _format_voc(
     Форматирует Void-of-Course (VoC) как:
       ⚫️ VoC HH:mm–HH:mm
 
-    Если период < 15 минут и show_all_voc=False → возвращаем None.
+    Если период < 5 минут и show_all_voc=False → возвращаем None.
     Если show_all_voc=True → выводим «микро-VoC» тоже.
     Если данных нет → None.
     """
@@ -47,7 +47,7 @@ def _format_voc(
         return None
 
     minutes = (t2 - t1).in_minutes()
-    if minutes < 15 and not show_all_voc:
+    if minutes < 5 and not show_all_voc:
         return None
 
     return f"⚫️ VoC {t1.format('HH:mm')}–{t2.format('HH:mm')}"
@@ -129,8 +129,8 @@ def astro_events(
       и т. д.
 
     show_all_voc:
-      False — скрыть VoC < 15 мин (по умолчанию)
-      True  — показать любой VoC (даже < 15 мин)
+      False — скрыть VoC < 5 мин (по умолчанию)
+      True  — показать любой VoC (даже < 5 мин)
 
     tz:
       Либо строка (например, "Europe/Kaliningrad"), либо объект pendulum.Timezone.
