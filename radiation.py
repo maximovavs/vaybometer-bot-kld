@@ -1,137 +1,84 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-radiation.py  •  γ-фоновая дозовая нагрузка (µSv/h)
+radiation.py
+~~~~~~~~~~~~
 
-Используются 3 независимых источника (по убыванию приоритета):
-  1) EURDEP CSV-feed          — станции Европы, обновление ~1 ч
-  2) OpenRadiation community  — краудсорсинг, обновление ~15 мин
-  3) EURDEP Simple API        — REST-интерфейс с поиском по радиусу
+get_radiation(lat, lon)  →  dict | None
+    • dose      – мгновенная γ-доза, μSv/h
+    • station   – название / код станции-датчика
+    • age_min   – «сколько минут назад» обновились данные
+                  (None, если время не распознано)
 
-get_radiation(lat, lon, max_km=300) → dict | None
-    {'dose': 0.11, 'unit':'µSv/h', 'dist_km':12.3,
-     'station':'LT-KLAIPEDA-042', 'src':'eurdep_api', 'ts':'2025-06-09T12:40Z'}
+Алгоритм: 
+1) EURDEP near-real-time feed (remap.jrc.ec.europa.eu) – охватывает почти
+   всю Европу и приграничные регионы, включая Калининград.
+   Берём *одну* ближайшую станцию в радиусе ≤ 300 км.
+2) при ошибке или отсутствии значений → возвращаем None.
+
+Зависит только от utils._get (как и остальные модули бота).
 """
 
 from __future__ import annotations
-import csv, json, math, time, logging
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional, Tuple, List
-import requests
+import logging, datetime as _dt
+from typing import Dict, Any, Optional
 
-# ────────────────────────── helpers ──────────────────────────
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6371.0
-    φ1, φ2 = math.radians(lat1), math.radians(lat2)
-    dφ = math.radians(lat2-lat1)
-    dλ = math.radians(lon2-lon1)
-    a = math.sin(dφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(dλ/2)**2
-    return R*2*math.atan2(math.sqrt(a), math.sqrt(1-a))
+from utils import _get   # тот же тонкий обёрточный fetch, что в проекте
 
-# ────────────────────────── EURDEP CSV (как было) ──────────────────────────
-_EURDEP_CSV_URL = (
-    "https://remap.jrc.ec.europa.eu/Service/RadMeasurementService/"
-    "RadMeasurements/exportLatestCSV"
-)
-_EURDEP_CACHE: Tuple[float, List[Dict[str, Any]]] = (0.0, [])  # (ts, rows)
+# ─────────────────────── EURDEP ────────────────────────
+EURDEP_URL = "https://remap.jrc.ec.europa.eu/api/v1/gamma"
 
-def _load_eurdep_csv() -> List[Dict[str, Any]]:
-    global _EURDEP_CACHE
-    now = time.time()
-    if now - _EURDEP_CACHE[0] < 3600:      # кеш 1 час
-        return _EURDEP_CACHE[1]
+def _eurdep(lat: float, lon: float, radius_km: int = 300) -> Optional[Dict[str, Any]]:
+    """
+    Ищем ближайший γ-датчик EURDEP в radius_km (по умолч. 300 км).
+    Возвращаем {'dose', 'station', 'age_min'} или None.
+    """
+    resp = _get(
+        EURDEP_URL,
+        lat=lat,
+        lon=lon,
+        radius=radius_km,
+        limit=1,          # нужен только самый близкий
+    )
+    if not resp or "data" not in resp or not resp["data"]:
+        return None
 
+    rec = resp["data"][0]
     try:
-        txt = requests.get(_EURDEP_CSV_URL, timeout=20).text
-        rdr = csv.DictReader(txt.splitlines(), delimiter=';')
-        rows = [r for r in rdr if r.get("TypeRadData") == "AIR_GAMMA_D_G"]
-        _EURDEP_CACHE = (now, rows)
-        return rows
-    except Exception as e:
-        logging.warning("EURDEP CSV load error: %s", e)
-        return []
+        val = float(rec["last_value"])
+    except (KeyError, ValueError, TypeError):
+        return None    # нет численного значения
 
-def _src_eurdep_csv(lat: float, lon: float, max_km: float) -> Optional[Dict[str, Any]]:
-    best = None
-    rows = _load_eurdep_csv()
-    for r in rows:
+    # Пытаемся оценить «возраст» измерения
+    age_min: Optional[int] = None
+    ts = rec.get("last_update")
+    if ts:
         try:
-            la, lo = float(r["StationLat"]), float(r["StationLon"])
-            dist = _haversine_km(lat, lon, la, lo)
-            if dist > max_km:
-                continue
-            val = float(r["Value"])/1000.0  # нЗв/ч → µSv/h
-            ts  = datetime.strptime(r["EndDate"], "%d/%m/%Y %H:%M:%S").replace(tzinfo=timezone.utc)
-            if (best is None) or (dist < best["dist_km"]):
-                best = {"dose": val, "unit":"µSv/h", "dist_km":dist,
-                        "station": r["StationID"], "ts": ts.isoformat(timespec="minutes")+"Z",
-                        "src":"eurdep_csv"}
+            # API возвращает ISO-строку, чаще всего с 'Z' на конце
+            t_utc = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            age_min = int((_dt.datetime.utcnow() - t_utc).total_seconds() // 60)
         except Exception:
-            continue
-    return best
+            pass
 
-# ────────────────────────── OpenRadiation ──────────────────────────
-_OPENRAD_URL = "https://data.openradiation.net/api/v1/measurements/near"
+    return {
+        "dose":    val,
+        "station": rec.get("station"),
+        "age_min": age_min,
+    }
 
-def _src_openradiation(lat: float, lon: float, max_km: float) -> Optional[Dict[str, Any]]:
-    try:
-        j = requests.get(_OPENRAD_URL,
-                         params={"lat":lat, "lon":lon, "km":max_km, "limit":1},
-                         timeout=15).json()
-        if not j:
-            return None
-        m = j[0]
-        val = float(m["dose_rate"])/1000.0           # нЗв/ч → µSv/h
-        ts  = datetime.fromisoformat(m["measurement_time"]).astimezone(timezone.utc)
-        dist = _haversine_km(lat, lon, m["location"]["lat"], m["location"]["lon"])
-        return {"dose": val, "unit":"µSv/h", "dist_km":dist,
-                "station": m.get("detector_name","openradiation"), "ts": ts.isoformat(timespec="minutes")+"Z",
-                "src":"openradiation"}
-    except Exception as e:
-        logging.debug("OpenRadiation error: %s", e)
-        return None
-
-# ────────────────────────── EURDEP Simple API (новый fallback) ──────────────────────────
-_EURDEP_API = "https://remap.jrc.ec.europa.eu/simpleAPI/measurements"
-
-def _src_eurdep_api(lat: float, lon: float, max_km: float) -> Optional[Dict[str, Any]]:
-    try:
-        j = requests.get(_EURDEP_API,
-                         params={"lat":lat, "lon":lon, "radius":max_km,
-                                 "format":"json", "latest": "true"},
-                         timeout=20).json()
-        if not j:
-            return None
-        m = j[0]           # самый близкий/последний
-        val = float(m["value"])/1000.0               # нЗв/ч → µSv/h
-        ts  = datetime.fromisoformat(m["endtime"]).astimezone(timezone.utc)
-        dist = _haversine_km(lat, lon, m["latitude"], m["longitude"])
-        return {"dose": val, "unit":"µSv/h", "dist_km":dist,
-                "station": m["station"], "ts": ts.isoformat(timespec="minutes")+"Z",
-                "src":"eurdep_api"}
-    except Exception as e:
-        logging.debug("EURDEP API error: %s", e)
-        return None
-
-# ────────────────────────── Public API facade ──────────────────────────
-def get_radiation(lat: float, lon: float, max_km: float = 300.0) -> Optional[Dict[str, Any]]:
+# ─────────────────────── Публичный API модуля ────────────────────────
+def get_radiation(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
-    Ищет ближайшую станцию в пределах max_km.
-    Приоритет: csv → openradiation → simpleAPI.
-    Возвращает dict (см. docstring сверху) или None.
+    Возвращает dict с ключами 'dose', 'station', 'age_min' или None,
+    если поблизости нет данных.  Доп. источники можно подключать
+    ниже по схеме try/except, не трогая внешний интерфейс.
     """
-    for fn in (_src_eurdep_csv, _src_openradiation, _src_eurdep_api):
-        data = fn(lat, lon, max_km)
-        if data:
-            return data
-    return None
+    for src in (_eurdep,):           # можно добавить другие источники
+        try:
+            data = src(lat, lon)
+            if data:
+                return data
+        except Exception as e:
+            logging.warning("Radiation source %s failed: %s", src.__name__, e)
 
-# ────────────────────────── CLI quick-check ──────────────────────────
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    for city, (la, lo) in {
-        "Калининград": (54.71, 20.45),
-        "Лимассол":    (34.70, 33.02),
-    }.items():
-        print(f"\n— {city} —")
-        print(get_radiation(la, lo) or "нет станции в радиусе 300 км")
+    return None                      # ничего не нашли
