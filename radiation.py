@@ -1,54 +1,29 @@
-import json, math, requests, logging
-from typing import Optional, Dict
+# radiation.py (фрагмент)
+import requests, logging, math
 
-# ────────── вспомогательные ──────────
-def _closest_station(lat:float, lon:float, stations):
-    def dist2(p):
-        return (p["lat"]-lat)**2 + (p["lon"]-lon)**2
-    return min(stations, key=dist2) if stations else None
+_HEADERS = {"Accept": "application/vnd.geo+json"}  # 👈 новый заголовок
 
-# ────────── основные функции ──────────
-def _eurdep(lat:float, lon:float) -> Optional[float]:
-    """Берём ближайшую станцию EURDEP за последний час."""
+def _eurdep(lat: float, lon: float) -> float | None:
     try:
         url = ("https://eurdep.jrc.ec.europa.eu/eurdep/msc/"
-               f"observations?format=json&maxage=3h")
-        data = requests.get(url, timeout=8).json()
+               "observations?format=json&maxage=6h")
+        data = requests.get(url, headers=_HEADERS, timeout=8).json()
+
         stations = [
-            {"lat":s["latitude"], "lon":s["longitude"],
-             "dose":s["lastvalue"]}                       # μSv/h
-            for s in data.get("features", [])
-            if s.get("lastvalue") is not None
+            {"lat": f["latitude"], "lon": f["longitude"],
+             "dose": f["lastvalue"]}
+            for f in data.get("features", [])
+            if f.get("lastvalue") is not None
         ]
-        st = _closest_station(lat, lon, stations)
-        return st["dose"] if st else None
+        logging.info("EURDEP rows: %s", len(stations))   # 👈 смотреть в логи
+
+        # радиус 150 км  (≈ 1.35° по широте)
+        best, best_d2 = None, 1e9
+        for s in stations:
+            d2 = (s["lat"]-lat)**2 + (s["lon"]-lon)**2
+            if d2 < best_d2 and d2 <= 1.35**2:
+                best, best_d2 = s, d2
+        return best["dose"] if best else None
     except Exception as e:
         logging.warning("EURDEP error: %s", e)
         return None
-
-def _openradiation(lat:float, lon:float)->Optional[float]:
-    """Ищем последнюю пользовательскую точку в 0.5° радиусе."""
-    try:
-        rng = 0.5
-        url = ("https://api.openradiation.net/measurements"
-               f"?lte[lat]={lat+rng}&gte[lat]={lat-rng}"
-               f"&lte[lon]={lon+rng}&gte[lon]={lon-rng}"
-               "&limit=1&sort=-created_at")
-        js = requests.get(url, timeout=8).json()
-        if js and js[0].get("sievert"):
-            # value уже в μSv/h
-            return float(js[0]["sievert"])
-    except Exception as e:
-        logging.warning("openradiation error: %s", e)
-    return None
-
-# ────────── публичная функция ──────────
-def get_radiation(lat:float, lon:float) -> Optional[Dict[str,float]]:
-    """
-    Возвращает словарь {'dose': μSv/h, 'src': 'eurdep'|'openrad'} либо None
-    """
-    for fn, tag in ((_eurdep,"eurdep"), (_openradiation,"openrad")):
-        dose = fn(lat, lon)
-        if dose:
-            return {"dose": dose, "src": tag}
-    return None
