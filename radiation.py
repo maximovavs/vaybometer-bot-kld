@@ -1,129 +1,75 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-radiation.py  ·  γ-доза (µSv/h) поблизости указанной точки.
-
-• get_radiation(lat, lon)  →  dict | None
-    {'uSv_h': float, 'src': 'radmon'|'eurdep', 'station': str, 'dist_km': float}
-
-Алгоритм:
- 1) Radmon JSON (общественная сеть бытовых датчиков)
- 2) EURDEP (официальные станции ЕС, включая Кипр)
- 3) если ничего близко или свежее не найдено → None
+radiation.py  •  get_radiation(lat, lon) → dict | None
+Полёт: сначала «живые» источники → fallback на radiation_hourly.json
 """
 from __future__ import annotations
-import math, time, json, logging
-from pathlib import Path
-from typing import Any, Dict, Optional
+import json, time, math, logging, pathlib
+from typing import Dict, Any, Optional, Tuple
 
-from utils import _get   # тот же helper, что уже есть в проекте
+import requests
 
-LOG = logging.getLogger(__name__)
-CACHE = Path.home() / ".cache" / "vaybometer"
-CACHE.mkdir(parents=True, exist_ok=True)
-RADMON_CACHE = CACHE / "radmon.json"
-EURDEP_CACHE = CACHE / "eurdep.json"
+CACHE = pathlib.Path(__file__).parent / "radiation_hourly.json"
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-# ────────────────────────── гео-утилиты ──────────────────────────
-def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6371.0
-    φ1, φ2 = math.radians(lat1), math.radians(lat2)
-    dφ     = math.radians(lat2 - lat1)
-    dλ     = math.radians(lon2 - lon1)
-    a = math.sin(dφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(dλ/2)**2
+# ───────────────────────── live-источники ─────────────────────────
+def _try_radmon(lat: float, lon: float) -> Optional[float]:
+    try:
+        j = requests.get("https://radmon.org/radmon.php?format=json").json()
+        # ищем ближайший активный датчик <100 км, не старше 3 ч
+        best, dmin = None, 1e9
+        for p in j.get("users", []):
+            dx = _haversine(lat, lon, p["lat"], p["lon"])
+            if dx < 100 and (time.time() - p["last_seen"] < 3*3600):
+                if dx < dmin:
+                    best, dmin = p, dx
+        if best:
+            return float(best["cpm_avg"]) * 0.0065   # простая пересчётная конст.
+    except Exception as e:
+        logging.info("radmon err: %s", e)
+    return None
+
+def _try_eurdep(lat: float, lon: float) -> Optional[float]:
+    try:
+        j = requests.get(
+            "https://eurdep.jrc.ec.europa.eu/eurdep/json/",
+            timeout=10
+        ).json()
+        best, dmin = None, 1e9
+        for p in j.get("measurements", []):
+            dx = _haversine(lat, lon, p["lat"], p["lon"])
+            if dx < 200 and (time.time() - p["utctime"] < 6*3600):
+                if dx < dmin:
+                    best, dmin = p, dx
+        if best:
+            return float(best["value"])
+    except Exception as e:
+        logging.info("eurdep err: %s", e)
+    return None
+
+def _haversine(lat1, lon1, lat2, lon2) -> float:
+    R, dLat, dLon = 6371, math.radians(lat2-lat1), math.radians(lon2-lon1)
+    a = math.sin(dLat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dLon/2)**2
     return 2*R*math.asin(math.sqrt(a))
 
-# ────────────────────────── Radmon ───────────────────────────────
-_RADMON_URL = "https://radmon.org/radmon.php?getcurrjson&time=5"  # последние 5 ч
-
-def _load_radmon() -> list[dict]:
-    try:
-        # кеш 1 час
-        if RADMON_CACHE.exists() and time.time() - RADMON_CACHE.stat().st_mtime < 3600:
-            return json.loads(RADMON_CACHE.read_text())
-        data = _get(_RADMON_URL, response_type="json")
-        if isinstance(data, list):
-            RADMON_CACHE.write_text(json.dumps(data))
-            return data
-    except Exception as e:
-        LOG.info("Radmon fetch error: %s", e)
-    return []
-
-def _nearest_radmon(lat: float, lon: float) -> Optional[dict]:
-    best, best_d = None, 1e9
-    for st in _load_radmon():
-        try:
-            slat, slon = float(st["Latitude"]), float(st["Longitude"])
-            dist = _haversine(lat, lon, slat, slon)
-            if dist < best_d:
-                best, best_d = st, dist
-        except Exception:
-            continue
-    if best and best_d <= 400:          # не дальше 400 км
-        when = float(best.get("UnixTime", 0))
-        if time.time() - when < 5400:    # не старше 90 мин
-            return {
-                "uSv_h": float(best["CPM"]) * 0.0057,  # ≈ перевод CPM->µSv/h (Geiger β/γ)
-                "src": "radmon",
-                "station": best.get("ID","?"),
-                "dist_km": round(best_d, 1),
-            }
-    return None
-
-# ────────────────────────── EURDEP ───────────────────────────────
-_EURDEP_LIST = "https://remap.jrc.ec.europa.eu/eurdep/feeds/currentlevels.json"
-
-def _load_eurdep() -> list[dict]:
-    try:
-        if EURDEP_CACHE.exists() and time.time() - EURDEP_CACHE.stat().st_mtime < 1800:
-            return json.loads(EURDEP_CACHE.read_text())
-        data = _get(_EURDEP_LIST, response_type="json")
-        if isinstance(data, list):
-            EURDEP_CACHE.write_text(json.dumps(data))
-            return data
-    except Exception as e:
-        LOG.info("EURDEP fetch error: %s", e)
-    return []
-
-def _nearest_eurdep(lat: float, lon: float) -> Optional[dict]:
-    best, best_d = None, 1e9
-    for st in _load_eurdep():
-        try:
-            slat, slon = float(st["lat"]), float(st["lon"])
-            dist = _haversine(lat, lon, slat, slon)
-            if dist < best_d:
-                best, best_d = st, dist
-        except Exception:
-            continue
-    if best and best_d <= 500:
-        val = best.get("gdr")
-        if isinstance(val, (int, float)) and val > 0:
-            return {
-                "uSv_h": val / 1000.0,   # нГр/ч  →  µЗв/ч
-                "src": "eurdep",
-                "station": best.get("id","?"),
-                "dist_km": round(best_d, 1),
-            }
-    return None
-
-# ────────────────────────── Public API ───────────────────────────
-def get_radiation(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+# ───────────────────────── API для постов ─────────────────────────
+def get_radiation(lat: float, lon: float) -> Dict[str, Any] | None:
     """
-    Вернёт ближайшую валидную γ-дозу или None.
-    Приоритет: Radmon → EURDEP.
+    {'val': 0.11, 'trend': '↑', 'cached': False}
     """
-    for fn in (_nearest_radmon, _nearest_eurdep):
-        res = fn(lat, lon)
-        if res:
-            return res
-    return None
+    val_live = _try_radmon(lat, lon) or _try_eurdep(lat, lon)
+    if val_live is not None:
+        return {"val": round(val_live, 3), "trend": "→", "cached": False}
 
-# ────────────────────────── CLI-тест ─────────────────────────────
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    tests = {
-        "Калининград": (54.71, 20.45),
-        "Лимассол":    (34.70, 33.02),
-    }
-    for city,(la,lo) in tests.items():
-        print(f"{city}: {get_radiation(la, lo)}")
+    # fallback на вчера-сегодня из radiation_hourly.json
+    try:
+        arr = json.loads(CACHE.read_text())
+        pts = [p for p in arr if _haversine(lat, lon, p["lat"], p["lon"]) < 150]
+        if len(pts) >= 2:
+            last = pts[-1]["val"]
+            prev = pts[-2]["val"]
+            if None not in (last, prev):
+                trend = "↑" if last-prev > 0.005 else "↓" if last-prev < -0.005 else "→"
+                return {"val": round(last,3), "trend": trend, "cached": True}
+    except Exception as e:
+        logging.info("cache err: %s", e)
+    return None
