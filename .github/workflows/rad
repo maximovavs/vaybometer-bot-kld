@@ -1,0 +1,7 @@
+- name: Quick radiation test
+  run: |
+    python - <<'PY'
+    import logging, radiation
+    logging.basicConfig(level=logging.INFO)
+    print("Test dose:", radiation.get_radiation(54.71, 20.45))
+    PY
