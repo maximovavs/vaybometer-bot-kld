@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-post_common.py  •  Общая логика формирования и отправки ежедневного поста «VayboMeter» (Калининград).
-
-• Балтийское море, прогноз для Кёнига
-• Рейтинг морских, тёплых, холодных
-• Воздух, пыльца, радиация
-• Геомагнитка, резонанс Шумана
-• Астрособытия, «Вините …», советы, факт дня
+post_common.py — VayboMeter (Калининград):
+• море, Кёниг, рейтинги, воздух, пыльца, радиация, Kp, Шуман
+• астрособытия, «Вините …», рекомендации, факт дня
 """
 
 from __future__ import annotations
@@ -16,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pendulum
-from telegram import Bot, error as tg_err, constants
+from telegram import Bot, constants, error as tg_err
 
 from utils      import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji
 from weather    import get_weather, fetch_tomorrow_temps
@@ -25,55 +21,48 @@ from pollen     import get_pollen
 from schumann   import get_schumann
 from astro      import astro_events
 from gpt        import gpt_blurb
-from radiation  import get_radiation                      # 🆕 блок радиации
-from settings_klg import SEA_SST_COORD                   # координаты в Балтийском заливе
+from radiation  import get_radiation
+from settings_klg import SEA_SST_COORD        # (lat, lon) в заливе
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-# ──────────────────────────── базовые константы ────────────────────────────
+# ────────────────────────── константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
 
 WMO_DESC = {
-    0:  "☀️ ясно", 1: "⛅ ч.обл", 2: "☁️ обл", 3: "🌥 пасм",
+    0: "☀️ ясно", 1: "⛅ ч.обл", 2: "☁️ обл", 3: "🌥 пасм",
     45: "🌫 туман", 48: "🌫 изморозь", 51: "🌦 морось",
     61: "🌧 дождь", 71: "❄️ снег", 95: "⛈ гроза",
 }
 code_desc = lambda c: WMO_DESC.get(c, "—")
 
 def pressure_arrow(hourly: Dict[str, Any]) -> str:
-    """Стрелка по изменению давления: ↑ >+1 hPa, ↓ <−1 hPa, иначе →."""
     pr = hourly.get("surface_pressure", [])
     if len(pr) < 2:
         return "→"
     delta = pr[-1] - pr[0]
     return "↑" if delta > 1 else "↓" if delta < -1 else "→"
 
-# ──────────────────────── Шуман ────────────────────────
+# ────────────────── Шуман ──────────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
     sch = get_schumann()
     if sch.get("freq") is not None:
         sch["cached"] = False
         return sch
-
     cache = Path(__file__).parent / "schumann_hourly.json"
     if cache.exists():
         try:
             arr = json.loads(cache.read_text(encoding="utf-8"))
             if arr:
-                last  = arr[-1]
-                pts   = arr[-24:]
+                last, pts = arr[-1], arr[-24:]
                 freqs = [p["freq"] for p in pts if isinstance(p.get("freq"), (int, float))]
                 trend = "→"
                 if len(freqs) > 1:
                     avg = sum(freqs[:-1]) / (len(freqs) - 1)
                     d   = freqs[-1] - avg
-                    trend = "↑" if d >= 0.1 else "↓" if d <= -0.1 else "→"
-                return {
-                    "freq":  round(last["freq"], 2),
-                    "amp":   round(last["amp"], 1),
-                    "trend": trend,
-                    "cached": True,
-                }
+                    trend = "↑" if d >= .1 else "↓" if d <= -.1 else "→"
+                return {"freq": round(last["freq"],2), "amp": round(last["amp"],1),
+                        "trend": trend, "cached": True}
         except Exception as e:
             logging.warning("Schumann cache parse error: %s", e)
     return sch
@@ -85,27 +74,21 @@ def schumann_line(s: Dict[str, Any]) -> str:
     emoji = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
     return f"{emoji} Шуман: {f:.2f} Гц / {amp:.1f} pT {s['trend']}"
 
-# ──────────────────────── Радиация ────────────────────────
-def radiation_line(lat: float, lon: float) -> Optional[str]:
-    """
-    Возвращает текстовую строку про радиацию или None,
-    если данных нет (чтобы блок можно было не выводить).
-    """
+# ────────────────── Радиация ──────────────────
+def radiation_line(lat: float, lon: float) -> str | None:
     data = get_radiation(lat, lon) or {}
     dose = data.get("dose")
     if dose is None:
-        return None                       # ← нет данных — нет строки
-
-    # простая цветовая градация
+        return None
     if dose <= 0.15:
-        emoji, level = "🟢", "низкий"
+        emoji, lvl = "🟢", "низкий"
     elif dose <= 0.30:
-        emoji, level = "🟡", "повышенный"
+        emoji, lvl = "🟡", "повышенный"
     else:
-        emoji, level = "🔴", "высокий"
-    return f"{emoji} Радиация: {dose:.3f} μSv/h ({level})"
+        emoji, lvl = "🔴", "высокий"
+    return f"{emoji} Радиация: {dose:.3f} μSv/h ({lvl})"
 
-# ──────────────────────── Основное сообщение ────────────────────────
+# ────────────────── основное сообщение ──────────────────
 def build_message(
     region_name: str,
     chat_id: int,
@@ -117,69 +100,99 @@ def build_message(
 ) -> str:
 
     P: List[str] = []
-    today    = pendulum.now(tz).date()
+    today = pendulum.now(tz).date()
     tomorrow = today.add(days=1)
 
-    # 1) Заголовок
+    # Заголовок
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tomorrow.format('DD.MM.YYYY')})</b>")
 
-    # 2) Температура Балтийского моря
+    # Море
     sst = get_sst(*SEA_SST_COORD)
-    P.append(f"🌊 Темп. моря (центр залива): {sst:.1f} °C" if sst is not None
-             else "🌊 Темп. моря (центр залива): н/д")
+    P.append(f"🌊 Темп. моря (центр залива): {sst:.1f} °C" if sst is not None else
+             "🌊 Темп. моря (центр залива): н/д")
 
-    # 3) Прогноз для Калининграда
+    # Калининград
     d_max, d_min = fetch_tomorrow_temps(KLD_LAT, KLD_LON, tz=tz.name)
-    wm   = get_weather(KLD_LAT, KLD_LON) or {}
-    cur  = wm.get("current", {}) or {}
-    avgT = ((d_max + d_min) / 2) if d_max and d_min else cur.get("temperature", 0)
-
+    wm = get_weather(KLD_LAT, KLD_LON) or {}
+    cur = wm.get("current", {}) or {}
+    avgT = (d_max+d_min)/2 if d_max and d_min else cur.get("temperature", 0)
     P.append(
-        f"🏙️ Калининград: Ср. темп {avgT:.0f} °C • {clouds_word(cur.get('clouds', 0))} • "
-        f"💨 {cur.get('windspeed', 0):.1f} км/ч ({compass(cur.get('winddirection', 0))}) • "
-        f"💧 {cur.get('pressure', 1013):.0f} гПа {pressure_arrow(wm.get('hourly', {}))}"
+        f"🏙️ Калининград: Ср. темп {avgT:.0f} °C • {clouds_word(cur.get('clouds',0))} • "
+        f"💨 {cur.get('windspeed',0):.1f} км/ч ({compass(cur.get('winddirection',0))}) • "
+        f"💧 {cur.get('pressure',1013):.0f} гПа {pressure_arrow(wm.get('hourly',{}))}"
     )
     P.append("———")
 
-    # … (остальные блоки рейтингов, воздуха, пыльцы – без изменений) …
+    # ───── Морские города (топ-5) ─────
+    temps_sea: Dict[str, Tuple[float,float,int,float|None]] = {}
+    for city,(la,lo) in sea_cities:
+        tmax,tmin = fetch_tomorrow_temps(la,lo,tz=tz.name)
+        if tmax is None: continue
+        wc = (get_weather(la,lo) or {}).get("daily",{}).get("weathercode",[])
+        wc = wc[1] if isinstance(wc,list) and len(wc)>1 else 0
+        sst_c = get_sst(la,lo)
+        temps_sea[city] = (tmax, tmin or tmax, wc, sst_c)
 
-    # 4) Воздух и пыльца
+    if temps_sea:
+        P.append(f"🎖️ <b>{sea_label}</b>")
+        medals = ["🥇","🥈","🥉","4️⃣","5️⃣"]
+        for i,(city,(d,n,wc,sst_c)) in enumerate(sorted(temps_sea.items(),
+                                            key=lambda kv: kv[1][0], reverse=True)[:5]):
+            line = f"{medals[i]} {city}: {d:.1f}/{n:.1f}, {code_desc(wc)}"
+            if sst_c is not None: line += f" 🌊 {sst_c:.1f}"
+            P.append(line)
+        P.append("———")
+
+    # ───── Тёплые / холодные ─────
+    temps_other: Dict[str, Tuple[float,float,int]] = {}
+    for city,(la,lo) in other_cities:
+        tmax,tmin = fetch_tomorrow_temps(la,lo,tz=tz.name)
+        if tmax is None: continue
+        wc = (get_weather(la,lo) or {}).get("daily",{}).get("weathercode",[])
+        wc = wc[1] if isinstance(wc,list) and len(wc)>1 else 0
+        temps_other[city] = (tmax, tmin or tmax, wc)
+
+    if temps_other:
+        P.append(f"🔥 <b>Тёплые города, °C</b>")
+        for city,(d,n,wc) in sorted(temps_other.items(), key=lambda kv: kv[1][0], reverse=True)[:3]:
+            P.append(f"   • {city}: {d:.1f}/{n:.1f} {code_desc(wc)}")
+
+        P.append(f"❄️ <b>Холодные города, °C</b>")
+        for city,(d,n,wc) in sorted(temps_other.items(), key=lambda kv: kv[1][0])[:3]:
+            P.append(f"   • {city}: {d:.1f}/{n:.1f} {code_desc(wc)}")
+        P.append("———")
+
+    # Воздух + пыльца
     air = get_air(KLD_LAT, KLD_LON) or {}
-    lvl = air.get("lvl", "н/д")
+    lvl = air.get("lvl","н/д")
     P.append("🏭 <b>Качество воздуха</b>")
-    P.append(
-        f"{AIR_EMOJI.get(lvl, '⚪')} {lvl} (AQI {air.get('aqi', 'н/д')}) | "
-        f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}"
-    )
-    if (p := get_pollen()):
+    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
+             f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
+    if (p:=get_pollen()):
         P.append("🌿 <b>Пыльца</b>")
-        P.append(
-            f"Деревья: {p['tree']} | Травы: {p['grass']} | "
-            f"Сорняки: {p['weed']} — риск {p['risk']}"
-        )
+        P.append(f"Деревья: {p['tree']} | Травы: {p['grass']} | Сорняки: {p['weed']} — риск {p['risk']}")
 
-    # 5) Радиация (добавится ТОЛЬКО, если есть данные)
-    rad_line = radiation_line(KLD_LAT, KLD_LON)
-    if rad_line:
-        P.append(rad_line)
+    # Радиация
+    if (rl:=radiation_line(KLD_LAT,KLD_LON)):
+        P.append(rl)
 
     P.append("———")
 
-    # 6) Геомагнитка + Шуман
-    kp, kp_state = get_kp()
-    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({kp_state})" if kp is not None
+    # Геомагнитка + Шуман
+    kp, ks = get_kp()
+    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None
              else "🧲 Геомагнитка: н/д")
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # 7) Астрособытия
+    # Астрособытия
     P.append("🌌 <b>Астрособытия</b>")
     astro = astro_events(offset_days=1, show_all_voc=True)
     P.extend(astro if astro else ["— нет данных —"])
     P.append("———")
 
-    # 8) Вывод + советы (сокращённо, логика прежняя)
-    culprit = "магнитные бури" if kp and kp_state.lower() == "буря" else "неблагоприятный прогноз погоды"
+    # Вывод + советы
+    culprit = "магнитные бури" if kp and ks.lower()=="буря" else "неблагоприятный прогноз погоды"
     P.append("📜 <b>Вывод</b>")
     P.append(f"Если что-то пойдёт не так, вините {culprit}! 😉")
     P.append("———")
@@ -190,11 +203,10 @@ def build_message(
         P.append(tip.strip())
     P.append("———")
 
-    # 9) Факт дня
     P.append(f"📚 {get_fact(tomorrow, region_name)}")
     return "\n".join(P)
 
-# ────────────────────────────── отправка ──────────────────────────────
+# ──────────────────────── отправка ────────────────────────
 async def send_common_post(
     bot: Bot,
     chat_id: int,
@@ -205,15 +217,11 @@ async def send_common_post(
     other_cities: List[Tuple[str, Tuple[float, float]]],
     tz: pendulum.Timezone,
 ) -> None:
-    text = build_message(
-        region_name, chat_id, sea_label, sea_cities, other_label, other_cities, tz
-    )
-    await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        parse_mode=constants.ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+    txt = build_message(region_name, chat_id, sea_label, sea_cities,
+                        other_label, other_cities, tz)
+    await bot.send_message(chat_id=chat_id, text=txt,
+                           parse_mode=constants.ParseMode.HTML,
+                           disable_web_page_preview=True)
 
 async def main_common(
     bot: Bot,
@@ -225,4 +233,5 @@ async def main_common(
     other_cities: List[Tuple[str, Tuple[float, float]]],
     tz: pendulum.Timezone,
 ) -> None:
-    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
+    await send_common_post(bot, chat_id, region_name, sea_label,
+                           sea_cities, other_label, other_cities, tz)
