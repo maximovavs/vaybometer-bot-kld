@@ -9,22 +9,213 @@ weather.py
 3) Фоллбэк — Open-Meteo «current_weather»
 
 Дополнительно:
-• fetch_tomorrow_temps(lat, lon, tz="UTC")  →  (t_max, t_min)
-  Быстрый запрос только завтрашних max/min — для post_common.py
+• day_night_stats(lat, lon, tz="UTC") → {"t_day_max","t_night_min","rh_avg","rh_min","rh_max"}
+  Надёжная агрегация «день/ночь» на завтра:
+    - если есть daily.sunrise/sunset — используем окно [sunrise..sunset] для «дня»;
+    - «ночь» — [00:00..06:00] локального времени;
+    - влажность — среднее/мин/макс по завтрашним 24 часам.
+• fetch_tomorrow_temps(lat, lon, tz="UTC") → (t_day_max, t_night_min)
+  Быстрый доступ к значениям «день/ночь» для рендера в post_common.py
 """
 
 from __future__ import annotations
 import os
-import pendulum
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
+
+import pendulum
 
 from utils import _get  # HTTP-обёртка из utils.py
 
 OWM_KEY = os.getenv("OWM_KEY")            # ключ OpenWeather, может быть None
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────── Вспомогательный запрос Open‑Meteо ─────────────────
+
+
+def _openmeteo_hourly_daily(
+    lat: float,
+    lon: float,
+    tz: str,
+    start_date: str,
+    end_date: str,
+    need_sun: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    Возвращает словарь с hourly и daily полями на указанный диапазон дат (включая обе границы).
+    Часовые метки приходят уже в локальной TZ, указанной в параметре timezone.
+    """
+    daily_list = ["temperature_2m_max", "temperature_2m_min", "weathercode"]
+    if need_sun:
+        daily_list += ["sunrise", "sunset"]
+
+    hourly_list = [
+        "temperature_2m",
+        "relative_humidity_2m",
+        "surface_pressure",
+        "cloud_cover",
+        "weathercode",
+        "wind_speed_10m",
+        "wind_direction_10m",
+    ]
+
+    try:
+        j = _get(
+            OPEN_METEO_URL,
+            latitude=lat,
+            longitude=lon,
+            timezone=tz or "UTC",
+            start_date=start_date,
+            end_date=end_date,
+            current_weather="true",
+            daily=",".join(daily_list),
+            hourly=",".join(hourly_list),
+        )
+        if not j:
+            return None
+        if "hourly" not in j or "daily" not in j:
+            return None
+        return j
+    except Exception as e:
+        logging.warning("_openmeteo_hourly_daily — HTTP error: %s", e)
+        return None
+
+
+# ────────────────────────── Агрегация день/ночь/влажность ────────────────────
+
+
+def _filter_hours_for_date(
+    times: List[str],
+    values: List[Optional[float]],
+    date_str: str,
+    hour_from: int,
+    hour_to: int,
+) -> List[float]:
+    """
+    Берёт пары (time, value) за конкретную дату date_str ('YYYY-MM-DD'), фильтрует по часам [hour_from..hour_to] включительно,
+    возвращает список валидных чисел.
+    """
+    out: List[float] = []
+    for t, v in zip(times, values):
+        if not isinstance(v, (int, float)):
+            continue
+        if not t or not t.startswith(date_str):
+            continue
+        try:
+            hh = int(t[11:13])  # формат 'YYYY-MM-DDTHH:MM'
+        except Exception:
+            continue
+        if hour_from <= hh <= hour_to:
+            out.append(float(v))
+    return out
+
+
+def _all_hours_for_date(times: List[str], values: List[Optional[float]], date_str: str) -> List[float]:
+    out: List[float] = []
+    for t, v in zip(times, values):
+        if not isinstance(v, (int, float)):
+            continue
+        if t and t.startswith(date_str):
+            out.append(float(v))
+    return out
+
+
+def day_night_stats(
+    lat: float,
+    lon: float,
+    tz: str | None = "UTC",
+) -> Dict[str, Optional[float]]:
+    """
+    Считает:
+      t_day_max   — максимум температуры за «дневное» окно (sunrise..sunset; если нет — 09:00..18:00),
+      t_night_min — минимум температуры за «ночное» окно (00:00..06:00),
+      rh_avg/min/max — по всем часам завтрашней даты.
+
+    Возвращает словарь со значениями или None, если данных не хватило.
+    """
+    tz_name = tz or "UTC"
+    now = pendulum.now(tz_name)
+    tomorrow = now.add(days=1).date().to_date_string()
+
+    j = _openmeteo_hourly_daily(
+        lat=lat,
+        lon=lon,
+        tz=tz_name,
+        start_date=tomorrow,
+        end_date=tomorrow,
+        need_sun=True,
+    )
+    if not j:
+        logging.warning("day_night_stats — Open‑Meteo не вернул данные")
+        return {"t_day_max": None, "t_night_min": None, "rh_avg": None, "rh_min": None, "rh_max": None}
+
+    hourly = j.get("hourly", {})
+    daily = j.get("daily", {})
+
+    times: List[str] = hourly.get("time", []) or []
+    temps: List[Optional[float]] = hourly.get("temperature_2m", []) or []
+    rhs: List[Optional[float]] = hourly.get("relative_humidity_2m", []) or []
+
+    # 1) Окно дня
+    sunrise_list = daily.get("sunrise", []) or []
+    sunset_list = daily.get("sunset", []) or []
+    if sunrise_list and sunset_list:
+        # строки вида 'YYYY-MM-DDTHH:MM'
+        try:
+            sr_hh = int(sunrise_list[0][11:13])
+            ss_hh = int(sunset_list[0][11:13])
+            day_from, day_to = sr_hh, ss_hh
+        except Exception:
+            day_from, day_to = 9, 18
+    else:
+        day_from, day_to = 9, 18
+
+    day_vals = _filter_hours_for_date(times, temps, tomorrow, day_from, day_to)
+
+    # 2) Окно ночи (фиксированное)
+    night_vals = _filter_hours_for_date(times, temps, tomorrow, 0, 6)
+
+    # 3) Влажность по всем 24 часам
+    rh_vals_all = _all_hours_for_date(times, rhs, tomorrow)
+
+    def _safe_max(arr: List[float]) -> Optional[float]:
+        return max(arr) if arr else None
+
+    def _safe_min(arr: List[float]) -> Optional[float]:
+        return min(arr) if arr else None
+
+    def _safe_avg(arr: List[float]) -> Optional[float]:
+        return (sum(arr) / len(arr)) if arr else None
+
+    t_day_max = _safe_max(day_vals)
+    t_night_min = _safe_min(night_vals)
+    rh_avg = _safe_avg(rh_vals_all)
+    rh_min = _safe_min(rh_vals_all)
+    rh_max = _safe_max(rh_vals_all)
+
+    # Бэкап на daily, если вдруг hourly пуст
+    if t_day_max is None and daily.get("temperature_2m_max"):
+        try:
+            t_day_max = float(daily["temperature_2m_max"][0])
+        except Exception:
+            pass
+    if t_night_min is None and daily.get("temperature_2m_min"):
+        try:
+            t_night_min = float(daily["temperature_2m_min"][0])
+        except Exception:
+            pass
+
+    return {
+        "t_day_max": t_day_max,
+        "t_night_min": t_night_min,
+        "rh_avg": rh_avg,
+        "rh_min": rh_min,
+        "rh_max": rh_max,
+    }
+
+
+# ─────────────────────────── legacy API: tmax/tmin ────────────────────────────
+
 
 def fetch_tomorrow_temps(
     lat: float,
@@ -32,44 +223,46 @@ def fetch_tomorrow_temps(
     tz: str | None = "UTC"
 ) -> Tuple[Optional[float], Optional[float]]:
     """
-    Возвращает (t_max, t_min) на завтра одним недорогим запросом к Open-Meteo.
-    Если сервис недоступен или данные невалидны — оба значения = None.
+    Возвращает (t_day_max, t_night_min) на завтра.
+
+    Логика:
+      1) Пробуем взять из hourly с окнами (sunrise..sunset / ночь 00–06).
+      2) Если hourly пустой — используем daily.temperature_2m_max/min.
+      3) Если и daily нет — возвращаем (None, None).
     """
-    tomorrow = pendulum.today().add(days=1).to_date_string()  # 'YYYY-MM-DD'
-    try:
-        j = _get(
-            OPEN_METEO_URL,
-            latitude=lat,
-            longitude=lon,
-            timezone=tz or "UTC",
-            daily="temperature_2m_max,temperature_2m_min",
-            start_date=tomorrow,
-            end_date=tomorrow,
-        )
-    except Exception as e:
-        logging.warning("fetch_tomorrow_temps — HTTP error: %s", e)
-        return None, None
+    stats = day_night_stats(lat, lon, tz=tz)
+    t_day_max = stats.get("t_day_max")
+    t_night_min = stats.get("t_night_min")
 
-    if not j or "daily" not in j:
-        logging.warning("fetch_tomorrow_temps — нет поля 'daily' в ответе")
-        return None, None
+    # Явный фоллбэк на чистый daily, если вдруг day_night_stats ничего не смог
+    if t_day_max is None or t_night_min is None:
+        tomorrow = pendulum.now(tz or "UTC").add(days=1).to_date_string()
+        try:
+            j = _openmeteo_hourly_daily(
+                lat=lat, lon=lon, tz=tz or "UTC",
+                start_date=tomorrow, end_date=tomorrow, need_sun=False
+            )
+        except Exception as e:
+            logging.warning("fetch_tomorrow_temps — HTTP error (fallback): %s", e)
+            j = None
 
-    try:
-        d = j["daily"]
-        t_max_list = d.get("temperature_2m_max", [])
-        t_min_list = d.get("temperature_2m_min", [])
-        if not t_max_list or not t_min_list:
-            logging.warning("fetch_tomorrow_temps — списки max/min пустые")
-            return None, None
+        if j and "daily" in j:
+            d = j["daily"]
+            try:
+                if t_day_max is None and d.get("temperature_2m_max"):
+                    t_day_max = float(d["temperature_2m_max"][0])
+                if t_night_min is None and d.get("temperature_2m_min"):
+                    t_night_min = float(d["temperature_2m_min"][0])
+            except Exception as e:
+                logging.warning("fetch_tomorrow_temps — парсинг daily fallback: %s", e)
 
-        t_max = t_max_list[0]
-        t_min = t_min_list[0]
-        return float(t_max), float(t_min)
-    except Exception as e:
-        logging.warning("fetch_tomorrow_temps — парсинг ответа: %s", e)
-        return None, None
+    if t_day_max is None or t_night_min is None:
+        logging.warning("fetch_tomorrow_temps — не удалось получить t_day_max/t_night_min")
+    return t_day_max, t_night_min
 
-# ──────────────────────────────────────────────────────────────────────────────
+
+# ───────────────────────── OpenWeather/Open‑Meteo сводки ─────────────────────
+
 
 def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
@@ -143,7 +336,6 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
     return None
 
-# ──────────────────────────────────────────────────────────────────────────────
 
 def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
@@ -208,7 +400,6 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         logging.warning("_openmeteo — ошибка обработки данных: %s", e)
         return None
 
-# ──────────────────────────────────────────────────────────────────────────────
 
 def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
@@ -264,7 +455,6 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         logging.warning("_openmeteo_current_only — ошибка формирования данных: %s", e)
         return None
 
-# ──────────────────────────────────────────────────────────────────────────────
 
 def get_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
