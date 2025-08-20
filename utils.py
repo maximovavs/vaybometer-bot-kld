@@ -14,6 +14,11 @@ utils.py  • Вспомогательные функции и констант�
  - pressure_trend(w)     — тренд давления («↑», «↓» или «→»)
  - HTTP-обёртки: _get / _get_retry
  - get_fact(date, region) — «факт дня» в зависимости от региона
+
+Новое:
+ - kmh_to_ms(v)          — перевод км/ч → м/с (с округлением до 0.1)
+ - ms_to_kmh(v)          — перевод м/с → км/ч
+ - smoke_index(pm25, pm10) — оценка «задымления» по PM (эмодзи + уровень)
 """
 
 from __future__ import annotations
@@ -79,6 +84,30 @@ def wind_phrase(km_h: float) -> str:
     if km_h < 14:
         return "умеренный"
     return "сильный"
+
+def kmh_to_ms(v_kmh: Optional[float]) -> Optional[float]:
+    """
+    Переводит скорость из км/ч в м/с с округлением до 0.1.
+    None → None.
+    """
+    if v_kmh is None:
+        return None
+    try:
+        return round(float(v_kmh) / 3.6, 1)
+    except (TypeError, ValueError):
+        return None
+
+def ms_to_kmh(v_ms: Optional[float]) -> Optional[float]:
+    """
+    Переводит скорость из м/с в км/ч с округлением до 0.1.
+    None → None.
+    """
+    if v_ms is None:
+        return None
+    try:
+        return round(float(v_ms) * 3.6, 1)
+    except (TypeError, ValueError):
+        return None
 
 def safe(v: Any, unit: str = "") -> str:
     """
@@ -159,6 +188,51 @@ def pm_color(pm: Optional[float | int | str], with_unit: bool = False) -> str:
     if with_unit:
         txt += " µg/м³"
     return f"{emoji}{txt}"
+
+# ──────────────────────── Индекс «задымления» по PM ───────────────────────
+
+def smoke_index(pm25: Optional[float | int | str],
+                pm10:  Optional[float | int | str]) -> tuple[str, str]:
+    """
+    Грубая оценка «уровня задымления» на основе PM:
+      База — по PM2.5 (µg/m³):
+        0–25  → низкое
+        25–55 → среднее
+        >55   → высокое
+      Модификатор: если отношение PM2.5/PM10 > 0.6 (мелкая фракция преобладает),
+      повышаем уровень на 1 ступень (но не выше «высокого»).
+
+    Возвращает (emoji, label) — 🟢/🟡/🔴 и «низкое/среднее/высокое».
+    Если данных нет — (⚪, "н/д").
+    """
+    def _to_float(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    p25 = _to_float(pm25)
+    p10 = _to_float(pm10)
+    if p25 is None:
+        return "⚪", "н/д"
+
+    # базовый уровень по PM2.5
+    if p25 <= 25:
+        lvl = 0  # низкое
+    elif p25 <= 55:
+        lvl = 1  # среднее
+    else:
+        lvl = 2  # высокое
+
+    # модификатор по доле мелкой фракции
+    if p10 and p10 > 0 and (p25 / p10) > 0.6:
+        lvl = min(lvl + 1, 2)
+
+    if lvl == 0:
+        return "🟢", "низкое"
+    if lvl == 1:
+        return "🟡", "среднее"
+    return "🔴", "высокое"
 
 # ──────────────────────── «Факт дня» по региону ────────────────────────────
 
@@ -400,7 +474,6 @@ def pressure_trend(w: Dict[str, Any]) -> str:
     return "→"
 
 # ──────────────────────── HTTP-обёртки ───────────────────────────────────
-
 _HEADERS = {
     "User-Agent": "VayboMeter/1.0 (+https://github.com/)",
     "Accept":     "application/json",
@@ -437,9 +510,12 @@ if __name__ == "__main__":
     print("compass demo:", compass(0), compass(45), compass(180))
     print("clouds demo:", clouds_word(10), clouds_word(50), clouds_word(90))
     print("wind_phrase demo:", wind_phrase(1), wind_phrase(5), wind_phrase(12), wind_phrase(20))
+    print("kmh_to_ms demo:", kmh_to_ms(36), kmh_to_ms(18), kmh_to_ms(None))
+    print("ms_to_kmh demo:", ms_to_kmh(10), ms_to_kmh(5), ms_to_kmh(None))
     print("safe demo:", safe(None, "°C"), safe(5.237, "°C"), safe("10", "мм"))
     print("AQI demo:", aqi_color(42), aqi_color(160), aqi_color("—"))
     print("PM demo:", pm_color(8), pm_color(27), pm_color(78, True), pm_color(None))
+    print("smoke_index demo:", smoke_index(15, 30), smoke_index(45, 60), smoke_index(80, 100), smoke_index(None, None))
     today = pendulum.today()
     print("Fact Kaliningrad:", get_fact(today, "Калининград"))
     print("Fact Cyprus:", get_fact(today, "Кипр"))
