@@ -16,20 +16,23 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import pendulum
 from telegram import Bot, constants
 
-from utils       import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index, pressure_trend
+from utils import (
+    compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji,
+    kmh_to_ms, smoke_index, pressure_trend, _get,
+)
 from weather     import get_weather, fetch_tomorrow_temps, day_night_stats
-import air as airmod
+import air as airmod                       # может быть «старая» версия — обработаем мягко
 from pollen      import get_pollen
 from schumann    import get_schumann
 from astro       import astro_events
 from gpt         import gpt_blurb
 from radiation   import get_radiation
-from settings_klg import SEA_SST_COORD            # точка в заливе
+from settings_klg import SEA_SST_COORD     # точка в заливе
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -42,8 +45,62 @@ WMO_DESC = {
     45:"🌫 туман", 48:"🌫 изморозь", 51:"🌦 морось",
     61:"🌧 дождь", 71:"❄️ снег", 95:"⛈ гроза",
 }
-def code_desc(c: Any) -> str | None:
+def code_desc(c: Any) -> Optional[str]:
     return WMO_DESC.get(int(c)) if isinstance(c, (int, float)) and int(c) in WMO_DESC else None
+
+# ───────────── безопасные обёртки над air.* ─────────────
+def _get_sst_safe(lat: float, lon: float) -> Optional[float]:
+    """
+    Пытаемся взять SST из airmod.get_sst(); если в модуле такого нет —
+    берём напрямую из Open‑Meteo Marine по ближайшему прошедшему часу.
+    """
+    try:
+        if hasattr(airmod, "get_sst"):
+            return airmod.get_sst(lat, lon)  # type: ignore[attr-defined]
+    except Exception as e:
+        logging.warning("air.get_sst error: %s", e)
+
+    # локальный фоллбэк (Open‑Meteo Marine)
+    try:
+        j = _get(
+            "https://marine-api.open-meteo.com/v1/marine",
+            latitude=lat, longitude=lon,
+            hourly="sea_surface_temperature", timezone="UTC",
+        )
+        if not j or "hourly" not in j:
+            return None
+        h = j["hourly"]
+        times = h.get("time", []) or []
+        vals  = h.get("sea_surface_temperature", []) or []
+        if not times or not vals or len(times) != len(vals):
+            return None
+        # ближайший прошедший час UTC
+        import time as _t
+        now_iso = _t.strftime("%Y-%m-%dT%H:00", _t.gmtime())
+        idxs = [i for i, t in enumerate(times) if isinstance(t, str) and t <= now_iso]
+        idx = max(idxs) if idxs else 0
+        v = vals[idx]
+        return float(v) if isinstance(v, (int, float)) else None
+    except Exception as e:
+        logging.warning("local SST fallback error: %s", e)
+        return None
+
+def _get_air_safe(lat: float, lon: float) -> Dict[str, Any]:
+    try:
+        if hasattr(airmod, "get_air"):
+            return airmod.get_air(lat, lon)  # type: ignore[attr-defined]
+    except Exception as e:
+        logging.warning("air.get_air error: %s", e)
+    # безопасный дефолт
+    return {"lvl": "н/д", "aqi": "н/д", "pm25": None, "pm10": None}
+
+def _get_kp_safe() -> Tuple[Optional[float], str]:
+    try:
+        if hasattr(airmod, "get_kp"):
+            return airmod.get_kp()  # type: ignore[attr-defined]
+    except Exception as e:
+        logging.warning("air.get_kp error: %s", e)
+    return None, "н/д"
 
 # ───────────── Шуман ─────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
@@ -118,11 +175,11 @@ def build_message(region_name: str, chat_id: int,
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
     # Море (средняя SST в точке)
-    sst = airmod.get_sst(*SEA_SST_COORD)
+    sst = _get_sst_safe(*SEA_SST_COORD)
     P.append(f"🌊 Темп. моря (центр залива): {sst:.1f} °C" if sst is not None
              else "🌊 Темп. моря (центр залива): н/д")
 
-    # Калининград
+    # Калининград — день/ночь, код словами (если надёжен), ветер м/с, RH min–max, давление
     stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz.name)
     wm    = get_weather(KLD_LAT, KLD_LON) or {}
     cur   = wm.get("current", {}) or {}
@@ -132,6 +189,7 @@ def build_message(region_name: str, chat_id: int,
     rh_min = stats.get("rh_min"); rh_max = stats.get("rh_max")
     t_day_max = stats.get("t_day_max"); t_night_min = stats.get("t_night_min")
 
+    # давление: берём текущее (из current или из hourly), плюс тренд
     pressure_val = cur.get("pressure")
     if pressure_val is None:
         hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
@@ -139,7 +197,7 @@ def build_message(region_name: str, chat_id: int,
             pressure_val = hp[-1]
     press_part = f"{int(round(pressure_val))} гПа {pressure_trend(wm)}" if isinstance(pressure_val, (int, float)) else "н/д"
 
-    desc = code_desc(wc)
+    desc = code_desc(wc)  # может вернуть None — тогда не выводим
     kal_parts = [
         f"🏙️ Калининград: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
         else "🏙️ Калининград: дн/ночь н/д",
@@ -151,7 +209,7 @@ def build_message(region_name: str, chat_id: int,
     P.append(" • ".join([x for x in kal_parts if x]))
     P.append("———")
 
-    # Морские города
+    # Морские города (топ‑5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     for city, (la, lo) in sea_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -159,7 +217,7 @@ def build_message(region_name: str, chat_id: int,
             continue
         wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
         wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
-        temps_sea[city] = (tmax, tmin or tmax, wcx, airmod.get_sst(la, lo))
+        temps_sea[city] = (tmax, tmin or tmax, wcx, _get_sst_safe(la, lo))
     if temps_sea:
         P.append(f"🎖️ <b>{sea_label}</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
@@ -174,7 +232,7 @@ def build_message(region_name: str, chat_id: int,
             P.append(line)
         P.append("———")
 
-    # Тёплые/холодные
+    # Тёплые/холодные (топ‑3 / топ‑3)
     temps_oth: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in other_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -195,7 +253,7 @@ def build_message(region_name: str, chat_id: int,
         P.append("———")
 
     # Air + пыльца + радиация
-    air = airmod.get_air(KLD_LAT, KLD_LON) or {}
+    air = _get_air_safe(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
@@ -211,7 +269,7 @@ def build_message(region_name: str, chat_id: int,
     P.append("———")
 
     # Kp + Шуман
-    kp, ks = airmod.get_kp()
+    kp, ks = _get_kp_safe()
     P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
