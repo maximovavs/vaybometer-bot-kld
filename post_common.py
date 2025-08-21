@@ -23,7 +23,7 @@ from telegram import Bot, constants
 
 from utils       import compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index, pressure_trend
 from weather     import get_weather, fetch_tomorrow_temps, day_night_stats
-from air         import get_air, get_sst, get_kp
+import air as airmod
 from pollen      import get_pollen
 from schumann    import get_schumann
 from astro       import astro_events
@@ -118,11 +118,11 @@ def build_message(region_name: str, chat_id: int,
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
     # Море (средняя SST в точке)
-    sst = get_sst(*SEA_SST_COORD)
+    sst = airmod.get_sst(*SEA_SST_COORD)
     P.append(f"🌊 Темп. моря (центр залива): {sst:.1f} °C" if sst is not None
              else "🌊 Темп. моря (центр залива): н/д")
 
-    # Калининград — день/ночь, код словами (если надёжен), ветер м/с, RH min–max, давление
+    # Калининград
     stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz.name)
     wm    = get_weather(KLD_LAT, KLD_LON) or {}
     cur   = wm.get("current", {}) or {}
@@ -132,7 +132,6 @@ def build_message(region_name: str, chat_id: int,
     rh_min = stats.get("rh_min"); rh_max = stats.get("rh_max")
     t_day_max = stats.get("t_day_max"); t_night_min = stats.get("t_night_min")
 
-    # давление: берём текущее (из current или из hourly), плюс тренд
     pressure_val = cur.get("pressure")
     if pressure_val is None:
         hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
@@ -140,7 +139,7 @@ def build_message(region_name: str, chat_id: int,
             pressure_val = hp[-1]
     press_part = f"{int(round(pressure_val))} гПа {pressure_trend(wm)}" if isinstance(pressure_val, (int, float)) else "н/д"
 
-    desc = code_desc(wc)  # может вернуть None — тогда не выводим
+    desc = code_desc(wc)
     kal_parts = [
         f"🏙️ Калининград: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
         else "🏙️ Калининград: дн/ночь н/д",
@@ -152,7 +151,7 @@ def build_message(region_name: str, chat_id: int,
     P.append(" • ".join([x for x in kal_parts if x]))
     P.append("———")
 
-    # Морские города (топ‑5)
+    # Морские города
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     for city, (la, lo) in sea_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -160,7 +159,7 @@ def build_message(region_name: str, chat_id: int,
             continue
         wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
         wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
-        temps_sea[city] = (tmax, tmin or tmax, wcx, get_sst(la, lo))
+        temps_sea[city] = (tmax, tmin or tmax, wcx, airmod.get_sst(la, lo))
     if temps_sea:
         P.append(f"🎖️ <b>{sea_label}</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
@@ -175,7 +174,7 @@ def build_message(region_name: str, chat_id: int,
             P.append(line)
         P.append("———")
 
-    # Тёплые/холодные (топ‑3 / топ‑3)
+    # Тёплые/холодные
     temps_oth: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in other_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -196,7 +195,7 @@ def build_message(region_name: str, chat_id: int,
         P.append("———")
 
     # Air + пыльца + радиация
-    air = get_air(KLD_LAT, KLD_LON) or {}
+    air = airmod.get_air(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
@@ -212,7 +211,7 @@ def build_message(region_name: str, chat_id: int,
     P.append("———")
 
     # Kp + Шуман
-    kp, ks = get_kp()
+    kp, ks = airmod.get_kp()
     P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
