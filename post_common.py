@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Union
 
 import pendulum
 from telegram import Bot, constants
@@ -26,7 +26,7 @@ from utils import (
     kmh_to_ms, smoke_index, pressure_trend, _get,
 )
 from weather     import get_weather, fetch_tomorrow_temps, day_night_stats
-import air as airmod                       # может быть «старая» версия — обработаем мягко
+import air as airmod                       # может быть старая версия — ниже обернём
 from pollen      import get_pollen
 from schumann    import get_schumann
 from astro       import astro_events
@@ -49,18 +49,25 @@ def code_desc(c: Any) -> Optional[str]:
     return WMO_DESC.get(int(c)) if isinstance(c, (int, float)) and int(c) in WMO_DESC else None
 
 # ───────────── безопасные обёртки над air.* ─────────────
+def _nearest_hour_val(times: List[str], vals: List[Any]) -> Optional[float]:
+    if not times or not vals or len(times) != len(vals):
+        return None
+    try:
+        import time as _t
+        now_iso = _t.strftime("%Y-%m-%dT%H:00", _t.gmtime())
+        idxs = [i for i, t in enumerate(times) if isinstance(t, str) and t <= now_iso]
+        idx = max(idxs) if idxs else 0
+        v = vals[idx]
+        return float(v) if isinstance(v, (int, float)) else None
+    except Exception:
+        return None
+
 def _get_sst_safe(lat: float, lon: float) -> Optional[float]:
-    """
-    Пытаемся взять SST из airmod.get_sst(); если в модуле такого нет —
-    берём напрямую из Open‑Meteo Marine по ближайшему прошедшему часу.
-    """
     try:
         if hasattr(airmod, "get_sst"):
             return airmod.get_sst(lat, lon)  # type: ignore[attr-defined]
     except Exception as e:
         logging.warning("air.get_sst error: %s", e)
-
-    # локальный фоллбэк (Open‑Meteo Marine)
     try:
         j = _get(
             "https://marine-api.open-meteo.com/v1/marine",
@@ -70,29 +77,93 @@ def _get_sst_safe(lat: float, lon: float) -> Optional[float]:
         if not j or "hourly" not in j:
             return None
         h = j["hourly"]
-        times = h.get("time", []) or []
-        vals  = h.get("sea_surface_temperature", []) or []
-        if not times or not vals or len(times) != len(vals):
-            return None
-        # ближайший прошедший час UTC
-        import time as _t
-        now_iso = _t.strftime("%Y-%m-%dT%H:00", _t.gmtime())
-        idxs = [i for i, t in enumerate(times) if isinstance(t, str) and t <= now_iso]
-        idx = max(idxs) if idxs else 0
-        v = vals[idx]
-        return float(v) if isinstance(v, (int, float)) else None
+        return _nearest_hour_val(h.get("time", []) or [], h.get("sea_surface_temperature", []) or [])
     except Exception as e:
         logging.warning("local SST fallback error: %s", e)
         return None
 
+def _get_air_fallback_openmeteo(lat: float, lon: float) -> Dict[str, Any]:
+    try:
+        j = _get(
+            "https://air-quality-api.open-meteo.com/v1/air-quality",
+            latitude=lat, longitude=lon,
+            hourly="pm10,pm2_5,us_aqi", timezone="UTC",
+        )
+        if not j or "hourly" not in j:
+            return {}
+        h = j["hourly"]
+        t = h.get("time", []) or []
+        aqi  = _nearest_hour_val(t, h.get("us_aqi", []) or [])
+        pm25 = _nearest_hour_val(t, h.get("pm2_5", []) or [])
+        pm10 = _nearest_hour_val(t, h.get("pm10", []) or [])
+        aqi_norm: Union[float,str] = float(aqi) if isinstance(aqi,(int,float)) and aqi >= 0 else "н/д"
+        return {
+            "lvl": ("н/д" if aqi_norm == "н/д" else ("хороший" if aqi_norm <= 50 else "умеренный" if aqi_norm <= 100 else "вредный" if aqi_norm <= 150 else "оч. вредный" if aqi_norm <= 200 else "опасный")),
+            "aqi": aqi_norm,
+            "pm25": float(pm25) if isinstance(pm25,(int,float)) and pm25 >= 0 else None,
+            "pm10": float(pm10) if isinstance(pm10,(int,float)) and pm10 >= 0 else None,
+        }
+    except Exception as e:
+        logging.warning("Open-Meteo AQ fallback error: %s", e)
+        return {}
+
+def _air_is_empty(d: Dict[str, Any]) -> bool:
+    return not d or (str(d.get("aqi","н/д")) == "н/д" and d.get("pm25") in (None,"н/д") and d.get("pm10") in (None,"н/д"))
+
 def _get_air_safe(lat: float, lon: float) -> Dict[str, Any]:
+    res: Dict[str, Any] = {}
     try:
         if hasattr(airmod, "get_air"):
-            return airmod.get_air(lat, lon)  # type: ignore[attr-defined]
+            res = airmod.get_air(lat, lon)  # type: ignore[attr-defined]
     except Exception as e:
         logging.warning("air.get_air error: %s", e)
-    # безопасный дефолт
-    return {"lvl": "н/д", "aqi": "н/д", "pm25": None, "pm10": None}
+    if _air_is_empty(res):
+        res = _get_air_fallback_openmeteo(lat, lon)
+    if _air_is_empty(res):  # совсем нет данных — заполним дефолтом
+        res = {"lvl": "н/д", "aqi": "н/д", "pm25": None, "pm10": None}
+    return res
+
+def _parse_kp_from_table(data: Any) -> Optional[float]:
+    if not isinstance(data, list) or not data or not isinstance(data[0], list):
+        return None
+    for row in reversed(data[1:]):
+        try:
+            return float(str(row[-1]).rstrip("Z").replace(",", "."))
+        except Exception:
+            continue
+    return None
+
+def _parse_kp_from_dicts(data: Any) -> Optional[float]:
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None
+    for item in reversed(data):
+        raw = item.get("kp_index") or item.get("estimated_kp") or item.get("kp")
+        if raw is None:
+            continue
+        try:
+            return float(str(raw).rstrip("Z").replace(",", "."))
+        except Exception:
+            continue
+    return None
+
+def _get_kp_fallback() -> Tuple[Optional[float], str]:
+    urls = [
+        "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+        "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
+    ]
+    for u in urls:
+        try:
+            d = _get(u)
+            if not d: 
+                continue
+            kp = _parse_kp_from_table(d) if isinstance(d, list) and d and isinstance(d[0], list) else _parse_kp_from_dicts(d)
+            if kp is not None:
+                state = "спокойно" if kp < 3 else ("неспокойно" if kp < 5 else "буря")
+                return kp, state
+        except Exception as e:
+            logging.warning("Kp fallback error: %s", e)
+            continue
+    return None, "н/д"
 
 def _get_kp_safe() -> Tuple[Optional[float], str]:
     try:
@@ -100,7 +171,7 @@ def _get_kp_safe() -> Tuple[Optional[float], str]:
             return airmod.get_kp()  # type: ignore[attr-defined]
     except Exception as e:
         logging.warning("air.get_kp error: %s", e)
-    return None, "н/д"
+    return _get_kp_fallback()
 
 # ───────────── Шуман ─────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
@@ -189,7 +260,7 @@ def build_message(region_name: str, chat_id: int,
     rh_min = stats.get("rh_min"); rh_max = stats.get("rh_max")
     t_day_max = stats.get("t_day_max"); t_night_min = stats.get("t_night_min")
 
-    # давление: берём текущее (из current или из hourly), плюс тренд
+    # давление
     pressure_val = cur.get("pressure")
     if pressure_val is None:
         hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
@@ -197,7 +268,7 @@ def build_message(region_name: str, chat_id: int,
             pressure_val = hp[-1]
     press_part = f"{int(round(pressure_val))} гПа {pressure_trend(wm)}" if isinstance(pressure_val, (int, float)) else "н/д"
 
-    desc = code_desc(wc)  # может вернуть None — тогда не выводим
+    desc = code_desc(wc)
     kal_parts = [
         f"🏙️ Калининград: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
         else "🏙️ Калининград: дн/ночь н/д",
