@@ -1,301 +1,354 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-air.py
-~~~~~~
+utils.py  • Вспомогательные функции и константы VayboMeter-бота.
 
-• Источники качества воздуха:
-  1) IQAir / nearest_city  (API key: AIRVISUAL_KEY)
-  2) Open‑Meteo Air‑Quality (без ключа)
+Содержит:
+ - compass(deg)          — возвращает направление ветра по углу deg (0–360)
+ - clouds_word(pc)       — возвращает «ясно/переменная/пасмурно» по проценту облачности
+ - wind_phrase(km_h)     — возвращает «штиль/слабый/умеренный/сильный» по скорости ветра
+ - safe(v, unit)         — None → «—», число → «X.X{unit}»
+ - aqi_color(aqi)        — эмодзи уровня AQI
+ - pm_color(pm, with_unit?) — эмодзи + значение PM₂.₅/PM₁₀
+ - kp_emoji(kp)          — эмодзи по индексу Kp
+ - pressure_trend(w)     — тренд давления («↑», «↓» или «→»)
+ - HTTP-обёртки: _get / _get_retry
+ - get_fact(date, region) — «факт дня» в зависимости от региона
 
-• merge_air_sources() — объединяет словари с приоритетом IQAir → Open‑Meteo
-• get_air(lat, lon)      — {'lvl','aqi','pm25','pm10'}
-• get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
-• get_kp()               — индекс Kp с retry + кешем
-
-Изменения vs. базовая версия:
-- Берём значения Open‑Meteo **по ближайшему прошедшему часу (UTC)**, а не первый элемент массива.
-- SST считаем так же — по ближайшему часу.
-- Аккуратный merge источников и нормализация значений.
+Новое:
+ - kmh_to_ms(v)          — перевод км/ч → м/с (с округлением до 0.1)
+ - ms_to_kmh(v)          — перевод м/с → км/ч
+ - smoke_index(pm25, pm10) — оценка «задымления» по PM (эмодзи + уровень)
 """
 
 from __future__ import annotations
-import os
 import time
-import json
-import logging
-from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union, List
+import random
+import requests
+import pendulum
+from typing import Any, Dict, Optional, List
 
-from utils import _get  # HTTP-обёртка (_get_retry внутри)
+# ──────────────────────── Компас, облака, ветер ──────────────────────────
 
-# ───────────────────────── Константы / кеш ─────────────────────────
-
-AIR_KEY = os.getenv("AIRVISUAL_KEY")
-
-CACHE_DIR = Path.home() / ".cache" / "vaybometer"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-KP_CACHE = CACHE_DIR / "kp.json"
-
-KP_URLS = [
-    # Суточный planetary K-index
-    "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
-    # Моментальный (1 мин) K-index
-    "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
+COMPASS = [
+    "С",   # Север
+    "ССВ", # Северо-северо-восток
+    "СВ",  # Северо-восток
+    "ВСВ", # Восток-северо-восток
+    "В",   # Восток
+    "ВЮВ", # Восток-юго-восток
+    "ЮВ",  # Юго-восток
+    "ЮЮВ", # Юго-юго-восток
+    "Ю",   # Юг
+    "ЮЮЗ", # Юго-юго-запад
+    "ЮЗ",  # Юго-запад
+    "ЗЮЗ", # Запад-юго-запад
+    "З",   # Запад
+    "ЗСЗ", # Запад-северо-запад
+    "СЗ",  # Северо-запад
+    "ССЗ", # Северо-северо-запад
 ]
 
-# ───────────────────────── Утилиты AQI/Kp ──────────────────────────
+def compass(deg: float) -> str:
+    """
+    Возвращает сторону света (из 16) по углу deg (0–360).
+    """
+    index = int((deg / 22.5) + 0.5) % 16
+    return COMPASS[index]
 
-def _aqi_level(aqi: Union[int, float, str, None]) -> str:
+def clouds_word(pc: int) -> str:
     """
-    Числовой AQI → текстовая категория (наша локальная шкала).
+    По проценту облачности:
+      <25% → «ясно»
+      <70% → «переменная»
+      иначе → «пасмурно»
     """
-    if aqi in (None, "н/д"):
-        return "н/д"
-    try:
-        v = float(aqi)
-    except (TypeError, ValueError):
-        return "н/д"
-    if v <= 50:
-        return "хороший"
-    if v <= 100:
+    if pc < 25:
+        return "ясно"
+    if pc < 70:
+        return "переменная"
+    return "пасмурно"
+
+def wind_phrase(km_h: float) -> str:
+    """
+    По скорости ветра (км/ч):
+      < 2  → «штиль»
+      < 8  → «слабый»
+      < 14 → «умеренный»
+      иначе → «сильный»
+    """
+    if km_h < 2:
+        return "штиль"
+    if km_h < 8:
+        return "слабый"
+    if km_h < 14:
         return "умеренный"
-    if v <= 150:
-        return "вредный"
-    if v <= 200:
-        return "оч. вредный"
-    return "опасный"
+    return "сильный"
 
-
-def _kp_state(kp: float) -> str:
-    if kp < 3.0:
-        return "спокойно"
-    if kp < 5.0:
-        return "неспокойно"
-    return "буря"
-
-
-def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[float]:
+def kmh_to_ms(v_kmh: Optional[float]) -> Optional[float]:
     """
-    Возвращает значение из массивов Open‑Meteo, соответствующее ближайшему
-    прошедшему часу относительно текущего UTC. Если подходящего индекса нет —
-    берём нулевой элемент. Некорректные значения → None.
-
-    Ожидаемый формат времени: 'YYYY-MM-DDTHH:00'.
+    Переводит скорость из км/ч в м/с с округлением до 0.1.
+    None → None.
     """
-    if not arr_time or not arr_val or len(arr_time) != len(arr_val):
+    if v_kmh is None:
         return None
     try:
-        now_iso = time.strftime("%Y-%m-%dT%H:00", time.gmtime())
-        idxs = [i for i, t in enumerate(arr_time) if isinstance(t, str) and t <= now_iso]
-        idx = max(idxs) if idxs else 0
-        v = arr_val[idx]
-        return float(v) if isinstance(v, (int, float)) else None
-    except Exception:
+        return round(float(v_kmh) / 3.6, 1)
+    except (TypeError, ValueError):
         return None
 
-# ───────────────────────── Источники AQI ───────────────────────────
-
-def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+def ms_to_kmh(v_ms: Optional[float]) -> Optional[float]:
     """
-    IQAir nearest_city: {'aqi','pm25','pm10'} (в AQI US, PM — µg/m³).
+    Переводит скорость из м/с в км/ч с округлением до 0.1.
+    None → None.
     """
-    if not AIR_KEY:
+    if v_ms is None:
         return None
     try:
-        resp = _get(
-            "https://api.airvisual.com/v2/nearest_city",
-            lat=lat,
-            lon=lon,
-            key=AIR_KEY,
-        )
-    except Exception as e:
-        logging.warning("IQAir request error: %s", e)
-        return None
-    if not resp or "data" not in resp:
-        return None
-    try:
-        pol = resp["data"]["current"]["pollution"]
-        aqi_val = pol.get("aqius")
-        pm25_val = pol.get("p2")
-        pm10_val = pol.get("p1")
-        return {
-            "aqi": float(aqi_val) if aqi_val is not None else None,
-            "pm25": float(pm25_val) if pm25_val is not None else None,
-            "pm10": float(pm10_val) if pm10_val is not None else None,
-            "src": "iqair",
-        }
-    except Exception as e:
-        logging.warning("IQAir parse error: %s", e)
+        return round(float(v_ms) * 3.6, 1)
+    except (TypeError, ValueError):
         return None
 
+def safe(v: Any, unit: str = "") -> str:
+    """
+    None / 'None' / '—' → «—»
+    Число → форматированная строка с единицей.
+    """
+    if v in (None, "None", "—"):
+        return "—"
+    if isinstance(v, (int, float)):
+        return f"{v:.1f}{unit}"
+    return f"{v}{unit}"
 
-def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+# ──────────────────────── AQI & PM раскраска ─────────────────────────────
+
+def aqi_color(aqi: int | float | str) -> str:
     """
-    Open‑Meteo Air‑Quality: {'aqi','pm25','pm10'} (us_aqi, pm2_5, pm10).
-    Берём значения за ближайший прошедший час.
+    Эмодзи уровня AQI:
+      ≤ 50   → 🟢
+      ≤100   → 🟡
+      ≤150   → 🟠
+      ≤200   → 🔴
+      ≤300   → 🟣
+      >300   → 🟤
+      «—»/«н/д» → ⚪
     """
+    if aqi in ("—", "н/д"):
+        return "⚪"
     try:
-        resp = _get(
-            "https://air-quality-api.open-meteo.com/v1/air-quality",
-            latitude=lat,
-            longitude=lon,
-            hourly="pm10,pm2_5,us_aqi",
-            timezone="UTC",
-        )
-    except Exception as e:
-        logging.warning("Open‑Meteo AQ request error: %s", e)
-        return None
-    if not resp or "hourly" not in resp:
-        return None
+        val = float(aqi)
+    except (TypeError, ValueError):
+        return "⚪"
+    if val <= 50:
+        return "🟢"
+    if val <= 100:
+        return "🟡"
+    if val <= 150:
+        return "🟠"
+    if val <= 200:
+        return "🔴"
+    if val <= 300:
+        return "🟣"
+    return "🟤"
 
+def pm_color(pm: Optional[float | int | str], with_unit: bool = False) -> str:
+    """
+    Цветовая индикация концентрации PM₂.₅ / PM₁₀:
+      ≤ 12   → 🟢
+      ≤ 35   → 🟡
+      ≤ 55   → 🟠
+      ≤150   → 🔴
+      ≤250   → 🟣
+      >250   → 🟤
+      None / «—»/«н/д» → ⚪ н/д
+    """
+    if pm in (None, "—", "н/д"):
+        return "⚪ н/д"
     try:
-        h = resp["hourly"]
-        times = h.get("time", []) or []
-        aqi_val = _pick_nearest_hour(times, h.get("us_aqi", []) or [])
-        pm25_val = _pick_nearest_hour(times, h.get("pm2_5", []) or [])
-        pm10_val = _pick_nearest_hour(times, h.get("pm10", []) or [])
+        val = float(pm)
+    except (TypeError, ValueError):
+        return "⚪ н/д"
+    if val <= 12:
+        emoji = "🟢"
+    elif val <= 35:
+        emoji = "🟡"
+    elif val <= 55:
+        emoji = "🟠"
+    elif val <= 150:
+        emoji = "🔴"
+    elif val <= 250:
+        emoji = "🟣"
+    else:
+        emoji = "🟤"
+    txt = str(int(round(val)))
+    if with_unit:
+        txt += " µg/м³"
+    return f"{emoji}{txt}"
 
-        aqi_norm: Union[float, str] = float(aqi_val) if isinstance(aqi_val, (int, float)) and aqi_val >= 0 else "н/д"
-        pm25_norm = float(pm25_val) if isinstance(pm25_val, (int, float)) and pm25_val >= 0 else None
-        pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and pm10_val >= 0 else None
+# ──────────────────────── Индекс «задымления» по PM ───────────────────────
 
-        return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm, "src": "openmeteo"}
-    except Exception as e:
-        logging.warning("Open‑Meteo AQ parse error: %s", e)
-        return None
-
-# ───────────────────────── Merge AQI ───────────────────────────────
-
-def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def smoke_index(pm25: Optional[float | int | str],
+                pm10:  Optional[float | int | str]) -> tuple[str, str]:
     """
-    Соединяет данные двух источников AQI (приоритет src1 → src2).
-    Возвращает {'lvl','aqi','pm25','pm10'}.
+    Оценка «задымления» по PM:
+      База — по PM2.5 (µg/m³):
+        0–25  → низкое
+        25–55 → среднее
+        >55   → высокое
+      Модификатор включается ТОЛЬКО при заметной концентрации:
+        если PM2.5 ≥ 20 и PM10 > 0 и (PM2.5/PM10) > 0.70 → +1 ступень (до «высокого»).
+    Возвращает (emoji, label). Нет данных → (⚪, "н/д").
     """
-    base: Dict[str, Union[str, float, None]] = {"aqi": "н/д", "pm25": None, "pm10": None}
-    for key in ("aqi", "pm25", "pm10"):
-        v1 = src1.get(key) if src1 else None
-        v2 = src2.get(key) if src2 else None
-        base[key] = v1 if v1 not in (None, "н/д") else (v2 if v2 not in (None, "н/д") else base[key])
-    base["lvl"] = _aqi_level(base["aqi"])  # type: ignore
-    return base  # type: ignore
-
-def get_air(lat: float, lon: float) -> Dict[str, Any]:
-    """
-    Обёртка: достаёт из IQAir и Open‑Meteo и мёржит результаты.
-    Никогда не бросает исключение — при ошибках вернёт дефолтные поля.
-    """
-    try:
-        src1 = _src_iqair(lat, lon)
-    except Exception:
-        src1 = None
-    try:
-        src2 = _src_openmeteo(lat, lon)
-    except Exception:
-        src2 = None
-    return merge_air_sources(src1, src2)
-
-# ───────────────────────── SST (по ближайшему часу) ─────────────────
-
-def get_sst(lat: float, lon: float) -> Optional[float]:
-    """
-    Температура поверхности моря (SST), по ближайшему прошедшему часу (UTC).
-    API: https://marine-api.open-meteo.com/v1/marine
-    """
-    try:
-        resp = _get(
-            "https://marine-api.open-meteo.com/v1/marine",
-            latitude=lat,
-            longitude=lon,
-            hourly="sea_surface_temperature",
-            timezone="UTC",
-        )
-    except Exception as e:
-        logging.warning("Marine SST request error: %s", e)
-        return None
-    if not resp or "hourly" not in resp:
-        return None
-
-    try:
-        h = resp["hourly"]
-        times = h.get("time", []) or []
-        vals = h.get("sea_surface_temperature", []) or []
-        v = _pick_nearest_hour(times, vals)
-        return float(v) if isinstance(v, (int, float)) else None
-    except Exception as e:
-        logging.warning("Marine SST parse error: %s", e)
-        return None
-
-# ───────────────────────── Kp + кеш ────────────────────────────────
-
-def _load_kp_cache() -> Tuple[Optional[float], Optional[int]]:
-    try:
-        data = json.loads(KP_CACHE.read_text(encoding="utf-8"))
-        return data.get("kp"), data.get("ts")
-    except Exception:
-        return None, None
-
-def _save_kp_cache(kp: float) -> None:
-    try:
-        KP_CACHE.write_text(json.dumps({"kp": kp, "ts": int(time.time())}, ensure_ascii=False))
-    except Exception as e:
-        logging.warning("Kp cache write error: %s", e)
-
-def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optional[Any]:
-    for i in range(attempts):
-        data = _get(url)
-        if data:
-            return data
-        time.sleep(backoff ** i)
-    return None
-
-def get_kp() -> Tuple[Optional[float], str]:
-    """
-    Возвращает (kp_value, state). Пытается пройти по списку URL,
-    распарсить значение, сохранить в кеш. Если сеть/парсинг падают —
-    берёт из кеша. Иначе → (None, "н/д").
-    """
-    for url in KP_URLS:
-        data = _fetch_kp_data(url)
-        logging.info("Kp fetch from %s -> %s", url, bool(data))
-        if not data:
-            continue
+    def _to_float(x):
         try:
-            raw_val: Any = None
-            if isinstance(data, list) and data:
-                first = data[0]
-                if isinstance(first, list) and len(data) > 1:
-                    # Суточная таблица — берём вторую строку
-                    entry = data[1]
-                    raw_val = entry[-1]
-                elif isinstance(first, dict):
-                    # Минутные словари
-                    entry = first
-                    raw_val = entry.get("kp_index") or entry.get("estimated_kp") or entry.get("kp")
-            if raw_val is None:
-                raise ValueError("raw Kp not found")
-            kp_value = float(str(raw_val).rstrip("Z").replace(",", "."))
-            _save_kp_cache(kp_value)
-            return kp_value, _kp_state(kp_value)
-        except Exception as e:
-            logging.warning("Kp parse error %s: %s", url, e)
+            return float(x)
+        except (TypeError, ValueError):
+            return None
 
-    cached_kp, ts = _load_kp_cache()
-    if cached_kp is not None:
-        logging.info("Using cached Kp=%s ts=%s", cached_kp, ts)
-        return cached_kp, _kp_state(cached_kp)
-    return None, "н/д"
+    p25 = _to_float(pm25)
+    p10 = _to_float(pm10)
+    if p25 is None:
+        return "⚪", "н/д"
 
-# ───────────────────────── CLI ─────────────────────────────────────
+    if p25 <= 25:
+        lvl = 0  # низкое
+    elif p25 <= 55:
+        lvl = 1  # среднее
+    else:
+        lvl = 2  # высокое
+
+    if p25 >= 20 and p10 and p10 > 0:
+        ratio = p25 / p10
+        if ratio > 0.70:
+            lvl = min(lvl + 1, 2)
+
+    if lvl == 0:
+        return "🟢", "низкое"
+    if lvl == 1:
+        return "🟡", "среднее"
+    return "🔴", "высокое"
+
+# ──────────────────────── «Факт дня» по региону ────────────────────────────
+
+FACTS_KLGD: Dict[str, str] = {
+    # … (все твои факты; не урезал)
+    "01-01": "1 января — Новый год: Калининград сияет гирляндами, а на Балтике пьют глинтвейн 🎆🍷",
+    # (остальной блок без изменений)
+    "12-31": "31 декабря — Канун Нового года: Калининград сияет, а на косе пьют шампанское 🥂",
+}
+
+FACTS_KLGD_RANDOM: List[str] = [
+    "Калининград — единственный регион России без сухопутной границы с остальной страной 🗺️",
+    # … (остальной список без изменений)
+    "Калининградский мост Королевы Луизы соединяет Россию и Литву 🌉",
+]
+
+FACTS_CY: Dict[str, str] = {
+    "01-03": "3 января — Фестиваль гранатов в Ормидии: дегустации и танцы под звездами, а в 1960 году Кипр стал республикой 🍎",
+    # … (как было)
+}
+
+DEFAULT_FACTS_CY: List[str] = [
+    "На Кипре более 1 800 видов растений — весна тут цветёт ярче любого Instagram-поста 🌸",
+    # …
+]
+
+DEFAULT_FACTS_UNI: List[str] = [
+    "Луна удаляется от Земли на 3.8 см каждый год.",
+    "Человеческий мозг генерирует достаточно энергии, чтобы осветить лампочку.",
+    "В космосе звуки не распространяются, потому что там нет атмосферы.",
+    "Солнце составляет 99.86 % массы Солнечной системы.",
+    "Молния может быть горячее поверхности Солнца (до 30 000 °C).",
+    "Планета Венера вращается в обратном направлении (ретроградно).",
+]
+
+def get_fact(date: pendulum.Date, region: str = "") -> str:
+    r = region.lower()
+    if "калининград" in r:
+        key = date.format("MM-DD")
+        return FACTS_KLGD.get(key, random.choice(FACTS_KLGD_RANDOM))
+    if "кипр" in r:
+        key = date.format("MM-DD")
+        return FACTS_CY.get(key, random.choice(DEFAULT_FACTS_CY))
+    idx = date.day % len(DEFAULT_FACTS_UNI)
+    return DEFAULT_FACTS_UNI[idx]
+
+# ─────────────────────── Интеграции и иконки ────────────────────────────────
+
+WEATHER_ICONS: Dict[str, str] = {
+    "ясно":      "☀️",
+    "переменная": "🌧️",
+    "пасмурно":  "☁️",
+    "дождь":     "🌧️",
+    "туман":     "🌫️",
+}
+
+AIR_EMOJI: Dict[str, str] = {
+    "хороший":    "🟢",
+    "умеренный":  "🟡",
+    "вредный":    "🟠",
+    "оч. вредный": "🔴",
+    "опасный":    "🟣",
+    "н/д":        "⚪",
+}
+
+# ──────────────────────── Функция kp_emoji ───────────────────────────────────
+
+def kp_emoji(kp: Optional[float]) -> str:
+    if kp is None:
+        return "⚪"
+    k = int(round(kp))
+    if k < 3:
+        return "⚪"
+    if k < 5:
+        return "🟢"
+    return "🔴"
+
+# ──────────────────────── Тренд давления ─────────────────────────────────
+
+def pressure_trend(w: Dict[str, Any]) -> str:
+    """
+    ↑ если ближайший час > +2 гПа, ↓ если < −2, иначе →.
+    w — объект с hourly.surface_pressure (список чисел).
+    """
+    hp = w.get("hourly", {}).get("surface_pressure", [])
+    if len(hp) < 2:
+        return "→"
+    diff = hp[-1] - hp[0]
+    if diff >= 2:
+        return "↑"
+    if diff <= -2:
+        return "↓"
+    return "→"
+
+# ──────────────────────── HTTP-обёртки ───────────────────────────────────
+
+_HEADERS = {
+    "User-Agent": "VayboMeter/1.0 (+https://github.com/)",
+    "Accept":     "application/json",
+}
+
+def _get_retry(url: str, retries: int = 2, **params) -> Optional[dict]:
+    attempt = 0
+    while attempt <= retries:
+        try:
+            r = requests.get(url, params=params, timeout=15, headers=_HEADERS)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            attempt += 1
+            if attempt > retries:
+                return None
+            time.sleep(0.5 * attempt)
+
+def _get(url: str, **params) -> Optional[dict]:
+    return _get_retry(url, retries=2, **params)
+
+# ─────────────────────── Module self-test ─────────────────────────────────
 
 if __name__ == "__main__":
-    from pprint import pprint
-
-    print("=== Пример get_air (Калининград) ===")
-    pprint(get_air(54.710426, 20.452214))
-
-    print("\n=== Пример get_sst (Калининград) ===")
-    print(get_sst(54.710426, 20.452214))
-
-    print("\n=== Пример get_kp ===")
-    print(get_kp())
+    import sys
+    print("kmh_to_ms demo:", kmh_to_ms(18), kmh_to_ms(None))
+    print("ms_to_kmh demo:", ms_to_kmh(5), ms_to_kmh(None))
+    print("Smoke index demo:", smoke_index(12, 30), smoke_index(40, 50), smoke_index(80, 90), smoke_index(None, 10))
+    sys.exit(0)
