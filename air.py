@@ -27,7 +27,7 @@ import random
 import requests
 import pendulum
 from typing import Any, Dict, Optional, List
-from air         import get_air, get_sst, get_kp
+__all__ = ("get_air", "get_sst", "get_kp")
 
 # ──────────────────────── Компас, облака, ветер ──────────────────────────
 
