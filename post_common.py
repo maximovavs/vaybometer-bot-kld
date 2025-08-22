@@ -6,8 +6,8 @@ post_common.py — VayboMeter (Калининград).
 • Море, прогноз Кёнига (день/ночь, м/с, RH min–max, давление)
 • Рейтинги городов (d/n, код погоды словами + 🌊)
 • Air (+ 🔥 Задымление, если не низкое), пыльца, радиация
-• Kp, Шуман
-• Астрособытия (знак как ♈ … ♓)
+• Kp, Шуман (с 7-й гармоникой)
+• Астрособытия (знак как ♈ … ♓ и VOC по флагу)
 • «Вините …», рекомендации, факт дня
 """
 
@@ -22,24 +22,24 @@ import pendulum
 from telegram import Bot, constants
 
 from utils import (
-    compass, clouds_word, get_fact, AIR_EMOJI, pm_color, kp_emoji,
+    compass, get_fact, AIR_EMOJI, pm_color, kp_emoji,
     kmh_to_ms, smoke_index, pressure_trend, _get,
 )
 from weather     import get_weather, fetch_tomorrow_temps, day_night_stats
-import air as airmod                       # может быть старая версия — ниже обернём
+import air as airmod
 from pollen      import get_pollen
 from schumann    import get_schumann
 from astro       import astro_events
 from gpt         import gpt_blurb
 from radiation   import get_radiation
-from settings_klg import SEA_SST_COORD     # точка в заливе
+from settings_klg import SEA_SST_COORD            # точка в заливе
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ────────────────────────── константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
 
-# Мэппинг WMO-кодов в короткие текст+эмодзи
+# Мэппинг WMO-кодов в короткие текст+эмодзи (минимализм, без мутной "словески")
 WMO_DESC = {
     0:"☀️ ясно", 1:"⛅ ч.обл", 2:"☁️ обл", 3:"🌥 пасм",
     45:"🌫 туман", 48:"🌫 изморозь", 51:"🌦 морось",
@@ -48,7 +48,7 @@ WMO_DESC = {
 def code_desc(c: Any) -> Optional[str]:
     return WMO_DESC.get(int(c)) if isinstance(c, (int, float)) and int(c) in WMO_DESC else None
 
-# ───────────── безопасные обёртки над air.* ─────────────
+# ───────────── безопасные обёртки над air.* + локальный фоллбэк ─────────────
 def _nearest_hour_val(times: List[str], vals: List[Any]) -> Optional[float]:
     if not times or not vals or len(times) != len(vals):
         return None
@@ -68,6 +68,7 @@ def _get_sst_safe(lat: float, lon: float) -> Optional[float]:
             return airmod.get_sst(lat, lon)  # type: ignore[attr-defined]
     except Exception as e:
         logging.warning("air.get_sst error: %s", e)
+    # локальный фоллбэк (Open‑Meteo Marine)
     try:
         j = _get(
             "https://marine-api.open-meteo.com/v1/marine",
@@ -173,33 +174,95 @@ def _get_kp_safe() -> Tuple[Optional[float], str]:
         logging.warning("air.get_kp error: %s", e)
     return _get_kp_fallback()
 
-# ───────────── Шуман ─────────────
+# ───────────── Шуман: live + фоллбэк, оба формата кэша, 7‑я гармоника ─────────────
 def get_schumann_with_fallback() -> Dict[str, Any]:
-    sch = get_schumann()
-    if sch.get("freq") is not None:
+    """
+    1) пытаемся взять live через schumann.get_schumann()
+    2) если нет — читаем локальный schumann_hourly.json
+       и поддерживаем ДВА формата:
+         • список: [{"ts", "freq", "amp", "h7_amp"}...]
+         • словарь: {"YYYY-MM-DDTHH": {"freq","amp","h7_amp"}, ...}
+    3) считаем тренд по freq (последние 24), и h7_spike по медиане+MAD.
+    """
+    # live
+    try:
+        sch = get_schumann()
+    except Exception:
+        sch = {}
+    if isinstance(sch, dict) and sch.get("freq") is not None:
         sch["cached"] = False
         return sch
+
+    # cache
     cache = Path(__file__).parent / "schumann_hourly.json"
-    if cache.exists():
-        try:
-            arr = json.loads(cache.read_text("utf-8"))
-            if arr:
-                last = arr[-1]; pts = arr[-24:]
-                freqs = [p.get("freq") for p in pts if isinstance(p.get("freq"), (int, float))]
-                trend = "→"
-                if len(freqs) > 1:
-                    avg = sum(freqs[:-1]) / (len(freqs) - 1)
-                    d = freqs[-1] - avg
-                    trend = "↑" if d >= .1 else "↓" if d <= -.1 else "→"
-                return {
-                    "freq": round(last.get("freq", 0.0), 2),
-                    "amp": round(last.get("amp", 0.0), 1),
-                    "trend": trend,
-                    "cached": True
-                }
-        except Exception as e:
-            logging.warning("Schumann cache err: %s", e)
-    return sch
+    if not cache.exists():
+        return {"freq": None, "amp": None, "trend": "→"}
+
+    try:
+        raw = json.loads(cache.read_text("utf-8"))
+        freqs: List[float] = []
+        amps:  List[float] = []
+        h7s:   List[Optional[float]] = []
+
+        if isinstance(raw, list):
+            try:
+                raw = sorted(raw, key=lambda x: x.get("ts", 0))
+            except Exception:
+                pass
+            for it in raw:
+                if not isinstance(it, dict):
+                    continue
+                f, a = it.get("freq"), it.get("amp")
+                h7 = it.get("h7_amp")
+                if isinstance(f,(int,float)) and isinstance(a,(int,float)):
+                    freqs.append(float(f)); amps.append(float(a))
+                    h7s.append(float(h7) if isinstance(h7,(int,float)) else None)
+
+        elif isinstance(raw, dict):
+            items = sorted(raw.items(), key=lambda kv: kv[0])
+            for _, v in items:
+                if not isinstance(v, dict):
+                    continue
+                f, a = v.get("freq"), v.get("amp")
+                h7 = v.get("h7_amp")
+                if isinstance(f,(int,float)) and isinstance(a,(int,float)):
+                    freqs.append(float(f)); amps.append(float(a))
+                    h7s.append(float(h7) if isinstance(h7,(int,float)) else None)
+
+        if not freqs:
+            return {"freq": None, "amp": None, "trend": "→"}
+
+        # тренд по последним 24
+        window_f = freqs[-24:] if len(freqs) > 24 else freqs
+        trend = "→"
+        if len(window_f) > 1:
+            avg = sum(window_f[:-1]) / (len(window_f) - 1)
+            d = window_f[-1] - avg
+            trend = "↑" if d >= 0.1 else "↓" if d <= -0.1 else "→"
+
+        out: Dict[str, Any] = {
+            "freq": round(freqs[-1], 2),
+            "amp":  round(amps[-1], 1) if amps else None,
+            "trend": trend,
+            "cached": True,
+        }
+
+        # 7-я гармоника: последняя ненулевая и всплеск (median + 3*MAD, и >0.2 pT)
+        h7_clean = [x for x in h7s if isinstance(x,(int,float))]
+        if h7_clean:
+            h7_last = h7_clean[-1]
+            out["h7_amp"] = round(h7_last, 3)
+            import statistics
+            hist = h7_clean[-48:-1] if len(h7_clean) > 1 else []
+            if hist:
+                med = statistics.median(hist)
+                mad = statistics.median([abs(x - med) for x in hist]) or 0.01
+                out["h7_spike"] = bool(h7_last > med + 3*mad and h7_last > 0.2)
+
+        return out
+    except Exception as e:
+        logging.warning("Schumann cache err: %s", e)
+        return {"freq": None, "amp": None, "trend": "→"}
 
 def schumann_line(s: Dict[str, Any]) -> str:
     if s.get("freq") is None:
@@ -238,7 +301,7 @@ def zsym(s: str) -> str:
     return s
 
 # ───────────── сообщение ─────────────
-def build_message(region_name: str, chat_id: int,
+def build_message(region_name: str,
                   sea_label: str, sea_cities, other_label: str,
                   other_cities, tz: pendulum.Timezone) -> str:
 
@@ -264,7 +327,7 @@ def build_message(region_name: str, chat_id: int,
     rh_min = stats.get("rh_min"); rh_max = stats.get("rh_max")
     t_day_max = stats.get("t_day_max"); t_night_min = stats.get("t_night_min")
 
-    # давление
+    # давление: берём текущее (из current или из hourly), плюс тренд
     pressure_val = cur.get("pressure")
     if pressure_val is None:
         hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
@@ -272,7 +335,7 @@ def build_message(region_name: str, chat_id: int,
             pressure_val = hp[-1]
     press_part = f"{int(round(pressure_val))} гПа {pressure_trend(wm)}" if isinstance(pressure_val, (int, float)) else "н/д"
 
-    desc = code_desc(wc)
+    desc = code_desc(wc)  # может вернуть None — тогда не выводим
     kal_parts = [
         f"🏙️ Калининград: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
         else "🏙️ Калининград: дн/ночь н/д",
@@ -349,7 +412,7 @@ def build_message(region_name: str, chat_id: int,
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # Астрособытия
+    # Астрособытия (VOC печатается внутри astro_events при show_all_voc=True)
     P.append("🌌 <b>Астрособытия</b>")
     astro = astro_events(offset_days=1, show_all_voc=True)
     if astro:
@@ -379,7 +442,7 @@ def build_message(region_name: str, chat_id: int,
 async def send_common_post(bot: Bot, chat_id: int, region_name: str,
                            sea_label: str, sea_cities, other_label: str,
                            other_cities, tz):
-    msg = build_message(region_name, chat_id, sea_label, sea_cities,
+    msg = build_message(region_name, sea_label, sea_cities,
                         other_label, other_cities, tz)
     await bot.send_message(chat_id=chat_id, text=msg,
                            parse_mode=constants.ParseMode.HTML,
