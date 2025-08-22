@@ -206,7 +206,11 @@ def schumann_line(s: Dict[str, Any]) -> str:
         return "🎵 Шуман: н/д"
     f, amp = s["freq"], s["amp"]
     e = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
-    return f"{e} Шуман: {f:.2f} Гц / {amp:.1f} pT {s.get('trend','')}"
+    text = f"{e} Шуман: {f:.2f} Гц / {amp:.1f} pT {s.get('trend','')}"
+    if isinstance(s.get("h7_amp"), (int, float)):
+        mark = "⚡" if s.get("h7_spike") else "·"
+        text += f"  • 7-я: {s['h7_amp']:.3f} pT {mark}"
+    return text
 
 # ───────────── Радиация ─────────────
 def radiation_line(lat: float, lon: float) -> str | None:
