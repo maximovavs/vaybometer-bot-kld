@@ -9,7 +9,7 @@ air.py
   2) Open‑Meteo Air‑Quality (без ключа)
 
 • merge_air_sources() — объединяет словари с приоритетом IQAir → Open‑Meteo
-• get_air(lat, lon)      — {'lvl','aqi','pm25','pm10'}
+• get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_icon'}
 • get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
 • get_kp()               — индекс Kp (последний замер) с кешем (TTL 6 ч)
 
@@ -17,12 +17,16 @@ air.py
 - Open‑Meteo: берём значения по ближайшему прошедшему часу (UTC).
 - SST: то же правило ближайшего часа.
 - Kp: парсим ПОСЛЕДНЕЕ значение из обоих эндпоинтов SWPC; кэш валиден 6 часов.
+- NEW: Возвращаем источник AQI:
+    'src' ∈ {'iqair','openmeteo','n/d'} и
+    'src_icon' ∈ {'📡 IQAir','🛰 OM','⚪ н/д'}.
 """
 
 from __future__ import annotations
 import os
 import time
 import json
+import math
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
@@ -45,6 +49,12 @@ KP_URLS = [
     # Моментальный (1 мин) K-index (массив словарей)
     "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
 ]
+
+SRC_ICON = {
+    "iqair": "📡 IQAir",
+    "openmeteo": "🛰 OM",
+    "n/d": "⚪ н/д",
+}
 
 # ───────────────────────── Утилиты AQI/Kp ──────────────────────────
 
@@ -92,7 +102,10 @@ def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[floa
         idxs = [i for i, t in enumerate(arr_time) if isinstance(t, str) and t <= now_iso]
         idx = max(idxs) if idxs else 0
         v = arr_val[idx]
-        return float(v) if isinstance(v, (int, float)) else None
+        if not isinstance(v, (int, float)):
+            return None
+        v = float(v)
+        return v if (math.isfinite(v) and v >= 0) else None
     except Exception:
         return None
 
@@ -117,14 +130,14 @@ def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     if not resp or "data" not in resp:
         return None
     try:
-        pol = resp["data"]["current"]["pollution"]
-        aqi_val = pol.get("aqius")
+        pol = resp["data"]["current"].get("pollution", {}) or {}
+        aqi_val  = pol.get("aqius")
         pm25_val = pol.get("p2")
         pm10_val = pol.get("p1")
         return {
-            "aqi": float(aqi_val) if aqi_val is not None else None,
-            "pm25": float(pm25_val) if pm25_val is not None else None,
-            "pm10": float(pm10_val) if pm10_val is not None else None,
+            "aqi":  float(aqi_val)  if isinstance(aqi_val,  (int, float)) else None,
+            "pm25": float(pm25_val) if isinstance(pm25_val, (int, float)) else None,
+            "pm10": float(pm10_val) if isinstance(pm10_val, (int, float)) else None,
             "src": "iqair",
         }
     except Exception as e:
@@ -158,9 +171,9 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         pm25_val = _pick_nearest_hour(times, h.get("pm2_5", []) or [])
         pm10_val = _pick_nearest_hour(times, h.get("pm10", [])  or [])
 
-        aqi_norm: Union[float, str] = float(aqi_val) if isinstance(aqi_val, (int, float)) and aqi_val >= 0 else "н/д"
-        pm25_norm = float(pm25_val) if isinstance(pm25_val, (int, float)) and pm25_val >= 0 else None
-        pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and pm10_val >= 0 else None
+        aqi_norm: Union[float, str] = float(aqi_val)  if isinstance(aqi_val,  (int, float)) and math.isfinite(aqi_val)  and aqi_val  >= 0 else "н/д"
+        pm25_norm = float(pm25_val) if isinstance(pm25_val, (int, float)) and math.isfinite(pm25_val) and pm25_val >= 0 else None
+        pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and math.isfinite(pm10_val) and pm10_val >= 0 else None
 
         return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm, "src": "openmeteo"}
     except Exception as e:
@@ -172,15 +185,49 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Соединяет данные двух источников AQI (приоритет src1 → src2).
-    Возвращает {'lvl','aqi','pm25','pm10'}.
+    Возвращает {'lvl','aqi','pm25','pm10','src','src_icon'}.
+
+    Логика:
+      • AQI берём из src1, если он валиден; иначе — из src2; иначе — 'н/д'
+      • PM25/PM10 берём first-non-null (src1 → src2)
+      • lvl считается по итоговому AQI
+      • src/src_icon отражают ИМЕННО источник AQI (для пояснений подписчикам)
     """
-    base: Dict[str, Union[str, float, None]] = {"aqi": "н/д", "pm25": None, "pm10": None}
-    for key in ("aqi", "pm25", "pm10"):
-        v1 = src1.get(key) if src1 else None
-        v2 = src2.get(key) if src2 else None
-        base[key] = v1 if v1 not in (None, "н/д") else (v2 if v2 not in (None, "н/д") else base[key])
-    base["lvl"] = _aqi_level(base["aqi"])  # type: ignore
-    return base  # type: ignore
+    aqi_val: Union[float, str, None] = "н/д"
+    src_tag: str = "n/d"
+
+    # AQI
+    for s in (src1, src2):
+        if not s:
+            continue
+        v = s.get("aqi")
+        if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0:
+            aqi_val = float(v)
+            src_tag = s.get("src") or src_tag
+            break
+
+    # PM
+    pm25 = None
+    pm10 = None
+    for s in (src1, src2):
+        if not s:
+            continue
+        if pm25 is None and isinstance(s.get("pm25"), (int, float)) and math.isfinite(s["pm25"]):
+            pm25 = float(s["pm25"])
+        if pm10 is None and isinstance(s.get("pm10"), (int, float)) and math.isfinite(s["pm10"]):
+            pm10 = float(s["pm10"])
+
+    lvl = _aqi_level(aqi_val)
+    src_icon = SRC_ICON.get(src_tag, SRC_ICON["n/d"])
+
+    return {
+        "lvl": lvl,
+        "aqi": aqi_val,
+        "pm25": pm25,
+        "pm10": pm10,
+        "src": src_tag,
+        "src_icon": src_icon,
+    }
 
 def get_air(lat: float, lon: float) -> Dict[str, Any]:
     """
