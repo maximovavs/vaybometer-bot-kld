@@ -1,132 +1,59 @@
-name: Collect Schumann Data
+name: Collect Schumann
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Каждый час
+    - cron: "*/30 * * * *"   # каждые 30 минут
   workflow_dispatch:
 
+permissions:
+  contents: write  # чтобы коммитить в репозиторий
+
+concurrency:
+  group: collect-schumann
+  cancel-in-progress: false
+
 jobs:
-  schumann:
+  collect:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📥 Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v4
         with:
-          repository: maximovavs/vaybometer-bot-kld
-          ssh-strict: true
-          persist-credentials: true
-          clean: true
-          sparse-checkout-cone-mode: true
-          fetch-depth: 1
-          fetch-tags: false
-          lfs: false
-          submodules: false
-          set-safe-directory: true
+          fetch-depth: 0
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: 📦 Install dependencies
+      # Если есть requirements.txt — раскомментируй установку
+      # - name: Install deps
+      #   run: |
+      #     python -m pip install --upgrade pip
+      #     pip install -r requirements.txt
+
+      # ВАЖНО: тут предполагается, что collect_schumann.py уже лежит в корне репо.
+      # Если он в подкаталоге — поправь путь.
+      - name: Run collector
         run: |
-          pip install requests
+          python collect_schumann.py
 
-      - name: 🚀 Fetch Schumann point
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.CHANNEL_ID }}
+      - name: Show last row
         run: |
-          python - <<EOF
-          import json
-          import time
-          import requests
-          from pathlib import Path
+          tail -n 1 schumann_hourly.json || true
+          echo "File size:"
+          wc -c schumann_hourly.json || true
 
-          def send_telegram_message(token, chat_id, message):
-              if not token or not chat_id:
-                  print("Telegram token or chat_id missing")
-                  return
-              try:
-                  url = f"https://api.telegram.org/bot{token}/sendMessage"
-                  data = {"chat_id": chat_id, "text": message}
-                  response = requests.post(url, data=data)
-                  response.raise_for_status()
-                  print("Telegram notification sent")
-              except Exception as e:
-                  print(f"Failed to send Telegram notification: {e}")
-
-          def fetch_api_data(url, timeout=45):
-              try:
-                  response = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
-                  response.raise_for_status()
-                  data = response.json()
-                  print(f"API response from {url} (first 200 chars): {str(data)[:200]}...")
-                  return data
-              except Exception as e:
-                  print(f"Failed to fetch API {url}: {e}")
-                  return None
-
-          try:
-              freq = None
-              amp = None
-
-              # NOAA Solar Wind Magnetic Field
-              noaa_url = "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json"
-              noaa_data = fetch_api_data(noaa_url)
-              if noaa_data and len(noaa_data) > 1:
-                  last_entry = noaa_data[-1]
-                  if len(last_entry) >= 4:
-                      amp = float(last_entry[3])  # Bz в nT
-                      freq = 7.83  # Фиксируем частоту
-                      print(f"Parsed from NOAA API: freq={freq}, amp={amp}")
-
-              if not (freq and amp):
-                  cache = Path("schumann_hourly.json")
-                  if cache.exists():
-                      arr = json.loads(cache.read_text())
-                      if arr:
-                          last = arr[-1]
-                          freq, amp = last["freq"], last["amp"]
-                          print("Using cached data:", last)
-                      else:
-                          print("Cache exists but is empty")
-                  else:
-                      print("No cache file found")
-
-              if freq and amp:
-                  rec = {"ts": int(time.time()), "freq": float(freq), "amp": float(amp)}
-                  cache = Path("schumann_hourly.json")
-                  arr = json.loads(cache.read_text()) if cache.exists() else []
-                  arr.append(rec)
-                  cutoff = int(time.time()) - 7*24*3600
-                  arr = [r for r in arr if r["ts"] >= cutoff]
-                  cache.write_text(json.dumps(arr, ensure_ascii=False))
-                  print("Saved Schumann point:", rec)
-                  if float(freq) > 8.0 or float(amp) > 100.0:
-                      send_telegram_message(
-                          "${{ env.TELEGRAM_TOKEN }}",
-                          "${{ env.TELEGRAM_CHAT_ID }}",
-                          f"🚨 High Schumann! Freq: {freq} Hz, Amp: {amp}"
-                      )
-              else:
-                  print("No valid freq/amp data received, even from cache")
-          except Exception as e:
-              print(f"Error fetching Schumann data: {e}")
-              send_telegram_message(
-                  "${{ env.TELEGRAM_TOKEN }}",
-                  "${{ env.TELEGRAM_CHAT_ID }}",
-                  f"⚠️ Schumann script error: {e}"
-              )
-          EOF
-
-      - name: 🗂️ Commit cache
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          commit_message: "schumann: add hourly point"
-          file_pattern: "schumann_hourly.json"
-          repository: .
-          commit_user_name: github-actions[bot]
-          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
-          commit_author: maximovavs <maximovavs@users.noreply.github.com>
+      # Коммитим ТОЛЬКО если файл реально изменился
+      - name: Commit & push if changed
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- schumann_hourly.json; then
+            git add schumann_hourly.json
+            git commit -m "schumann: update (ver2: ts,freq,amp,h7_amp,h7_spike)"
+            git push
+          else
+            echo "No changes in schumann_hourly.json"
+          fi
