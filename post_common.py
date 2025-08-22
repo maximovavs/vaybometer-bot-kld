@@ -414,7 +414,7 @@ def build_message(region_name: str,
 
     # Астрособытия (VOC печатается внутри astro_events при show_all_voc=True)
     P.append("🌌 <b>Астрособытия</b>")
-    astro = astro_events(offset_days=1, show_all_voc=True)
+    astro = astro_events(offset_days=1, show_all_voc=True, tz=tz)
     if astro:
         P.extend([zsym(line) for line in astro])
     else:
