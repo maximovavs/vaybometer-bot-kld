@@ -63,20 +63,42 @@ def _extract_voc_record(rec: Dict[str, Any]) -> Optional[Dict[str, str]]:
         return None
     return {"start": str(start), "end": str(end)}
 
-def _format_voc_line(voc: Dict[str, str], tz: pendulum.Timezone, show_all_voc: bool) -> Optional[str]:
+def _parse_local_dt(s: str, tz: pendulum.Timezone, fallback_year: int) -> Optional[pendulum.DateTime]:
+    """
+    Пытаемся распарсить:
+      • ISO/естественные форматы → pendulum.parse
+      • 'DD.MM HH:mm' (как в твоём JSON) → подставляем fallback_year
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    # 1) стандартные форматы
+    try:
+        return pendulum.parse(s).in_tz(tz)
+    except Exception:
+        pass
+    # 2) наш кастом: '23.08 04:29'
+    try:
+        dt = pendulum.from_format(s, "DD.MM HH:mm", tz=tz)
+        return dt.replace(year=fallback_year)
+    except Exception:
+        return None
+
+def _format_voc_line(voc: Dict[str, str], tz: pendulum.Timezone, show_all_voc: bool, year_hint: int) -> Optional[str]:
     """
     Форматируем строку VoC:
       ⚫️ VoC HH:mm–HH:mm (N мин)
+    Поддерживаем 'DD.MM HH:mm' (год берём из year_hint).
     """
-    try:
-        t1 = pendulum.parse(voc["start"]).in_tz(tz)
-        t2 = pendulum.parse(voc["end"]).in_tz(tz)
-    except Exception:
+    t1 = _parse_local_dt(voc.get("start", ""), tz, year_hint)
+    t2 = _parse_local_dt(voc.get("end",   ""), tz, year_hint)
+    if not t1 or not t2:
         return None
 
     minutes = max(0, (t2 - t1).in_minutes())
     if minutes < VOC_HIDE_MINUTES and not show_all_voc:
         return None
+
     return f"⚫️ VoC {t1.format('HH:mm')}–{t2.format('HH:mm')} ({minutes} мин)"
 
 # ─────────────────────── День/категории ───────────────────────
@@ -151,7 +173,7 @@ def astro_events(
 
     # 1) VoC
     voc = _extract_voc_record(rec)
-    voc_line = _format_voc_line(voc, tz, show_all_voc) if voc else None
+    voc_line = _format_voc_line(voc, tz, show_all_voc, target_date.year) if voc else None
     if voc_line:
         lines.append(voc_line)
 
