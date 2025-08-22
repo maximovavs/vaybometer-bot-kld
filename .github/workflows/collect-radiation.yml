@@ -1,22 +1,52 @@
 name: collect-radiation
+
 on:
   schedule:
-    - cron:  '0 * * * *'      # каждый час
+    # каждые 30 минут, но со сдвигом на 2 минуты
+    - cron: '2/30 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collect-radiation-kld
+  cancel-in-progress: false
 
 jobs:
   collect:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install deps
-        run: pip install requests
-      - name: Run collector
-        run: python radiation_collect.py
-      - name: Commit cache
         run: |
-          git config user.name "rad-bot"
-          git config user.email "<>"
-          git add radiation_hourly.json
-          git commit -m "radiation: hourly update" || echo "no changes"
-          git push
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # Три попытки запуска (на случай «job was not acquired»/сетевых глюков)
+      - name: Run collector with retry
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          timeout_minutes: 10
+          command: |
+            set -e
+            # Поиск скрипта-коллектора в типичных местах:
+            for s in collectors/radiation_collect.py radiation_collect.py scripts/collect_radiation.py; do
+              if [ -f "$s" ]; then
+                echo "Running: $s"
+                python "$s"
+                exit 0
+              fi
+            done
+            echo "No collector script found in known locations."
+            exit 1
