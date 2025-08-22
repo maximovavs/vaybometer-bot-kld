@@ -394,8 +394,9 @@ def build_message(region_name: str,
     air = _get_air_safe(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
-    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
-             f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
+    src_hint = air.get("src_icon") or air.get("src_emoji") or ""
+    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} {src_hint} (AQI {air.get('aqi','н/д')}) | "
+         f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
     em, lbl = smoke_index(air.get("pm25"), air.get("pm10"))
     if lbl != "низкое":
         P.append(f"🔥 Задымление: {em} {lbl}")
