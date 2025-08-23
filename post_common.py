@@ -175,106 +175,48 @@ def _get_kp_safe() -> Tuple[Optional[float], str]:
     return _get_kp_fallback()
 
 # ───────────── Шуман: live + фоллбэк, оба формата кэша, 7‑я гармоника ─────────────
-def get_schumann_with_fallback() -> Dict[str, Any]:
-    """
-    1) пытаемся взять live через schumann.get_schumann()
-    2) если нет — читаем локальный schumann_hourly.json
-       и поддерживаем ДВА формата:
-         • список: [{"ts", "freq", "amp", "h7_amp"}...]
-         • словарь: {"YYYY-MM-DDTHH": {"freq","amp","h7_amp"}, ...}
-    3) считаем тренд по freq (последние 24), и h7_spike по медиане+MAD.
-    """
-    # live
+
+
+# ───────────── Шуман ─────────────
+import io, json, os, math
+
+SCHU_FILE = os.getenv("SCHU_FILE", "schumann_hourly.json")
+
+def _load_last_schumann(path: str = SCHU_FILE):
     try:
-        sch = get_schumann()
+        with io.open(path, "r", encoding="utf-8") as f:
+            arr = json.load(f)
+        if isinstance(arr, list) and arr:
+            rec = arr[-1]
+            # поддержка старого формата { "freq":..,"amp":.. } без h7
+            return {
+                "freq": rec.get("freq"),
+                "amp": rec.get("amp"),
+                "h7_amp": rec.get("h7_amp"),
+                "src": rec.get("src", "cache"),
+                "ver": rec.get("ver", 2),
+            }
     except Exception:
-        sch = {}
-    if isinstance(sch, dict) and sch.get("freq") is not None:
-        sch["cached"] = False
-        return sch
+        pass
+    return {}
 
-    # cache
-    cache = Path(__file__).parent / "schumann_hourly.json"
-    if not cache.exists():
-        return {"freq": None, "amp": None, "trend": "→"}
-
-    try:
-        raw = json.loads(cache.read_text("utf-8"))
-        freqs: List[float] = []
-        amps:  List[float] = []
-        h7s:   List[Optional[float]] = []
-
-        if isinstance(raw, list):
-            try:
-                raw = sorted(raw, key=lambda x: x.get("ts", 0))
-            except Exception:
-                pass
-            for it in raw:
-                if not isinstance(it, dict):
-                    continue
-                f, a = it.get("freq"), it.get("amp")
-                h7 = it.get("h7_amp")
-                if isinstance(f,(int,float)) and isinstance(a,(int,float)):
-                    freqs.append(float(f)); amps.append(float(a))
-                    h7s.append(float(h7) if isinstance(h7,(int,float)) else None)
-
-        elif isinstance(raw, dict):
-            items = sorted(raw.items(), key=lambda kv: kv[0])
-            for _, v in items:
-                if not isinstance(v, dict):
-                    continue
-                f, a = v.get("freq"), v.get("amp")
-                h7 = v.get("h7_amp")
-                if isinstance(f,(int,float)) and isinstance(a,(int,float)):
-                    freqs.append(float(f)); amps.append(float(a))
-                    h7s.append(float(h7) if isinstance(h7,(int,float)) else None)
-
-        if not freqs:
-            return {"freq": None, "amp": None, "trend": "→"}
-
-        # тренд по последним 24
-        window_f = freqs[-24:] if len(freqs) > 24 else freqs
-        trend = "→"
-        if len(window_f) > 1:
-            avg = sum(window_f[:-1]) / (len(window_f) - 1)
-            d = window_f[-1] - avg
-            trend = "↑" if d >= 0.1 else "↓" if d <= -0.1 else "→"
-
-        out: Dict[str, Any] = {
-            "freq": round(freqs[-1], 2),
-            "amp":  round(amps[-1], 1) if amps else None,
-            "trend": trend,
-            "cached": True,
-        }
-
-        # 7-я гармоника: последняя ненулевая и всплеск (median + 3*MAD, и >0.2 pT)
-        h7_clean = [x for x in h7s if isinstance(x,(int,float))]
-        if h7_clean:
-            h7_last = h7_clean[-1]
-            out["h7_amp"] = round(h7_last, 3)
-            import statistics
-            hist = h7_clean[-48:-1] if len(h7_clean) > 1 else []
-            if hist:
-                med = statistics.median(hist)
-                mad = statistics.median([abs(x - med) for x in hist]) or 0.01
-                out["h7_spike"] = bool(h7_last > med + 3*mad and h7_last > 0.2)
-
-        return out
-    except Exception as e:
-        logging.warning("Schumann cache err: %s", e)
-        return {"freq": None, "amp": None, "trend": "→"}
-
-def schumann_line(s: Dict[str, Any]) -> str:
-    if s.get("freq") is None:
-        return "🎵 Шуман: н/д"
-    f, amp = s["freq"], s["amp"]
-    e = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
-    text = f"{e} Шуман: {f:.2f} Гц / {amp:.1f} pT {s.get('trend','')}"
-    if isinstance(s.get("h7_amp"), (int, float)):
-        mark = "⚡" if s.get("h7_spike") else "·"
-        text += f"  • 7-я: {s['h7_amp']:.3f} pT {mark}"
-    return text
-
+def schumann_line_from_file() -> str:
+    r = _load_last_schumann()
+    f = r.get("freq")
+    a = r.get("amp")
+    h7 = r.get("h7_amp")
+    # индикатор по частоте (если нет частоты — серый)
+    if isinstance(f, (int, float)):
+        emoji = "🔴" if f < 7.6 else ("🟣" if f > 8.1 else "🟢")
+        freq_str = f"{f:.2f} Гц"
+    else:
+        emoji = "⚪"
+        freq_str = "н/д"
+    # амплитуда
+    amp_str = "н/д" if (a is None or (isinstance(a, float) and math.isnan(a))) else f"{a:.2f}"
+    # 7-я гармоника (если есть)
+    h7_str = "" if (h7 is None or (isinstance(h7, float) and math.isnan(h7))) else f" / H7 {h7:.2f}"
+    return f"{emoji} Шуман: {freq_str} / {amp_str} pT{h7_str}"
 # ───────────── Радиация ─────────────
 def radiation_line(lat: float, lon: float) -> str | None:
     data = get_radiation(lat, lon) or {}
