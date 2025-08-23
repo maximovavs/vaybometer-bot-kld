@@ -58,7 +58,13 @@ except Exception:
     raise
 
 FREQ = 7.83
-GCI_STATION_KEY = os.environ.get("SCHU_GCI_STATION", "GCI003")  # Lithuania по умолчанию
+# Можно задать несколько станций через запятую — будет перебор:
+# Примеры кодов: GCI001=California (USA), GCI003=Lithuania, GCI006=Alberta (Canada), GCI004=New Zealand, GCI005=South Africa
+GCI_STATIONS_ENV = os.getenv("SCHU_GCI_STATIONS", "").strip()
+if GCI_STATIONS_ENV:
+    GCI_STATION_KEYS = [s.strip().upper() for s in GCI_STATIONS_ENV.split(",") if s.strip()]
+else:
+    GCI_STATION_KEYS = [os.getenv("SCHU_GCI_STATION", "GCI003").strip().upper()]
 
 # --------------------------- utils ---------------------------
 
