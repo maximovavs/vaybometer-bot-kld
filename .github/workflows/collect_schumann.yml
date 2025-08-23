@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # чтобы коммитить в репозиторий
+  contents: write
 
 concurrency:
   group: collect-schumann
@@ -26,25 +26,33 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Если есть requirements.txt — раскомментируй установку
+      # если у тебя в проекте есть requirements.txt — раскомментируй
       # - name: Install deps
       #   run: |
       #     python -m pip install --upgrade pip
       #     pip install -r requirements.txt
 
-      # ВАЖНО: тут предполагается, что collect_schumann.py уже лежит в корне репо.
-      # Если он в подкаталоге — поправь путь.
-      - name: Run collector
-        run: |
-          python collect_schumann.py
+      - name: Run collector (writes schumann_hourly.json v2)
+        env:
+          SCHU_FILE: schumann_hourly.json             # куда писать
+          SCHU_MAX_LEN: "5000"
+          SCHU_AMP_SCALE: "1"                         # если источник будет в нТ, поставь 1000
+          SCHU_TREND_WINDOW: "24"
+          SCHU_TREND_DELTA: "0.1"
 
-      - name: Show last row
+          # H7 параметры:
+          # Если появится эндпоинт спектра — просто пропиши URL:
+          # H7_URL: "https://example.com/spectrum.json"
+          H7_URL: ""
+          H7_TARGET_HZ: "54.81"
+          H7_WINDOW_H: "48"
+          H7_Z: "2.5"
+          H7_MIN_ABS: "0.2"
         run: |
+          python schumann.py --collect
           tail -n 1 schumann_hourly.json || true
-          echo "File size:"
           wc -c schumann_hourly.json || true
 
-      # Коммитим ТОЛЬКО если файл реально изменился
       - name: Commit & push if changed
         run: |
           set -e
@@ -52,7 +60,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet -- schumann_hourly.json; then
             git add schumann_hourly.json
-            git commit -m "schumann: update (ver2: ts,freq,amp,h7_amp,h7_spike)"
+            git commit -m "schumann: update (ver2 with h7 fields)"
             git push
           else
             echo "No changes in schumann_hourly.json"
