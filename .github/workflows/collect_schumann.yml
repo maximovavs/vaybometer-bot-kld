@@ -40,6 +40,7 @@ jobs:
 
           SCHU_FILE: schumann_hourly.json
           SCHU_MAX_LEN: "5000"
+          SCHU_HEARTMATH_HTML: data/gcms_magnetometer_heartmath.html
 
           # — базовые настройки
           SCHU_AMP_SCALE: "1"
