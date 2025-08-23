@@ -35,7 +35,7 @@ jobs:
         env:
           # — файл истории
           SCHU_GCI_ENABLE: "1"          # включаем HeartMath scraper
-          SCHU_GCI_STATION: "GCI003"    # Литва
+          SCHU_GCI_STATIONS: "GCI001,GCI003,GCI006,GCI004,GCI005"
           SCHU_GCI_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
           SCHU_GCI_IFRAME: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
           SCHU_MAP_GCI_POWER_TO_AMP: "1"
