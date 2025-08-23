@@ -26,24 +26,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      # если у тебя в проекте есть requirements.txt — раскомментируй
-      # - name: Install deps
-      #   run: |
-      #     python -m pip install --upgrade pip
-      #     pip install -r requirements.txt
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
       - name: Run collector (writes schumann_hourly.json v2)
         env:
-          SCHU_FILE: schumann_hourly.json             # куда писать
+          SCHU_FILE: schumann_hourly.json
           SCHU_MAX_LEN: "5000"
-          SCHU_AMP_SCALE: "1"                         # если источник будет в нТ, поставь 1000
+          SCHU_AMP_SCALE: "1"
           SCHU_TREND_WINDOW: "24"
           SCHU_TREND_DELTA: "0.1"
-
-          # H7 параметры:
-          # Если появится эндпоинт спектра — просто пропиши URL:
-          # H7_URL: "https://example.com/spectrum.json"
-          H7_URL: ""
+          H7_URL: ""                   # если появится эндпоинт спектра — укажешь здесь
           H7_TARGET_HZ: "54.81"
           H7_WINDOW_H: "48"
           H7_Z: "2.5"
