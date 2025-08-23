@@ -30,12 +30,12 @@ ENV (все опционально):
   SCHU_GCI_URL=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/
   SCHU_GCI_IFRAME=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html
   SCHU_MAP_GCI_POWER_TO_AMP=1   # маппить power→amp (по умолчанию ВКЛ)
-  SCHU_DEBUG=1                  # 1 — болтливый лог в stdout
+  SCHU_DEBUG=0                  # 1 — подробный лог в stdout
 
   # Кастомный эндпоинт:
   SCHU_CUSTOM_URL=
 
-  # Спектр для 7-й гармоники:
+  # Спектр для 7-й гармоники (если найдёшь источник):
   H7_URL=
   H7_TARGET_HZ=54.81
   H7_WINDOW_H=48
@@ -89,7 +89,7 @@ def to_float(x: Any, default: float = math.nan) -> float:
         return default
 
 def http_get(url: str, timeout: int = 25, headers: Optional[Dict[str,str]] = None) -> str:
-    h = {"User-Agent": "Mozilla/5.0 (compatible; Vaybometer-SchuBot/2.2; +github-actions)"}
+    h = {"User-Agent": "Mozilla/5.0 (compatible; Vaybometer-SchuBot/2.3; +github-actions)"}
     if headers:
         h.update(headers)
     r = requests.get(url, timeout=timeout, headers=h)
@@ -146,8 +146,9 @@ SERIES_ITEM_RE = re.compile(
     re.I | re.DOTALL
 )
 
+# 🔧 FIX: безопасный «любой символ» — [\s\S], а не некорректный [^]
 NAME_NEAR_DATA_RE = re.compile(
-    r'(GCI003|Lithuania)[^]{0,500}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    r'(GCI003|Lithuania)[\s\S]{0,800}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
     re.I | re.DOTALL
 )
 
@@ -303,7 +304,6 @@ def try_h7_spike() -> Tuple[Optional[float], Optional[bool]]:
             return (None, None)
         vals.sort(key=lambda t: abs(t[0]-target))
         h7_amp = vals[0][1]
-        # примитивный «спайк»: сравним с медианой/кванилями и Z — опустим; просто отдаём amp
         return (h7_amp, None)
     except Exception as e:
         dbg(f"H7 fetch/parse error: {e}")
