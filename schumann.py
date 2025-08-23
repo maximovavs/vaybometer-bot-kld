@@ -30,7 +30,7 @@ ENV (все опционально):
   SCHU_GCI_URL=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/
   SCHU_GCI_IFRAME=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html
   SCHU_MAP_GCI_POWER_TO_AMP=1   # маппить power→amp (по умолчанию ВКЛ)
-  SCHU_DEBUG=0                  # 1 — болтливый лог в stdout
+  SCHU_DEBUG=1                  # 1 — болтливый лог в stdout
 
   # Кастомный эндпоинт:
   SCHU_CUSTOM_URL=
