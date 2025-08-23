@@ -37,6 +37,7 @@ jobs:
           SCHU_GCI_ENABLE: "1"          # включаем HeartMath scraper
           SCHU_GCI_STATION: "GCI003"    # Литва
           SCHU_GCI_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
+          SCHU_GCI_IFRAME: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
 
           SCHU_FILE: schumann_hourly.json
           SCHU_MAX_LEN: "5000"
