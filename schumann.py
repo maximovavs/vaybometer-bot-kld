@@ -26,7 +26,7 @@ ENV (все опционально):
   # HeartMath:
   SCHU_GCI_ENABLE=1
   SCHU_GCI_STATION=GCI003
-  SCHU_GCI_STATIONS=GCI003,GCI001   # можно несколько; возьмём первый, кто ответил
+  SCHU_GCI_STATIONS=GCI003,GCI001   # <- необязательно; если задано, будет перебор
   SCHU_HEARTMATH_HTML=path/to/gcms_magnetometer_heartmath.html
   SCHU_GCI_URL=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/
   SCHU_GCI_IFRAME=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html
@@ -60,29 +60,25 @@ except Exception:
 
 FREQ = 7.83
 
-# --------------------------- env / stations ---------------------------
-
-def read_env(name: str, default: str = "") -> str:
-    v = os.environ.get(name)
-    return default if v is None else v
-
-# Можно задать несколько станций через запятую — будет перебор:
-# Примеры кодов: GCI001=California (USA), GCI003=Lithuania, GCI006=Alberta (Canada), GCI004=New Zealand, GCI005=South Africa
-GCI_STATIONS_ENV = read_env("SCHU_GCI_STATIONS", "").strip()
+# Можно задать несколько станций через запятую — будет перебор
+GCI_STATIONS_ENV = os.getenv("SCHU_GCI_STATIONS", "").strip()
 if GCI_STATIONS_ENV:
     GCI_STATION_KEYS = [s.strip().upper() for s in GCI_STATIONS_ENV.split(",") if s.strip()]
 else:
-    GCI_STATION_KEYS = [read_env("SCHU_GCI_STATION", "GCI003").strip().upper()]
-GCI_DEFAULT = GCI_STATION_KEYS[0]
+    GCI_STATION_KEYS = [os.getenv("SCHU_GCI_STATION", "GCI003").strip().upper()]
 
 # --------------------------- utils ---------------------------
 
 def dbg(msg: str) -> None:
-    if read_env("SCHU_DEBUG", "0").lower() in ("1","true","yes","on"):
+    if os.environ.get("SCHU_DEBUG", "0").lower() in ("1","true","yes","on"):
         print(f"[DEBUG] {msg}")
 
 def now_ts() -> int:
     return int(time.time())
+
+def read_env(name: str, default: str = "") -> str:
+    v = os.environ.get(name)
+    return default if v is None else v
 
 def to_int(x: Any, default: int = 0) -> int:
     try:
@@ -100,7 +96,7 @@ def to_float(x: Any, default: float = math.nan) -> float:
         return default
 
 def http_get(url: str, timeout: int = 25, headers: Optional[Dict[str,str]] = None) -> str:
-    h = {"User-Agent": "Mozilla/5.0 (compatible; Vaybometer-SchuBot/2.4; +github-actions)"}
+    h = {"User-Agent": "Mozilla/5.0 (compatible; Vaybometer-SchuBot/2.3; +github-actions)"}
     if headers:
         h.update(headers)
     r = requests.get(url, timeout=timeout, headers=h)
@@ -145,21 +141,21 @@ IFRAME_SRC_RES = [
 # Highcharts-подобные куски
 SERIES_BLOCK_RE = re.compile(r'series\s*:\s*\[(.+?)\]\s*[),;}]', re.I | re.DOTALL)
 
-# массив пар [[ts,val], ...] — ищем «увесистые» наборы
+# массив пар [[ts,val], ...]
 PAIR_ARRAY_RE = re.compile(
     r'\[\s*\[\s*(\d{10,13})\s*,\s*([-+]?\d+(?:\.\d+)?)\s*](?:\s*,\s*\[\s*(?:\d{10,13})\s*,\s*[-+]?\d+(?:\.\d+)?\s*])+\s*]',
     re.DOTALL
 )
 
-# серия вида {"name":"...GCI003...","data":[...]} (или label/values)
+# серия вида {"name":"...GCI003...","data":[...]}
 SERIES_ITEM_RE = re.compile(
-    r'\{\s*("name"|"label")\s*:\s*"([^"]*GCI\d{3}[^"]*|[^"]*(Lithuania|California|Alberta|New Zealand|South Africa)[^"]*)"\s*,\s*("data"|"series"|"values")\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    r'\{\s*("name"|"label")\s*:\s*"([^"]*GCI003[^"]*|[^"]*Lithuania[^"]*)"\s*,\s*("data"|"series"|"values")\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
     re.I | re.DOTALL
 )
 
 # безопасный «любой символ» — [\s\S]
 NAME_NEAR_DATA_RE = re.compile(
-    r'(GCI\d{3}|Lithuania|California|Alberta|New\s+Zealand|South\s+Africa)[\s\S]{0,1200}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    r'(GCI003|Lithuania)[\s\S]{0,800}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
     re.I | re.DOTALL
 )
 
@@ -192,61 +188,35 @@ def parse_pairs_block(s: str) -> List[Tuple[int, float]]:
                     out.append((ts, val))
     return out
 
-def _site_aliases(key: str) -> List[str]:
-    key = key.upper()
-    m = {
-        "GCI001": ["GCI001", "California"],
-        "GCI003": ["GCI003", "Lithuania"],
-        "GCI004": ["GCI004", "New Zealand"],
-        "GCI005": ["GCI005", "South Africa"],
-        "GCI006": ["GCI006", "Alberta"],
-    }
-    return m.get(key, [key])
-
-def _series_match_any(ch: str, aliases: List[str]) -> bool:
-    for a in aliases:
-        if re.search(re.escape(a), ch, re.I):
-            return True
-    return False
-
-def find_gci_series_block(iframe_html: str, station_key: str) -> Optional[List[Tuple[int,float]]]:
-    aliases = _site_aliases(station_key)
-
+def find_gci_series_block(iframe_html: str) -> Optional[List[Tuple[int,float]]]:
     # A) предметный матч по имени
     for m in SERIES_ITEM_RE.finditer(iframe_html):
-        name_blob = m.group(2)
-        if any(re.search(re.escape(a), name_blob, re.I) for a in aliases):
-            arr = parse_pairs_block(m.group(5))
-            if arr:
-                return arr
-
+        arr = parse_pairs_block(m.group(4))
+        if arr:
+            return arr
     # B) общий блок series: [...]
     sb = SERIES_BLOCK_RE.search(iframe_html)
     if sb:
         block = sb.group(1)
         chunks = re.split(r'\}\s*,\s*\{', block)
         for ch in chunks:
-            if _series_match_any(ch, aliases):
+            if re.search(r'(GCI003|Lithuania)', ch, re.I):
                 m = re.search(r'data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)', ch, re.I | re.DOTALL)
                 if m:
                     arr = parse_pairs_block(m.group(1))
                     if arr:
                         return arr
-
     # C) эвристика «имя рядом с data»
     for m in NAME_NEAR_DATA_RE.finditer(iframe_html):
-        name = m.group(1)
-        if _series_match_any(name, aliases):
-            arr = parse_pairs_block(m.group(2))
-            if arr:
-                return arr
-
-    # D) last resort: самые «увесистые» массивы пар; биас к тем, где рядом подсказка станции
+        arr = parse_pairs_block(m.group(2))
+        if arr:
+            return arr
+    # D) last resort: самые «увесистые» массивы пар; плюс биас, если слева подсказка GCI003
     candidates: List[Tuple[int, List[Tuple[int,float]]]] = []
     for m in PAIR_ARRAY_RE.finditer(iframe_html):
         s = m.group(0)
-        left = iframe_html[max(0, m.start()-1200):m.start()]
-        bias = 100000 if any(re.search(re.escape(a), left, re.I) for a in aliases) else 0
+        left = iframe_html[max(0, m.start()-1000):m.start()]
+        bias = 100000 if re.search(r'(GCI003|Lithuania)', left, re.I) else 0
         arr = parse_pairs_block(s)
         if arr:
             candidates.append((len(arr) + bias, arr))
@@ -255,14 +225,15 @@ def find_gci_series_block(iframe_html: str, station_key: str) -> Optional[List[T
         return candidates[0][1]
     return None
 
-def get_gci_power(station_key: str = GCI_DEFAULT,
-                  page_html: Optional[str] = None) -> Optional[Tuple[int, float]]:
+def get_gci_power(station_key: str) -> Optional[Tuple[int, float]]:
     """
-    Возвращает (ts, power) для станции HeartMath (по умолчанию GCI003).
+    Возвращает (ts, power) для станции HeartMath (GCIxxx).
+    Учитывает SCHU_HEARTMATH_HTML офлайн, иначе качает страницу+iframe.
     """
-    # 0) локальная сохранёнка?
     page_html_path = read_env("SCHU_HEARTMATH_HTML", "").strip()
-    if page_html is None and page_html_path:
+    page_html: Optional[str] = None
+
+    if page_html_path:
         try:
             page_html = load_local_file(page_html_path)
             dbg(f"Loaded local HeartMath HTML: {page_html_path} ({len(page_html)} bytes)")
@@ -270,25 +241,19 @@ def get_gci_power(station_key: str = GCI_DEFAULT,
             dbg(f"Local HTML read error: {e}")
             page_html = None
 
-    # 1) если нет — грузим лайв-страницу
     if page_html is None:
         try:
             page_html = http_get(HEARTMATH_PAGE, timeout=25)
             dbg(f"Fetched HeartMath page ok ({len(page_html)} bytes)")
         except Exception as e:
             dbg(f"Fetch HeartMath page error: {e}")
-            page_html = None
+            return None
 
-    if not page_html:
-        return None
-
-    # 2) ищем iframe
     iframe_url = extract_iframe_src(page_html)
     if not iframe_url:
         dbg("No iframe found — assuming given HTML IS the iframe")
         iframe_html = page_html
     else:
-        # относительный путь? → возьмём env или дефолтный live iframe
         if not iframe_url.lower().startswith(("http://", "https://")):
             iframe_url = read_env(
                 "SCHU_GCI_IFRAME",
@@ -302,10 +267,9 @@ def get_gci_power(station_key: str = GCI_DEFAULT,
             dbg(f"Fetch iframe error: {e}")
             return None
 
-    # 3) извлекаем массив пар для нужной станции
-    pairs = find_gci_series_block(iframe_html, station_key)
+    pairs = find_gci_series_block(iframe_html)
     if not pairs:
-        dbg(f"No {station_key} series found in iframe")
+        dbg("No GCI series found in iframe")
         return None
 
     latest = pick_latest_pair(pairs)
@@ -345,6 +309,41 @@ def try_h7_spike() -> Tuple[Optional[float], Optional[bool]]:
     except Exception as e:
         dbg(f"H7 fetch/parse error: {e}")
         return (None, None)
+
+# --------------------- CUSTOM_URL support ---------------------
+
+def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
+    try:
+        txt = http_get(url, timeout=20)
+        data = parse_any_json(txt)
+        found_amp: List[float] = []
+        def dig(x):
+            if isinstance(x, dict):
+                f = x.get("freq", x.get("frequency"))
+                a = x.get("amp", x.get("power", x.get("value")))
+                if f is not None and abs(to_float(f, 0.0) - FREQ) < 0.2 and a is not None:
+                    found_amp.append(to_float(a, math.nan))
+                for v in x.values(): dig(v)
+            elif isinstance(x, list):
+                for v in x: dig(v)
+        dig(data)
+        amp = next((v for v in found_amp if math.isfinite(v)), math.nan)
+        if not math.isfinite(amp):
+            nums: List[float] = []
+            def dig2(x):
+                if isinstance(x, dict):
+                    if "amp" in x: nums.append(to_float(x["amp"], math.nan))
+                    for v in x.values(): dig2(v)
+                elif isinstance(x, list):
+                    for v in x: dig2(v)
+            dig2(data)
+            amp = next((v for v in nums if math.isfinite(v)), math.nan)
+        if not math.isfinite(amp):
+            return None
+        return (now_ts(), float(amp))
+    except Exception as e:
+        dbg(f"Custom URL error: {e}")
+        return None
 
 # ------------------------- storage v2 -------------------------
 
@@ -397,52 +396,7 @@ def append_record(path: str,
     save_series(path, arr)
     return arr
 
-# --------------------- CUSTOM_URL support ---------------------
-
-def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
-    try:
-        txt = http_get(url, timeout=20)
-        data = parse_any_json(txt)
-        found_amp: List[float] = []
-        def dig(x):
-            if isinstance(x, dict):
-                f = x.get("freq", x.get("frequency"))
-                a = x.get("amp", x.get("power", x.get("value")))
-                if f is not None and abs(to_float(f, 0.0) - FREQ) < 0.2 and a is not None:
-                    found_amp.append(to_float(a, math.nan))
-                for v in x.values(): dig(v)
-            elif isinstance(x, list):
-                for v in x: dig(v)
-        dig(data)
-        amp = next((v for v in found_amp if math.isfinite(v)), math.nan)
-        if not math.isfinite(amp):
-            # fallback: любая числовая 'amp'
-            nums: List[float] = []
-            def dig2(x):
-                if isinstance(x, dict):
-                    if "amp" in x: nums.append(to_float(x["amp"], math.nan))
-                    for v in x.values(): dig2(v)
-                elif isinstance(x, list):
-                    for v in x: dig2(v)
-            dig2(data)
-            amp = next((v for v in nums if math.isfinite(v)), math.nan)
-        if not math.isfinite(amp):
-            return None
-        return (now_ts(), float(amp))
-    except Exception as e:
-        dbg(f"Custom URL error: {e}")
-        return None
-
 # -------------------------- main collect --------------------------
-
-def _try_gci_any_station() -> Optional[Tuple[int,float,str]]:
-    # Перебираем список станций, возвращаем первую успешно распарсенную
-    for key in GCI_STATION_KEYS:
-        r = get_gci_power(key)
-        if r:
-            ts, power = r
-            return ts, power, key
-    return None
 
 def collect() -> int:
     out_path = read_env("SCHU_FILE", "schumann_hourly.json")
@@ -464,16 +418,17 @@ def collect() -> int:
             src = "custom"
             dbg(f"Taken from custom URL: ts={ts}, amp={amp}")
 
-    # 2) HeartMath GCMS (перебор станций)
+    # 2) HeartMath GCMS — опрос по списку станций (если не взяли из кастома)
     if ts is None or amp is None:
         if read_env("SCHU_GCI_ENABLE","1").lower() in ("1","true","yes","on"):
-            r = _try_gci_any_station()
-            if r:
-                tts, power, used_key = r
-                ts = tts
-                amp = float(power) if map_power_to_amp else None
-                src = used_key.lower()
-                dbg(f"Taken from HeartMath: station={used_key}, ts={ts}, power={power}, map_to_amp={map_power_to_amp}")
+            for station in GCI_STATION_KEYS:
+                r = get_gci_power(station)
+                if r:
+                    ts, power = r
+                    amp = float(power) if map_power_to_amp else None
+                    src = station.lower()
+                    dbg(f"Taken from HeartMath {station}: ts={ts}, power={power}, map_to_amp={map_power_to_amp}")
+                    break
 
     # 3) Cache-safe fallback
     if ts is None:
