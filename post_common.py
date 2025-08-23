@@ -352,7 +352,7 @@ def build_message(region_name: str,
     # Kp + Шуман
     kp, ks = _get_kp_safe()
     P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
-    P.append(schumann_line(get_schumann_with_fallback()))
+P.append(schumann_line_from_file())
     P.append("———")
 
     # Астрособытия (VOC печатается внутри astro_events при show_all_voc=True)
