@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-schumann.py — единый модуль и коллектор для КЛД/Кипра.
+schumann.py — единый модуль и коллектор (с поддержкой фоллбэка на кэш).
 
-Что умеет:
-1) Публичное API для поста:
-   get_schumann() -> {freq, amp, trend, high, cached, [h7_amp], [h7_spike]}
-   - Берёт live с GCI (несколько зеркал).
-   - Фоллбэк: локальный JSON-кэш schumann_hourly.json (поддерживает 2 формата).
+Фичи:
+• get_schumann() — как раньше: live → кэш → no data.
+• --collect — пишет schumann_hourly.json формата v2
+  (ts,freq,amp,h7_amp,h7_spike,ver=2) даже если live недоступен:
+   - при down источниках берёт последнюю запись из кэша (если разрешено),
+     чтобы не ронять workflow.
 
-2) CLI-коллектор:
-   python schumann.py --collect
-   - Достаёт freq/amp, опционально считает 7-ю гармонику из H7_URL,
-     дописывает запись в schumann_hourly.json (формат v2):
-     {"ts", "freq", "amp", "h7_amp", "h7_spike", "ver": 2}
-   - Атомарная запись + обрезка файла до MAX_LEN.
-   - Параметры через ENV: см. блок "Настройки ENV" ниже.
+ENV:
+  SCHU_FILE           — путь к schumann_hourly.json (default: schumann_hourly.json)
+  SCHU_MAX_LEN        — макс. длина массива (default: 5000)
+  SCHU_AMP_SCALE      — множитель амплитуды, если источник в нТ (default: 1)
+  SCHU_TREND_WINDOW   — окно для стрелки тренда (default: 24)
+  SCHU_TREND_DELTA    — порог изменения для стрелки (default: 0.1)
+  SCHU_ALLOW_CACHE_ON_FAIL — 1/0 — разрешить использование кэша при падении live (default: 1)
 
-Зависимости: requests (стандартная для твоего проекта).
+  # live-источники:
+  SCHU_CUSTOM_URL     — опц. твой JSON-эндпоинт с freq/amp (любой структуры)
+  SCHU_GCI_URLS       — опц. список GCI через запятую (если хочешь свои)
+
+  # 7-я гармоника:
+  H7_URL              — опц. эндпоинт спектра (см. _fetch_h7_amp)
+  H7_TARGET_HZ        — целевая частота (default: 54.81)
+  H7_WINDOW_H         — окно для z-score (default: 48)
+  H7_Z                — порог z-score (default: 2.5)
+  H7_MIN_ABS          — минимальная абсолютная амплитуда для «всплеска» (default: 0.2)
 """
 
 from __future__ import annotations
@@ -37,36 +47,30 @@ import requests
 
 __all__ = ("get_schumann",)
 
-# ───────────────────── Настройки ENV (можно править в YAML) ──────────────────
-
-# Куда пишем/читаем JSON с историей (по умолчанию — рядом со скриптом)
+# ───────────────────── ENV ─────────────────────
 OUT_PATH = Path(os.environ.get("SCHU_FILE", "schumann_hourly.json")).resolve()
-
-# Ограничение длины истории
 MAX_LEN = int(os.environ.get("SCHU_MAX_LEN", "5000"))
-
-# Масштаб амплитуды (если источник отдаёт нТ вместо пТ — поставить 1000)
 AMP_SCALE = float(os.environ.get("SCHU_AMP_SCALE", "1"))
 
-# Параметры H7
-H7_URL = os.environ.get("H7_URL", "").strip()  # эндпоинт спектра (опц.)
+TREND_WINDOW = int(os.environ.get("SCHU_TREND_WINDOW", "24"))
+TREND_DELTA  = float(os.environ.get("SCHU_TREND_DELTA", "0.1"))
+ALLOW_CACHE_ON_FAIL = os.environ.get("SCHU_ALLOW_CACHE_ON_FAIL", "1") not in ("0", "false", "False")
+
+# live
+CUSTOM_URL = os.environ.get("SCHU_CUSTOM_URL", "").strip()
+GCI_URLS = [u.strip() for u in (os.environ.get("SCHU_GCI_URLS") or "").split(",") if u.strip()] or [
+    "https://gci-api.ucsd.edu/data/latest",  # {"data":[{"freq":..,"amp":..}]}
+    "https://gci-api.com/sr/latest",         # {"sr1":{"freq":..,"amp":..}}
+]
+
+# H7
+H7_URL = os.environ.get("H7_URL", "").strip()
 H7_TARGET_HZ = float(os.environ.get("H7_TARGET_HZ", "54.81"))
 H7_WINDOW = int(os.environ.get("H7_WINDOW_H", "48"))
 H7_Z = float(os.environ.get("H7_Z", "2.5"))
-H7_MIN_ABS = float(os.environ.get("H7_MIN_ABS", "0.2"))  # pT
+H7_MIN_ABS = float(os.environ.get("H7_MIN_ABS", "0.2"))
 
-# Параметры тренда по базовой частоте
-TREND_WINDOW = int(os.environ.get("SCHU_TREND_WINDOW", "24"))
-TREND_DELTA = float(os.environ.get("SCHU_TREND_DELTA", "0.1"))
-
-# Источники live (GCI, можно расширять)
-GCI_URLS = [
-    # Примеры форматов; скрипт умно парсит оба
-    "https://gci-api.ucsd.edu/data/latest",   # {"data":[{"freq":..,"amp":..,"ts":..}, ...]}
-    "https://gci-api.com/sr/latest",          # {"sr1":{"freq":..,"amp":..}}
-]
-
-# ───────────────────── Вспомогательные ───────────────────────────────────────
+# ───────────────────── утилиты ─────────────────────
 
 def _atomic_write_json(p: Path, data: Any) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +84,15 @@ def _atomic_write_json(p: Path, data: Any) -> None:
             try: os.remove(tmp)
             except Exception: pass
 
+def _read_store() -> List[Dict[str, Any]]:
+    if not OUT_PATH.exists():
+        return []
+    try:
+        js = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        return js if isinstance(js, list) else []
+    except Exception:
+        return []
+
 def _trend_arrow(values: List[float]) -> str:
     if len(values) < 2:
         return "→"
@@ -91,75 +104,111 @@ def _trend_arrow(values: List[float]) -> str:
         return "↓"
     return "→"
 
+def _series_from_rows(rows: List[Dict[str, Any]]) -> Tuple[List[float], List[float], List[Optional[float]]]:
+    freqs, amps, h7s = [], [], []
+    for it in rows:
+        f = it.get("freq"); a = it.get("amp"); h7 = it.get("h7_amp")
+        if isinstance(f, (int, float)):
+            freqs.append(float(f))
+            amps.append(float(a) if isinstance(a, (int, float)) else None)
+            h7s.append(float(h7) if isinstance(h7, (int, float)) else None)
+    amps = [x for x in amps if x is not None]
+    return freqs, amps, h7s
+
+# ───────────────────── live источники ─────────────────────
+
 def _parse_gci_payload(js: Dict[str, Any]) -> Tuple[float, float]:
-    # Вариант 1: {"sr1":{"freq":7.83,"amp":112.4}}
+    # {"sr1":{"freq":..,"amp":..}}
     if isinstance(js.get("sr1"), dict):
         sr = js["sr1"]
         return float(sr["freq"]), float(sr["amp"]) * AMP_SCALE
-    # Вариант 2: {"data":[ {...,"freq":..,"amp":..}, ... ]}
+    # {"data":[{...,"freq":..,"amp":..}, ...]}
     data = js.get("data")
     if isinstance(data, list) and data:
         last = data[-1]
         return float(last["freq"]), float(last["amp"]) * AMP_SCALE
     raise ValueError("Unsupported GCI JSON structure")
 
-def _fetch_live() -> Optional[Dict[str, Any]]:
+def _fetch_live_gci() -> Optional[Tuple[float, float]]:
     for url in GCI_URLS:
         try:
             r = requests.get(url, timeout=10)
             r.raise_for_status()
-            freq, amp = _parse_gci_payload(r.json())
-            return {
-                "freq": round(float(freq), 2),
-                "amp":  round(float(amp), 1),
-                "trend": "→",  # без истории
-                "high": (freq > 8.0 or amp > 100.0),
-                "cached": False,
-            }
+            return _parse_gci_payload(r.json())
         except Exception:
             continue
     return None
 
-def _read_store() -> List[Dict[str, Any]]:
-    if not OUT_PATH.exists():
-        return []
-    try:
-        js = json.loads(OUT_PATH.read_text(encoding="utf-8"))
-        # Нормализуем к списку записей
-        if isinstance(js, list):
-            return js
-        if isinstance(js, dict):
-            # альт. формат — словарь по часам
-            rows: List[Dict[str, Any]] = []
-            try:
-                for k, v in sorted(js.items(), key=lambda kv: kv[0]):
-                    if isinstance(v, dict):
-                        row = dict(v)
-                        # ts возьмём как int из ключа, если это unix; иначе None
-                        row.setdefault("ts", None)
-                        rows.append(row)
-                return rows
-            except Exception:
-                return []
-        return []
-    except Exception:
-        return []
+def _extract_freq_amp_any(obj: Any) -> Optional[Tuple[float, float]]:
+    """
+    Пытаемся выковырять freq (~7..9 Гц) и amp (любая) из любого JSON.
+    Поиск глубиной: словари/списки.
+    """
+    cand_freqs: List[float] = []
+    cand_amps: List[float] = []
 
-def _series_from_rows(rows: List[Dict[str, Any]]) -> Tuple[List[float], List[float], List[Optional[float]]]:
-    freqs, amps, h7s = [], [], []
-    for it in rows:
-        f = it.get("freq"); a = it.get("amp"); h7 = it.get("h7_amp")
-        if isinstance(f, (int, float)) and isinstance(a, (int, float)):
-            freqs.append(float(f))
-            amps.append(float(a))
-            h7s.append(float(h7) if isinstance(h7, (int, float)) else None)
-    return freqs, amps, h7s
+    def walk(x: Any):
+        if isinstance(x, dict):
+            # прямые ключи
+            for k, v in x.items():
+                lk = str(k).lower()
+                if lk in ("freq", "frequency", "sr_freq", "sr1_freq"):
+                    try:
+                        fv = float(v)
+                        if 6.0 <= fv <= 9.5:
+                            cand_freqs.append(fv)
+                    except Exception:
+                        pass
+                if lk in ("amp", "amplitude", "sr_amp", "sr1_amp", "power"):
+                    try:
+                        av = float(v) * AMP_SCALE
+                        if math.isfinite(av):
+                            cand_amps.append(av)
+                    except Exception:
+                        pass
+                walk(v)
+        elif isinstance(x, list):
+            for it in x:
+                walk(it)
+
+    walk(obj)
+    if not cand_freqs or not cand_amps:
+        return None
+    # берём последние найденные (обычно это самые свежие)
+    return float(cand_freqs[-1]), float(cand_amps[-1])
+
+def _fetch_live_custom() -> Optional[Tuple[float, float]]:
+    if not CUSTOM_URL:
+        return None
+    try:
+        r = requests.get(CUSTOM_URL, timeout=10)
+        r.raise_for_status()
+        js = r.json()
+        res = _extract_freq_amp_any(js)
+        return res
+    except Exception:
+        return None
+
+def _fetch_live() -> Optional[Dict[str, Any]]:
+    # 1) Кастомный эндпоинт пользователя (если задан)
+    fa = _fetch_live_custom()
+    if not fa:
+        # 2) GCI зеркала
+        fa = _fetch_live_gci()
+    if not fa:
+        return None
+    freq, amp = fa
+    return {
+        "freq": round(float(freq), 2),
+        "amp":  round(float(amp), 1),
+        "trend": "→",
+        "high": (freq > 8.0 or amp > 100.0),
+        "cached": False,
+    }
+
+# ───────────────────── H7 ─────────────────────
 
 def _robust_h7_spike(history: List[float], last: float) -> Optional[bool]:
-    """
-    Робастная детекция всплеска:
-      last > median + H7_Z * MAD  И  last > H7_MIN_ABS
-    """
     vals = [v for v in history if isinstance(v, (int, float)) and math.isfinite(v)]
     if len(vals) < 12 or not isinstance(last, (int, float)):
         return None
@@ -167,16 +216,7 @@ def _robust_h7_spike(history: List[float], last: float) -> Optional[bool]:
     mad = statistics.median([abs(x - med) for x in vals]) or 0.01
     return bool(last > med + H7_Z * mad and last > H7_MIN_ABS)
 
-# ───────────────────── H7: получение амплитуды из спектра (опц.) ─────────────
-
 def _fetch_h7_amp() -> Optional[float]:
-    """
-    Если задан H7_URL — скачиваем JSON со спектром и берём амплитуду ближайшего
-    бина к H7_TARGET_HZ. Поддерживаются форматы:
-      1) {"freq":[...], "amp":[...]}  или {"frequency":[...], "amplitude":[...]}
-      2) [{"f":..,"a":..}, ...] или [{"freq":..,"amp":..}, ...]
-    В противном случае возвращаем None.
-    """
     if not H7_URL:
         return None
     try:
@@ -186,7 +226,7 @@ def _fetch_h7_amp() -> Optional[float]:
     except Exception:
         return None
 
-    # Вариант 1
+    # {"freq":[...], "amp":[...]} или {"frequency":[...], "amplitude":[...]}
     if isinstance(obj, dict):
         f = obj.get("freq") or obj.get("frequency")
         a = obj.get("amp")  or obj.get("amplitude")
@@ -197,8 +237,7 @@ def _fetch_h7_amp() -> Optional[float]:
                 return val if math.isfinite(val) else None
             except Exception:
                 return None
-
-    # Вариант 2
+    # [{"f":..,"a":..}] или [{"freq":..,"amp":..}]
     if isinstance(obj, list) and obj and isinstance(obj[0], dict):
         try:
             idx = min(range(len(obj)), key=lambda i: abs(float(obj[i].get("f") or obj[i].get("freq")) - H7_TARGET_HZ))
@@ -207,17 +246,11 @@ def _fetch_h7_amp() -> Optional[float]:
             return val if math.isfinite(val) else None
         except Exception:
             return None
-
     return None
 
-# ───────────────────── Публичное API для поста ───────────────────────────────
+# ───────────────────── Публичный API ─────────────────────
 
 def get_schumann() -> Dict[str, Any]:
-    """
-    1) пробуем live с GCI;
-    2) если не вышло — читаем локальный schumann_hourly.json (любой из двух форматов);
-    3) если пусто — {"msg":"no data"}.
-    """
     live = _fetch_live()
     if live:
         return live
@@ -230,7 +263,6 @@ def get_schumann() -> Dict[str, Any]:
     if not freqs:
         return {"msg": "no data"}
 
-    # окно для тренда
     f_w = freqs[-TREND_WINDOW:] if len(freqs) >= TREND_WINDOW else freqs
     a_w = amps[-TREND_WINDOW:]  if len(amps)  >= TREND_WINDOW else amps
     trend = _trend_arrow(f_w)
@@ -243,7 +275,6 @@ def get_schumann() -> Dict[str, Any]:
         "cached": True,
     }
 
-    # 7-я гармоника из истории (если писали)
     if h7s:
         h7_clean = [v for v in h7s if isinstance(v, (int, float))]
         if h7_clean:
@@ -256,22 +287,32 @@ def get_schumann() -> Dict[str, Any]:
 
     return out
 
-# ───────────────────── CLI-коллектор ─────────────────────────────────────────
+# ───────────────────── CLI collect ─────────────────────
 
 def _collect_once() -> int:
     """
-    Делает один тик сбора: freq/amp (GCI), h7_amp (опц. из H7_URL),
-    дописывает schumann_hourly.json в формате v2.
+    Делает один тик: пытается live→если нет и разрешён фоллбэк — берёт
+    последнюю запись из кэша, всё равно пишет новый тик.
     """
     now = int(time.time())
-
     live = _fetch_live()
-    if not live:
-        print("collect: no live source available", file=sys.stderr)
-        return 2
 
-    freq = live.get("freq")
-    amp  = live.get("amp")
+    if not live:
+        if not ALLOW_CACHE_ON_FAIL:
+            print("collect: no live source available, and cache fallback disabled", file=sys.stderr)
+            return 2
+        rows = _read_store()
+        if not rows:
+            print("collect: no live source and no cache", file=sys.stderr)
+            return 2
+        last = rows[-1]
+        freq = last.get("freq")
+        amp  = last.get("amp")
+        src  = "cache"
+    else:
+        freq = live.get("freq")
+        amp  = live.get("amp")
+        src  = "live"
 
     h7_amp = _fetch_h7_amp()
 
@@ -287,18 +328,18 @@ def _collect_once() -> int:
         "amp":  float(amp)  if isinstance(amp,  (int, float)) else None,
         "h7_amp": float(h7_amp) if isinstance(h7_amp, (int, float)) else None,
         "ver": 2,
+        "src": src,
     }
 
-    # посчитаем h7_spike по окну
+    # h7_spike
     if rec["h7_amp"] is not None:
         hist = [r.get("h7_amp") for r in rows if isinstance(r, dict) and isinstance(r.get("h7_amp"), (int, float))]
         hist = hist[-(H7_WINDOW-1):] + [rec["h7_amp"]]
         hist_clean = [float(v) for v in hist if isinstance(v, (int, float)) and math.isfinite(v)]
         if len(hist_clean) >= 12:
-            last = hist_clean[-1]
-            spike = _robust_h7_spike(hist_clean[:-1], last)
-            if spike is not None:
-                rec["h7_spike"] = bool(spike)
+            last_val = hist_clean[-1]
+            spike = _robust_h7_spike(hist_clean[:-1], last_val)
+            rec["h7_spike"] = bool(spike) if spike is not None else None
         else:
             rec["h7_spike"] = None
     else:
@@ -309,21 +350,19 @@ def _collect_once() -> int:
         rows = rows[-MAX_LEN:]
 
     _atomic_write_json(OUT_PATH, rows)
-    print(f"collect: ok ts={now} freq={rec['freq']} amp={rec['amp']} h7={rec['h7_amp']} spike={rec['h7_spike']} -> {OUT_PATH}")
+    print(f"collect: ok ts={now} src={src} freq={rec['freq']} amp={rec['amp']} h7={rec['h7_amp']} spike={rec['h7_spike']} -> {OUT_PATH}")
     return 0
 
 def _cli() -> int:
-    parser = argparse.ArgumentParser(description="Schumann SR collector / reader")
-    parser.add_argument("--collect", action="store_true", help="collect one tick into schumann_hourly.json (v2)")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Schumann SR: live+cache with H7")
+    ap.add_argument("--collect", action="store_true", help="collect one tick into schumann_hourly.json (v2)")
+    args = ap.parse_args()
     if args.collect:
         return _collect_once()
-    # без флага — просто показать текущее API-ответ
+    # debug dump
     import pprint
     pprint.pp(get_schumann())
     return 0
-
-# ───────────────────── main ──────────────────────────────────────────────────
 
 if __name__ == "__main__":
     raise SystemExit(_cli())
