@@ -34,6 +34,10 @@ jobs:
       - name: Run collector (writes schumann_hourly.json v2)
         env:
           # — файл истории
+          SCHU_GCI_ENABLE: "1"          # включаем HeartMath scraper
+          SCHU_GCI_STATION: "GCI003"    # Литва
+          SCHU_GCI_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
+
           SCHU_FILE: schumann_hourly.json
           SCHU_MAX_LEN: "5000"
 
