@@ -122,10 +122,17 @@ def parse_any_json(s: str) -> Optional[Any]:
 
 # ---------------- HeartMath scraping (GCI power) --------------
 
-IFRAME_SRC_RE = re.compile(
-    r'<iframe[^>]+class="[^"]*hm-gcms-src[^"]*"[^>]+src="([^"]+)"',
-    re.IGNORECASE
-)
+IFRAME_SRC_RES = [
+    re.compile(r'<iframe[^>]+class="[^"]*hm-gcms-src[^"]*"[^>]+src="([^"]+)"', re.I),
+    re.compile(r'<iframe[^>]+src="([^"]+)"[^>]+class="[^"]*hm-gcms-src[^"]*"', re.I),
+]
+def extract_iframe_src(html: str) -> Optional[str]:
+    for rx in IFRAME_SRC_RES:
+        m = rx.search(html)
+        if m:
+            return m.group(1)
+    return None
+
 
 # Common patterns seen in embedded chart pages
 # We will try multiple strategies:
@@ -278,6 +285,23 @@ def get_gci_power(station_key: str = GCI_STATION_KEY,
     pairs = find_gci_series_block(iframe_html)
     if not pairs:
         return None
+        iframe_url = extract_iframe_src(page_html)
+    if not iframe_url:
+        # иногда сохранённая страница — это уже сам iframe
+        iframe_html = page_html
+    else:
+        # если относительный путь из «сохранёнки» — идём на live-страницу iframe
+        if not iframe_url.lower().startswith(("http://", "https://")):
+            # можно переопределить через env, иначе дефолт:
+            live_iframe = read_env(
+                "SCHU_GCI_IFRAME",
+                "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
+            )
+            iframe_url = live_iframe
+        try:
+            iframe_html = http_get(iframe_url, timeout=25)
+        except Exception:
+            return None
 
     latest = pick_latest_pair(pairs)
     if not latest:
