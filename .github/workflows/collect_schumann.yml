@@ -2,7 +2,7 @@ name: Collect Schumann
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/30 * * * *"   # каждые 30 минут
   workflow_dispatch:
 
 permissions:
@@ -33,26 +33,35 @@ jobs:
 
       - name: Run collector (writes schumann_hourly.json v2)
         env:
+          # — файл истории
           SCHU_FILE: schumann_hourly.json
           SCHU_MAX_LEN: "5000"
+
+          # — базовые настройки
           SCHU_AMP_SCALE: "1"
           SCHU_TREND_WINDOW: "24"
           SCHU_TREND_DELTA: "0.1"
-          SCHU_ALLOW_CACHE_ON_FAIL: "1"    # <- ключ: не падать, если live умер
+          SCHU_ALLOW_CACHE_ON_FAIL: "1"    # не падать, если live недоступен
 
-          # Если есть твой JSON-эндпоинт с freq/amp — укажи его:
-          # Пример: возвращает {"freq":7.83,"amp":1.2} или любой вложенный JSON — код сам найдёт.
+          # — опциональный твой JSON-эндпоинт с freq/amp
+          # Пример: {"freq":7.83,"amp":1.2} или вложенный JSON — код сам найдёт.
           SCHU_CUSTOM_URL: ""
 
-          # 7-я гармоника (если есть спектр)
-          H7_URL: ""              # эндпоинт спектра (см. комменты в коде)
+          # — GCI Magnetometer: скрейпинг Power (hourly)
+          GCMS_PAGE_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
+          GCMS_SITE: "GCI003"   # Lithuania (по умолчанию для этого воркфлоу)
+
+          # — 7-я гармоника (если есть спектр)
+          H7_URL: ""            # эндпоинт спектра (если появится)
           H7_TARGET_HZ: "54.81"
           H7_WINDOW_H: "48"
           H7_Z: "2.5"
           H7_MIN_ABS: "0.2"
         run: |
           python schumann.py --collect
+          echo "Last record:"
           tail -n 1 schumann_hourly.json || true
+          echo "File size:"
           wc -c schumann_hourly.json || true
 
       - name: Commit & push if changed
@@ -62,7 +71,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet -- schumann_hourly.json; then
             git add schumann_hourly.json
-            git commit -m "schumann: update (v2, cache-safe, H7 capable)"
+            git commit -m "schumann: update (v2, live GCI power, cache-safe, H7-ready)"
             git push
           else
             echo "No changes in schumann_hourly.json"
