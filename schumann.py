@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-schumann.py — collector for Schumann-esque hourly series (v2 JSON)
-- freq fixed 7.83 Hz
-- amp from HeartMath GCMS Magnetometer (GCI003 Lithuania) power proxy
-- robust HTML/iframe/JS scraping with regex + tolerant JSON cleaner
-- optional H7 spectrum hook (stub)
-- cache-safe (doesn't fail job if live is down)
+schumann.py — collector for Schumann-like hourly series (v2 JSON)
 
-Env (optional):
+Что собираем:
+- freq: фикс 7.83 Гц (якорь)
+- amp: по умолчанию маппим HeartMath GCMS "Power" станции GCI003 (Lithuania) → amp
+- h7_amp / h7_spike: опционально (если есть отдельный спектральный источник)
+
+Источники (по приоритету):
+1) SCHU_CUSTOM_URL — любой JSON/HTML, из которого можно выковырять freq≈7.83 или просто amp
+2) HeartMath GCMS:
+   - если задан SCHU_HEARTMATH_HTML — парсим сохранённую страницу (офлайн)
+   - иначе качаем лайв-страницу + вложенный iframe (tolerant regex)
+3) cache-safe: если лайв не доступен, создаём запись с src="cache" и amp=None (job не падает)
+
+ENV (все опционально):
   SCHU_FILE=schumann_hourly.json
   SCHU_MAX_LEN=5000
   SCHU_AMP_SCALE=1
@@ -16,16 +23,19 @@ Env (optional):
   SCHU_TREND_DELTA=0.1
   SCHU_ALLOW_CACHE_ON_FAIL=1
 
-  # Use saved outer HTML page (helpful in CI):
+  # HeartMath:
+  SCHU_GCI_ENABLE=1
+  SCHU_GCI_STATION=GCI003
   SCHU_HEARTMATH_HTML=path/to/gcms_magnetometer_heartmath.html
-
-  # (optional) override live iframe URL:
+  SCHU_GCI_URL=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/
   SCHU_GCI_IFRAME=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html
+  SCHU_MAP_GCI_POWER_TO_AMP=1   # маппить power→amp (по умолчанию ВКЛ)
+  SCHU_DEBUG=0                  # 1 — болтливый лог в stdout
 
-  # Custom endpoint with JSON containing freq/amp or amp:
+  # Кастомный эндпоинт:
   SCHU_CUSTOM_URL=
 
-  # H7 spectrum (stub-friendly):
+  # Спектр для 7-й гармоники:
   H7_URL=
   H7_TARGET_HZ=54.81
   H7_WINDOW_H=48
@@ -35,6 +45,7 @@ Env (optional):
 CLI:
   python schumann.py --collect
 """
+
 from __future__ import annotations
 
 import os, sys, io, time, json, math, re, gzip
@@ -47,10 +58,13 @@ except Exception:
     raise
 
 FREQ = 7.83
-GCI_STATION_KEY = "GCI003"   # Lithuania
-HEARTMATH_PAGE = "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
+GCI_STATION_KEY = os.environ.get("SCHU_GCI_STATION", "GCI003")  # Lithuania по умолчанию
 
 # --------------------------- utils ---------------------------
+
+def dbg(msg: str) -> None:
+    if os.environ.get("SCHU_DEBUG", "0").lower() in ("1","true","yes","on"):
+        print(f"[DEBUG] {msg}")
 
 def now_ts() -> int:
     return int(time.time())
@@ -75,7 +89,7 @@ def to_float(x: Any, default: float = math.nan) -> float:
         return default
 
 def http_get(url: str, timeout: int = 25, headers: Optional[Dict[str,str]] = None) -> str:
-    h = {"User-Agent": "Mozilla/5.0 (compatible; SchuBot/2.1; +github-actions)"}
+    h = {"User-Agent": "Mozilla/5.0 (compatible; Vaybometer-SchuBot/2.2; +github-actions)"}
     if headers:
         h.update(headers)
     r = requests.get(url, timeout=timeout, headers=h)
@@ -90,9 +104,9 @@ def load_local_file(path: str) -> str:
 
 def json_tidy(s: str) -> str:
     t = s
-    t = re.sub(r"'", r'"', t)                                 # single → double
-    t = re.sub(r'(?m)([{\s,])([A-Za-z_]\w*)\s*:', r'\1"\2":', t)  # bare keys
-    t = re.sub(r',\s*([}\]])', r'\1', t)                      # trailing commas
+    t = re.sub(r"'", r'"', t)                                 # одинарные → двойные
+    t = re.sub(r'(?m)([{\s,])([A-Za-z_]\w*)\s*:', r'\1"\2":', t)  # некавыченные ключи
+    t = re.sub(r',\s*([}\]])', r'\1', t)                      # висячие запятые
     return t
 
 def parse_any_json(s: str) -> Optional[Any]:
@@ -104,31 +118,36 @@ def parse_any_json(s: str) -> Optional[Any]:
         except Exception:
             return None
 
-# ---------------- HeartMath scraping (GCI power) --------------
+# ---------------- HeartMath scraping (GCI Power) --------------
 
-# Допускаем любой порядок атрибутов class/src
+HEARTMATH_PAGE = read_env(
+    "SCHU_GCI_URL",
+    "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
+)
+
+# допускаем любой порядок атрибутов class/src
 IFRAME_SRC_RES = [
     re.compile(r'<iframe[^>]+class="[^"]*hm-gcms-src[^"]*"[^>]+src="([^"]+)"', re.I),
     re.compile(r'<iframe[^>]+src="([^"]+)"[^>]+class="[^"]*hm-gcms-src[^"]*"', re.I),
 ]
 
-# Highcharts-like блоки
+# Highcharts-подобные куски
 SERIES_BLOCK_RE = re.compile(r'series\s*:\s*\[(.+?)\]\s*[),;}]', re.I | re.DOTALL)
 
-# Пары [[ts,val], ...]
+# массив пар [[ts,val], ...]
 PAIR_ARRAY_RE = re.compile(
     r'\[\s*\[\s*(\d{10,13})\s*,\s*([-+]?\d+(?:\.\d+)?)\s*](?:\s*,\s*\[\s*(?:\d{10,13})\s*,\s*[-+]?\d+(?:\.\d+)?\s*])+\s*]',
     re.DOTALL
 )
 
-# Объект серии с именем и данными
+# серия вида {"name":"...GCI003...","data":[...]}
 SERIES_ITEM_RE = re.compile(
     r'\{\s*("name"|"label")\s*:\s*"([^"]*GCI003[^"]*|[^"]*Lithuania[^"]*)"\s*,\s*("data"|"series"|"values")\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
     re.I | re.DOTALL
 )
 
 NAME_NEAR_DATA_RE = re.compile(
-    r'(GCI003|Lithuania)[^]{]{0,500}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    r'(GCI003|Lithuania)[^]{0,500}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
     re.I | re.DOTALL
 )
 
@@ -162,7 +181,7 @@ def parse_pairs_block(s: str) -> List[Tuple[int, float]]:
     return out
 
 def find_gci_series_block(iframe_html: str) -> Optional[List[Tuple[int,float]]]:
-    # A) явное имя + data
+    # A) предметный матч по имени
     for m in SERIES_ITEM_RE.finditer(iframe_html):
         arr = parse_pairs_block(m.group(4))
         if arr:
@@ -179,12 +198,12 @@ def find_gci_series_block(iframe_html: str) -> Optional[List[Tuple[int,float]]]:
                     arr = parse_pairs_block(m.group(1))
                     if arr:
                         return arr
-    # C) эвристика «рядом с именем»
+    # C) эвристика «имя рядом с data»
     for m in NAME_NEAR_DATA_RE.finditer(iframe_html):
         arr = parse_pairs_block(m.group(2))
         if arr:
             return arr
-    # D) ласт‑резорт: берем самые длинные массивы пар, с биасом, если слева виден GCI003
+    # D) last resort: самые «увесистые» массивы пар; плюс биас, если слева подсказка GCI003
     candidates: List[Tuple[int, List[Tuple[int,float]]]] = []
     for m in PAIR_ARRAY_RE.finditer(iframe_html):
         s = m.group(0)
@@ -201,21 +220,25 @@ def find_gci_series_block(iframe_html: str) -> Optional[List[Tuple[int,float]]]:
 def get_gci_power(station_key: str = GCI_STATION_KEY,
                   page_html: Optional[str] = None) -> Optional[Tuple[int, float]]:
     """
-    Returns (ts, power) for given station from HeartMath page+iframe, or None.
+    Возвращает (ts, power) для станции HeartMath (по умолчанию GCI003).
     """
     # 0) локальная сохранёнка?
     page_html_path = read_env("SCHU_HEARTMATH_HTML", "").strip()
     if page_html is None and page_html_path:
         try:
             page_html = load_local_file(page_html_path)
-        except Exception:
+            dbg(f"Loaded local HeartMath HTML: {page_html_path} ({len(page_html)} bytes)")
+        except Exception as e:
+            dbg(f"Local HTML read error: {e}")
             page_html = None
 
-    # 1) если нет — грузим живую страницу
+    # 1) если нет — грузим лайв-страницу
     if page_html is None:
         try:
             page_html = http_get(HEARTMATH_PAGE, timeout=25)
-        except Exception:
+            dbg(f"Fetched HeartMath page ok ({len(page_html)} bytes)")
+        except Exception as e:
+            dbg(f"Fetch HeartMath page error: {e}")
             page_html = None
 
     if not page_html:
@@ -224,27 +247,32 @@ def get_gci_power(station_key: str = GCI_STATION_KEY,
     # 2) ищем iframe
     iframe_url = extract_iframe_src(page_html)
     if not iframe_url:
-        # возможно, это уже сам iframe
+        dbg("No iframe found — assuming given HTML IS the iframe")
         iframe_html = page_html
     else:
-        # 3) относительный путь? → на живой iframe
+        # относительный путь? → на дефолтный live iframe
         if not iframe_url.lower().startswith(("http://", "https://")):
             iframe_url = read_env(
                 "SCHU_GCI_IFRAME",
                 "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
             )
+            dbg(f"Using fallback iframe URL: {iframe_url}")
         try:
             iframe_html = http_get(iframe_url, timeout=25)
-        except Exception:
+            dbg(f"Fetched iframe ok ({len(iframe_html)} bytes)")
+        except Exception as e:
+            dbg(f"Fetch iframe error: {e}")
             return None
 
-    # 4) извлекаем массив пар
+    # 3) извлекаем массив пар для GCI003
     pairs = find_gci_series_block(iframe_html)
     if not pairs:
+        dbg("No GCI003 series found in iframe")
         return None
 
     latest = pick_latest_pair(pairs)
     if not latest:
+        dbg("No latest pair after parsing")
         return None
 
     return latest  # (ts, power)
@@ -275,8 +303,10 @@ def try_h7_spike() -> Tuple[Optional[float], Optional[bool]]:
             return (None, None)
         vals.sort(key=lambda t: abs(t[0]-target))
         h7_amp = vals[0][1]
+        # примитивный «спайк»: сравним с медианой/кванилями и Z — опустим; просто отдаём amp
         return (h7_amp, None)
-    except Exception:
+    except Exception as e:
+        dbg(f"H7 fetch/parse error: {e}")
         return (None, None)
 
 # ------------------------- storage v2 -------------------------
@@ -349,7 +379,7 @@ def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
         dig(data)
         amp = next((v for v in found_amp if math.isfinite(v)), math.nan)
         if not math.isfinite(amp):
-            # fallback: первая числовая 'amp'
+            # fallback: любая числовая 'amp'
             nums: List[float] = []
             def dig2(x):
                 if isinstance(x, dict):
@@ -362,7 +392,8 @@ def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
         if not math.isfinite(amp):
             return None
         return (now_ts(), float(amp))
-    except Exception:
+    except Exception as e:
+        dbg(f"Custom URL error: {e}")
         return None
 
 # -------------------------- main collect --------------------------
@@ -370,6 +401,7 @@ def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
 def collect() -> int:
     out_path = read_env("SCHU_FILE", "schumann_hourly.json")
     allow_cache = read_env("SCHU_ALLOW_CACHE_ON_FAIL", "1").lower() in ("1","true","yes","on")
+    map_power_to_amp = read_env("SCHU_MAP_GCI_POWER_TO_AMP", "1").lower() in ("1","true","yes","on")
 
     ts = None
     amp = None
@@ -377,23 +409,27 @@ def collect() -> int:
 
     h7_amp, h7_spike = try_h7_spike()
 
-    # кастомный JSON сначала
+    # 1) кастомный JSON/HTML
     custom_url = read_env("SCHU_CUSTOM_URL","").strip()
     if custom_url:
         r = fetch_custom_url(custom_url)
         if r:
             ts, amp = r
             src = "custom"
+            dbg(f"Taken from custom URL: ts={ts}, amp={amp}")
 
-    # HeartMath GCMS
+    # 2) HeartMath GCMS
     if ts is None or amp is None:
-        r = get_gci_power(GCI_STATION_KEY)
-        if r:
-            ts, amp = r
-            src = "gci"
+        if read_env("SCHU_GCI_ENABLE","1").lower() in ("1","true","yes","on"):
+            r = get_gci_power(GCI_STATION_KEY)
+            if r:
+                ts, power = r
+                amp = float(power) if map_power_to_amp else None
+                src = GCI_STATION_KEY.lower()
+                dbg(f"Taken from HeartMath: ts={ts}, power={power}, map_to_amp={map_power_to_amp}")
 
+    # 3) Cache-safe fallback
     if ts is None:
-        # безопасная «пустая» запись
         tnow = now_ts()
         ts = int(tnow - (tnow % 3600))
         amp = None
@@ -401,7 +437,9 @@ def collect() -> int:
             print("collect: no live source available", file=sys.stderr)
             return 2
         src = "cache"
+        dbg("Fallback to cache-safe record")
 
+    # масштабирование
     scale = to_float(read_env("SCHU_AMP_SCALE","1"), 1.0)
     if amp is not None and math.isfinite(scale):
         amp = amp * scale
