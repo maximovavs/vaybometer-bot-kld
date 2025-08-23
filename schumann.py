@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 schumann.py — collector for Schumann-esque hourly series (v2 JSON)
-- freq is fixed 7.83 Hz
-- amp is "power" proxy from HeartMath GCMS Magnetometer (GCI003 Lithuania)
+- freq fixed 7.83 Hz
+- amp from HeartMath GCMS Magnetometer (GCI003 Lithuania) power proxy
 - robust HTML/iframe/JS scraping with regex + tolerant JSON cleaner
-- optional H7 spectrum hook (kept as stub if you don't use it yet)
-- cache-safe: won't fail the workflow if live source is down (env flag)
+- optional H7 spectrum hook (stub)
+- cache-safe (doesn't fail job if live is down)
 
-Env (all optional):
+Env (optional):
   SCHU_FILE=schumann_hourly.json
   SCHU_MAX_LEN=5000
   SCHU_AMP_SCALE=1
@@ -16,11 +16,16 @@ Env (all optional):
   SCHU_TREND_DELTA=0.1
   SCHU_ALLOW_CACHE_ON_FAIL=1
 
-  # override (for tests) with saved page or custom endpoint:
-  SCHU_HEARTMATH_HTML=/path/to/"GCMS Magnetometer _ HeartMath Institute.html"
-  SCHU_CUSTOM_URL=https://example/json  # returns {"freq":7.83,"amp":1.2} (any nesting ok)
+  # Use saved outer HTML page (helpful in CI):
+  SCHU_HEARTMATH_HTML=path/to/gcms_magnetometer_heartmath.html
 
-  # H7 spectrum (optional / stub-friendly)
+  # (optional) override live iframe URL:
+  SCHU_GCI_IFRAME=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html
+
+  # Custom endpoint with JSON containing freq/amp or amp:
+  SCHU_CUSTOM_URL=
+
+  # H7 spectrum (stub-friendly):
   H7_URL=
   H7_TARGET_HZ=54.81
   H7_WINDOW_H=48
@@ -34,18 +39,15 @@ from __future__ import annotations
 
 import os, sys, io, time, json, math, re, gzip
 from typing import Any, Dict, List, Optional, Tuple, Iterable
-import datetime as dt
 
 try:
     import requests
-except Exception as e:
+except Exception:
     print("You need 'requests' package", file=sys.stderr)
     raise
 
 FREQ = 7.83
 GCI_STATION_KEY = "GCI003"   # Lithuania
-GCI_STATION_NAME = "Lithuania"
-
 HEARTMATH_PAGE = "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
 
 # --------------------------- utils ---------------------------
@@ -72,15 +74,12 @@ def to_float(x: Any, default: float = math.nan) -> float:
     except Exception:
         return default
 
-def http_get(url: str, timeout: int = 20, headers: Optional[Dict[str,str]] = None) -> str:
-    h = {
-        "User-Agent": "Mozilla/5.0 (compatible; SchuBot/2.0; +github-actions)"
-    }
+def http_get(url: str, timeout: int = 25, headers: Optional[Dict[str,str]] = None) -> str:
+    h = {"User-Agent": "Mozilla/5.0 (compatible; SchuBot/2.1; +github-actions)"}
     if headers:
         h.update(headers)
     r = requests.get(url, timeout=timeout, headers=h)
     r.raise_for_status()
-    # gunzip if needed
     if r.headers.get("content-encoding","").lower() == "gzip":
         return gzip.decompress(r.content).decode(r.encoding or "utf-8", errors="replace")
     return r.text
@@ -90,25 +89,10 @@ def load_local_file(path: str) -> str:
         return f.read()
 
 def json_tidy(s: str) -> str:
-    """
-    Make JS-ish object/array closer to JSON:
-      - replace single quotes with double (careful, but ok for numeric arrays/keys)
-      - remove trailing commas
-      - unquote bare keys
-    This is best-effort for chart configs; falls back gracefully.
-    """
     t = s
-
-    # unescape \x style to keep numerics intact
-    # 1) replace single quotes around strings/keys -> double quotes
-    t = re.sub(r"'", r'"', t)
-
-    # 2) quote bare keys: foo: -> "foo":
-    t = re.sub(r'(?m)([{\s,])([A-Za-z_]\w*)\s*:', r'\1"\2":', t)
-
-    # 3) remove trailing commas before ] or }
-    t = re.sub(r',\s*([}\]])', r'\1', t)
-
+    t = re.sub(r"'", r'"', t)                                 # single → double
+    t = re.sub(r'(?m)([{\s,])([A-Za-z_]\w*)\s*:', r'\1"\2":', t)  # bare keys
+    t = re.sub(r',\s*([}\]])', r'\1', t)                      # trailing commas
     return t
 
 def parse_any_json(s: str) -> Optional[Any]:
@@ -122,10 +106,32 @@ def parse_any_json(s: str) -> Optional[Any]:
 
 # ---------------- HeartMath scraping (GCI power) --------------
 
+# Допускаем любой порядок атрибутов class/src
 IFRAME_SRC_RES = [
     re.compile(r'<iframe[^>]+class="[^"]*hm-gcms-src[^"]*"[^>]+src="([^"]+)"', re.I),
     re.compile(r'<iframe[^>]+src="([^"]+)"[^>]+class="[^"]*hm-gcms-src[^"]*"', re.I),
 ]
+
+# Highcharts-like блоки
+SERIES_BLOCK_RE = re.compile(r'series\s*:\s*\[(.+?)\]\s*[),;}]', re.I | re.DOTALL)
+
+# Пары [[ts,val], ...]
+PAIR_ARRAY_RE = re.compile(
+    r'\[\s*\[\s*(\d{10,13})\s*,\s*([-+]?\d+(?:\.\d+)?)\s*](?:\s*,\s*\[\s*(?:\d{10,13})\s*,\s*[-+]?\d+(?:\.\d+)?\s*])+\s*]',
+    re.DOTALL
+)
+
+# Объект серии с именем и данными
+SERIES_ITEM_RE = re.compile(
+    r'\{\s*("name"|"label")\s*:\s*"([^"]*GCI003[^"]*|[^"]*Lithuania[^"]*)"\s*,\s*("data"|"series"|"values")\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    re.I | re.DOTALL
+)
+
+NAME_NEAR_DATA_RE = re.compile(
+    r'(GCI003|Lithuania)[^]{]{0,500}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    re.I | re.DOTALL
+)
+
 def extract_iframe_src(html: str) -> Optional[str]:
     for rx in IFRAME_SRC_RES:
         m = rx.search(html)
@@ -133,58 +139,17 @@ def extract_iframe_src(html: str) -> Optional[str]:
             return m.group(1)
     return None
 
-
-# Common patterns seen in embedded chart pages
-# We will try multiple strategies:
-
-# 1) Highcharts-like: series: [{name:"GCI003 ...", data:[[ts,val],...]}]
-SERIES_BLOCK_RE = re.compile(
-    r'series\s*:\s*\[(.+?)\]\s*[),;}]',
-    re.IGNORECASE | re.DOTALL
-)
-
-# 2) Some pages embed a global var with datasets
-#    Try to catch JSON-ish arrays directly: [[ts,val], ...]
-PAIR_ARRAY_RE = re.compile(
-    r'\[\s*\[\s*(\d{10,13})\s*,\s*([-+]?\d+(?:\.\d+)?)\s*](?:\s*,\s*\[\s*(?:\d{10,13})\s*,\s*[-+]?\d+(?:\.\d+)?\s*])+\s*]',
-    re.DOTALL
-)
-
-# 3) Name/GCI key near data block
-SERIES_ITEM_RE = re.compile(
-    r'\{\s*("name"|"label")\s*:\s*"([^"]*GCI003[^"]*|[^"]*Lithuania[^"]*)"\s*,\s*("data"|"series"|"values")\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
-    re.IGNORECASE | re.DOTALL
-)
-
-NAME_NEAR_DATA_RE = re.compile(
-    r'(GCI003|Lithuania)[^]{]{0,500}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
-    re.IGNORECASE | re.DOTALL
-)
-
-def extract_iframe_src(html: str) -> Optional[str]:
-    m = IFRAME_SRC_RE.search(html)
-    if m:
-        return m.group(1)
-    return None
-
 def pick_latest_pair(pairs: Iterable[Tuple[int, float]]) -> Optional[Tuple[int,float]]:
     latest = None
     for ts, val in pairs:
         if not math.isfinite(val):
             continue
-        if ts > 1e12:  # ms -> s
-            ts = int(ts / 1000)
-        else:
-            ts = int(ts)
+        ts = int(ts / 1000) if ts > 1e12 else int(ts)
         if latest is None or ts > latest[0]:
             latest = (ts, float(val))
     return latest
 
 def parse_pairs_block(s: str) -> List[Tuple[int, float]]:
-    """
-    Accepts a string like [[ts,val],[ts2,val2],...]
-    Returns list of (ts, val)
-    """
     data = parse_any_json(s)
     out: List[Tuple[int,float]] = []
     if isinstance(data, list):
@@ -197,61 +162,48 @@ def parse_pairs_block(s: str) -> List[Tuple[int, float]]:
     return out
 
 def find_gci_series_block(iframe_html: str) -> Optional[List[Tuple[int,float]]]:
-    """
-    Try several patterns to find the series for GCI003/Lithuania and return pairs.
-    """
-    # Strategy A: item with explicit "name": "...GCI003..." and "data": [...]
+    # A) явное имя + data
     for m in SERIES_ITEM_RE.finditer(iframe_html):
         arr = parse_pairs_block(m.group(4))
         if arr:
             return arr
-
-    # Strategy B: look for the whole "series: [ ... ]" block and search inside for GCI003
+    # B) общий блок series: [...]
     sb = SERIES_BLOCK_RE.search(iframe_html)
     if sb:
         block = sb.group(1)
-        # Split rough objects by "},{" boundaries safest-ish
         chunks = re.split(r'\}\s*,\s*\{', block)
         for ch in chunks:
-            if re.search(r'(GCI003|Lithuania)', ch, re.IGNORECASE):
-                m = re.search(r'data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)', ch, re.IGNORECASE | re.DOTALL)
+            if re.search(r'(GCI003|Lithuania)', ch, re.I):
+                m = re.search(r'data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)', ch, re.I | re.DOTALL)
                 if m:
                     arr = parse_pairs_block(m.group(1))
                     if arr:
                         return arr
-
-    # Strategy C: near-name heuristic
+    # C) эвристика «рядом с именем»
     for m in NAME_NEAR_DATA_RE.finditer(iframe_html):
         arr = parse_pairs_block(m.group(2))
         if arr:
             return arr
-
-    # Strategy D: last resort — pick any big pair-array and hope it’s the right one,
-    #             but prefer ones preceded by GCI003 within 1k chars to the left.
-    candidates: List[Tuple[int,float]] = []
+    # D) ласт‑резорт: берем самые длинные массивы пар, с биасом, если слева виден GCI003
+    candidates: List[Tuple[int, List[Tuple[int,float]]]] = []
     for m in PAIR_ARRAY_RE.finditer(iframe_html):
         s = m.group(0)
-        start = m.start()
-        left = iframe_html[max(0, start - 1000):start]
-        bias = 1 if re.search(r'(GCI003|Lithuania)', left, re.IGNORECASE) else 0
+        left = iframe_html[max(0, m.start()-1000):m.start()]
+        bias = 100000 if re.search(r'(GCI003|Lithuania)', left, re.I) else 0
         arr = parse_pairs_block(s)
         if arr:
-            # keep best length + bias
-            candidates.append((len(arr) + 1000 * bias, arr))  # type: ignore
-
+            candidates.append((len(arr) + bias, arr))
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
-        return candidates[0][1]  # best guess
-
+        return candidates[0][1]
     return None
 
 def get_gci_power(station_key: str = GCI_STATION_KEY,
                   page_html: Optional[str] = None) -> Optional[Tuple[int, float]]:
     """
-    Returns (ts, power) for given station, or None.
-    Will fetch HEARTMATH_PAGE (or use provided page_html), then load iframe and parse.
+    Returns (ts, power) for given station from HeartMath page+iframe, or None.
     """
-    # 0) If the user passed a saved page via env, use that first
+    # 0) локальная сохранёнка?
     page_html_path = read_env("SCHU_HEARTMATH_HTML", "").strip()
     if page_html is None and page_html_path:
         try:
@@ -259,7 +211,7 @@ def get_gci_power(station_key: str = GCI_STATION_KEY,
         except Exception:
             page_html = None
 
-    # 1) Fetch outer page if needed
+    # 1) если нет — грузим живую страницу
     if page_html is None:
         try:
             page_html = http_get(HEARTMATH_PAGE, timeout=25)
@@ -269,39 +221,27 @@ def get_gci_power(station_key: str = GCI_STATION_KEY,
     if not page_html:
         return None
 
-    # 2) Find iframe src
+    # 2) ищем iframe
     iframe_url = extract_iframe_src(page_html)
     if not iframe_url:
-        # sometimes the page is the chart itself (if saved as inner doc)
+        # возможно, это уже сам iframe
         iframe_html = page_html
     else:
-        # 3) Fetch iframe
+        # 3) относительный путь? → на живой iframe
+        if not iframe_url.lower().startswith(("http://", "https://")):
+            iframe_url = read_env(
+                "SCHU_GCI_IFRAME",
+                "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
+            )
         try:
             iframe_html = http_get(iframe_url, timeout=25)
         except Exception:
             return None
 
-    # 4) Parse series for this station
+    # 4) извлекаем массив пар
     pairs = find_gci_series_block(iframe_html)
     if not pairs:
         return None
-        iframe_url = extract_iframe_src(page_html)
-    if not iframe_url:
-        # иногда сохранённая страница — это уже сам iframe
-        iframe_html = page_html
-    else:
-        # если относительный путь из «сохранёнки» — идём на live-страницу iframe
-        if not iframe_url.lower().startswith(("http://", "https://")):
-            # можно переопределить через env, иначе дефолт:
-            live_iframe = read_env(
-                "SCHU_GCI_IFRAME",
-                "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
-            )
-            iframe_url = live_iframe
-        try:
-            iframe_html = http_get(iframe_url, timeout=25)
-        except Exception:
-            return None
 
     latest = pick_latest_pair(pairs)
     if not latest:
@@ -312,40 +252,29 @@ def get_gci_power(station_key: str = GCI_STATION_KEY,
 # --------------- optional H7 spectrum hook (stub-safe) ---------------
 
 def try_h7_spike() -> Tuple[Optional[float], Optional[bool]]:
-    """
-    Placeholder: returns (h7_amp, h7_spike) if you later connect a spectrum endpoint.
-    For now, read env H7_URL; otherwise return (None, None).
-    """
     h7_url = read_env("H7_URL", "").strip()
     if not h7_url:
         return (None, None)
     try:
-        # Expect JSON like [{"freq":..,"amp":..}, ...] or any nest with arrays
         txt = http_get(h7_url, timeout=20)
-        # find best amp near target Hz
         target = to_float(read_env("H7_TARGET_HZ", "54.81"), 54.81)
         data = parse_any_json(txt)
         vals: List[Tuple[float,float]] = []
         def dig(x):
             if isinstance(x, dict):
-                # common keys
-                f = None; a = None
-                if "freq" in x: f = to_float(x["freq"], math.nan)
-                if "frequency" in x: f = to_float(x["frequency"], math.nan) if f is math.nan else f
-                if "amp" in x: a = to_float(x["amp"], math.nan)
-                if "amplitude" in x: a = to_float(x["amplitude"], math.nan) if a is math.nan else a
-                if f is not math.nan and a is not math.nan:
-                    vals.append((f,a))
+                f = x.get("freq", x.get("frequency"))
+                a = x.get("amp", x.get("amplitude"))
+                if f is not None and a is not None:
+                    ff = to_float(f, math.nan); aa = to_float(a, math.nan)
+                    if math.isfinite(ff) and math.isfinite(aa): vals.append((ff, aa))
                 for v in x.values(): dig(v)
             elif isinstance(x, list):
                 for v in x: dig(v)
         dig(data)
         if not vals:
             return (None, None)
-        # pick closest to target
         vals.sort(key=lambda t: abs(t[0]-target))
         h7_amp = vals[0][1]
-        # crude spike flag vs neighbor median (not implemented — return None)
         return (h7_amp, None)
     except Exception:
         return (None, None)
@@ -374,9 +303,7 @@ def save_series(path: str, arr: List[Dict[str,Any]]) -> None:
     os.replace(tmp, path)
 
 def clamp_len(arr: List[Dict[str,Any]], max_len: int) -> List[Dict[str,Any]]:
-    if max_len > 0 and len(arr) > max_len:
-        return arr[-max_len:]
-    return arr
+    return arr[-max_len:] if max_len > 0 and len(arr) > max_len else arr
 
 def append_record(path: str,
                   ts: int,
@@ -394,12 +321,10 @@ def append_record(path: str,
         "src": src,
         "h7_spike": h7_spike if isinstance(h7_spike, bool) else None
     }
-
     if arr and isinstance(arr[-1], dict) and int(arr[-1].get("ts",0)) == ts:
         arr[-1] = rec
     else:
         arr.append(rec)
-
     max_len = to_int(read_env("SCHU_MAX_LEN", "5000"), 5000)
     arr = clamp_len(arr, max_len)
     save_series(path, arr)
@@ -408,36 +333,24 @@ def append_record(path: str,
 # --------------------- CUSTOM_URL support ---------------------
 
 def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
-    """
-    Accepts any JSON; will search for "freq"≈7.83 & "amp" value, or just "amp".
-    Returns (ts_now, amp) if found.
-    """
     try:
         txt = http_get(url, timeout=20)
         data = parse_any_json(txt)
-        found_amp = []
-
+        found_amp: List[float] = []
         def dig(x):
             if isinstance(x, dict):
-                # prioritize freq~7.83 + amp
                 f = x.get("freq", x.get("frequency"))
                 a = x.get("amp", x.get("power", x.get("value")))
                 if f is not None and abs(to_float(f, 0.0) - FREQ) < 0.2 and a is not None:
                     found_amp.append(to_float(a, math.nan))
-                # also traverse deeper
                 for v in x.values(): dig(v)
             elif isinstance(x, list):
                 for v in x: dig(v)
-
         dig(data)
-        amp = None
-        for v in found_amp:
-            if math.isfinite(v):
-                amp = v
-                break
-        if amp is None:
-            # fallback: first numeric "amp" anywhere
-            nums = []
+        amp = next((v for v in found_amp if math.isfinite(v)), math.nan)
+        if not math.isfinite(amp):
+            # fallback: первая числовая 'amp'
+            nums: List[float] = []
             def dig2(x):
                 if isinstance(x, dict):
                     if "amp" in x: nums.append(to_float(x["amp"], math.nan))
@@ -445,11 +358,8 @@ def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
                 elif isinstance(x, list):
                     for v in x: dig2(v)
             dig2(data)
-            for v in nums:
-                if math.isfinite(v):
-                    amp = v
-                    break
-        if amp is None:
+            amp = next((v for v in nums if math.isfinite(v)), math.nan)
+        if not math.isfinite(amp):
             return None
         return (now_ts(), float(amp))
     except Exception:
@@ -459,20 +369,15 @@ def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
 
 def collect() -> int:
     out_path = read_env("SCHU_FILE", "schumann_hourly.json")
-    allow_cache = read_env("SCHU_ALLOW_CACHE_ON_FAIL", "1") in ("1","true","yes","on")
+    allow_cache = read_env("SCHU_ALLOW_CACHE_ON_FAIL", "1").lower() in ("1","true","yes","on")
 
-    # Order of attempts:
-    # 1) SCHU_CUSTOM_URL (if provided)
-    # 2) HeartMath GCMS (GCI003) page+iframe scrape
-    # 3) cache-only (no change), if allowed
     ts = None
     amp = None
     src = None
 
-    # H7 (optional)
     h7_amp, h7_spike = try_h7_spike()
 
-    # Try custom URL first
+    # кастомный JSON сначала
     custom_url = read_env("SCHU_CUSTOM_URL","").strip()
     if custom_url:
         r = fetch_custom_url(custom_url)
@@ -480,35 +385,28 @@ def collect() -> int:
             ts, amp = r
             src = "custom"
 
-    # Try HeartMath GCI
+    # HeartMath GCMS
     if ts is None or amp is None:
         r = get_gci_power(GCI_STATION_KEY)
         if r:
             ts, amp = r
             src = "gci"
 
-    # If still none — we either keep last ts and fill None amp, or use cache semantics.
     if ts is None:
-        # as a safe default, use current time bucket (hour floor)
+        # безопасная «пустая» запись
         tnow = now_ts()
         ts = int(tnow - (tnow % 3600))
         amp = None
-        if allow_cache:
-            # we will mark src=cache; amp stays None
-            src = "cache"
-        else:
+        if not allow_cache:
             print("collect: no live source available", file=sys.stderr)
             return 2
+        src = "cache"
 
-    # Scaling if needed
     scale = to_float(read_env("SCHU_AMP_SCALE","1"), 1.0)
     if amp is not None and math.isfinite(scale):
         amp = amp * scale
 
-    # Append to file
-    arr = append_record(out_path, ts, amp, src or "cache", h7_amp=h7_amp, h7_spike=h7_spike)
-
-    # trend window/delta kept for possible downstream (no computation here)
+    append_record(out_path, ts, amp, src or "cache", h7_amp=h7_amp, h7_spike=h7_spike)
     print(f"collect: ok ts={ts} src={src} freq={FREQ} amp={amp if amp is not None else 'None'} h7={h7_amp if h7_amp is not None else 'None'} spike={h7_spike if isinstance(h7_spike,bool) else 'None'} -> {os.path.abspath(out_path)}")
     return 0
 
