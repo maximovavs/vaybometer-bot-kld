@@ -5,15 +5,15 @@ schumann.py — collector for Schumann-like hourly series (v2 JSON)
 
 Что собираем:
 - freq: фикс 7.83 Гц (якорь)
-- amp: по умолчанию маппим HeartMath GCMS "Power" → amp
-- h7_amp / h7_spike: опционально (если будет отдельный спектральный источник)
+- amp: по умолчанию маппим HeartMath GCMS "Power" станции GCI003 (Lithuania) → amp
+- h7_amp / h7_spike: опционально (если есть отдельный спектральный источник)
 
 Источники (по приоритету):
-1) SCHU_CUSTOM_URL — любой JSON/HTML, где можно выкопать freq≈7.83 или amp
+1) SCHU_CUSTOM_URL — любой JSON/HTML, из которого можно выковырять freq≈7.83 или просто amp
 2) HeartMath GCMS:
-   • если задан SCHU_HEARTMATH_HTML — парсим сохранённую страницу (офлайн)
-   • иначе качаем live‑страницу + вложенный iframe (толерантные regex)
-3) cache-safe: если лайв недоступен, создаём запись с src="cache" (job не падает)
+   - если задан SCHU_HEARTMATH_HTML — парсим сохранённую страницу (офлайн)
+   - иначе качаем лайв-страницу + вложенный iframe (tolerant regex)
+3) cache-safe: если лайв не доступен, создаём запись с src="cache" и amp=None (job не падает)
 
 ENV (все опционально):
   SCHU_FILE=schumann_hourly.json
@@ -26,12 +26,12 @@ ENV (все опционально):
   # HeartMath:
   SCHU_GCI_ENABLE=1
   SCHU_GCI_STATION=GCI003
-  SCHU_GCI_STATIONS=GCI003,GCI001    # ← приоритетный список (Литва, затем Калифорния)
-  SCHU_HEARTMATH_HTML=data/gcms_magnetometer_heartmath.html
+  SCHU_GCI_STATIONS=GCI003,GCI001   # можно несколько; возьмём первый, кто ответил
+  SCHU_HEARTMATH_HTML=path/to/gcms_magnetometer_heartmath.html
   SCHU_GCI_URL=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/
   SCHU_GCI_IFRAME=https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html
-  SCHU_MAP_GCI_POWER_TO_AMP=1
-  SCHU_DEBUG=1
+  SCHU_MAP_GCI_POWER_TO_AMP=1   # маппить power→amp (по умолчанию ВКЛ)
+  SCHU_DEBUG=1                  # 1 — подробный лог в stdout
 
   # Кастомный эндпоинт:
   SCHU_CUSTOM_URL=
@@ -60,43 +60,29 @@ except Exception:
 
 FREQ = 7.83
 
-# --------------------------- stations ---------------------------
-
-# Доп. алиасы по географии (помогают, если в series вместо GCIxxx стоит «Lithuania», «California» и т.п.)
-GCI_ALIASES: Dict[str, List[str]] = {
-    "GCI001": ["GCI001", "California", "USA"],
-    "GCI003": ["GCI003", "Lithuania"],
-    "GCI004": ["GCI004", "New Zealand", "NZ"],
-    "GCI005": ["GCI005", "South Africa"],
-    "GCI006": ["GCI006", "Alberta", "Canada"],
-}
-
-def env_station_list() -> List[str]:
-    s = os.getenv("SCHU_GCI_STATIONS", "") or os.getenv("SCHU_GCI_STATION", "GCI003")
-    keys = [k.strip().upper() for k in s.split(",") if k.strip()]
-    # фильтр по известным GCIxxx + нормализация
-    out = []
-    for k in keys:
-        if re.fullmatch(r"GCI00[1-6]", k):
-            out.append(k)
-    if not out:
-        out = ["GCI003"]
-    return out
-
-GCI_STATION_KEYS: List[str] = env_station_list()
-
-# --------------------------- utils ---------------------------
-
-def dbg(msg: str) -> None:
-    if os.environ.get("SCHU_DEBUG", "0").lower() in ("1","true","yes","on"):
-        print(f"[DEBUG] {msg}")
-
-def now_ts() -> int:
-    return int(time.time())
+# --------------------------- env / stations ---------------------------
 
 def read_env(name: str, default: str = "") -> str:
     v = os.environ.get(name)
     return default if v is None else v
+
+# Можно задать несколько станций через запятую — будет перебор:
+# Примеры кодов: GCI001=California (USA), GCI003=Lithuania, GCI006=Alberta (Canada), GCI004=New Zealand, GCI005=South Africa
+GCI_STATIONS_ENV = read_env("SCHU_GCI_STATIONS", "").strip()
+if GCI_STATIONS_ENV:
+    GCI_STATION_KEYS = [s.strip().upper() for s in GCI_STATIONS_ENV.split(",") if s.strip()]
+else:
+    GCI_STATION_KEYS = [read_env("SCHU_GCI_STATION", "GCI003").strip().upper()]
+GCI_DEFAULT = GCI_STATION_KEYS[0]
+
+# --------------------------- utils ---------------------------
+
+def dbg(msg: str) -> None:
+    if read_env("SCHU_DEBUG", "0").lower() in ("1","true","yes","on"):
+        print(f"[DEBUG] {msg}")
+
+def now_ts() -> int:
+    return int(time.time())
 
 def to_int(x: Any, default: int = 0) -> int:
     try:
@@ -156,9 +142,26 @@ IFRAME_SRC_RES = [
     re.compile(r'<iframe[^>]+src="([^"]+)"[^>]+class="[^"]*hm-gcms-src[^"]*"', re.I),
 ]
 
-# Highcharts‑подобные куски
+# Highcharts-подобные куски
 SERIES_BLOCK_RE = re.compile(r'series\s*:\s*\[(.+?)\]\s*[),;}]', re.I | re.DOTALL)
-PAIR_ARRAY_RE   = re.compile(r'\[\s*\[\s*(\d{10,13})\s*,\s*([-+]?\d+(?:\.\d+)?)\s*](?:\s*,\s*\[\s*(?:\d{10,13})\s*,\s*[-+]?\d+(?:\.\d+)?\s*])+\s*]', re.DOTALL)
+
+# массив пар [[ts,val], ...] — ищем «увесистые» наборы
+PAIR_ARRAY_RE = re.compile(
+    r'\[\s*\[\s*(\d{10,13})\s*,\s*([-+]?\d+(?:\.\d+)?)\s*](?:\s*,\s*\[\s*(?:\d{10,13})\s*,\s*[-+]?\d+(?:\.\d+)?\s*])+\s*]',
+    re.DOTALL
+)
+
+# серия вида {"name":"...GCI003...","data":[...]} (или label/values)
+SERIES_ITEM_RE = re.compile(
+    r'\{\s*("name"|"label")\s*:\s*"([^"]*GCI\d{3}[^"]*|[^"]*(Lithuania|California|Alberta|New Zealand|South Africa)[^"]*)"\s*,\s*("data"|"series"|"values")\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    re.I | re.DOTALL
+)
+
+# безопасный «любой символ» — [\s\S]
+NAME_NEAR_DATA_RE = re.compile(
+    r'(GCI\d{3}|Lithuania|California|Alberta|New\s+Zealand|South\s+Africa)[\s\S]{0,1200}?data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)',
+    re.I | re.DOTALL
+)
 
 def extract_iframe_src(html: str) -> Optional[str]:
     for rx in IFRAME_SRC_RES:
@@ -189,65 +192,74 @@ def parse_pairs_block(s: str) -> List[Tuple[int, float]]:
                     out.append((ts, val))
     return out
 
-def build_alias_regex(keys: List[str]) -> re.Pattern:
-    aliases: List[str] = []
-    for k in keys:
-        aliases.extend(GCI_ALIASES.get(k, [k]))
-    # Экранируем и собираем в одну группу
-    alt = "|".join(sorted({re.escape(a) for a in aliases}, key=len, reverse=True))
-    return re.compile(alt, re.I)
+def _site_aliases(key: str) -> List[str]:
+    key = key.upper()
+    m = {
+        "GCI001": ["GCI001", "California"],
+        "GCI003": ["GCI003", "Lithuania"],
+        "GCI004": ["GCI004", "New Zealand"],
+        "GCI005": ["GCI005", "South Africa"],
+        "GCI006": ["GCI006", "Alberta"],
+    }
+    return m.get(key, [key])
 
-def extract_series_for_keys(iframe_html: str, keys: List[str]) -> Dict[str, List[Tuple[int,float]]]:
-    """Возвращает словарь {station_key: [(ts,val), ...]} для указанных станций."""
-    res: Dict[str, List[Tuple[int,float]]] = {}
-    alias_re = build_alias_regex(keys)
+def _series_match_any(ch: str, aliases: List[str]) -> bool:
+    for a in aliases:
+        if re.search(re.escape(a), ch, re.I):
+            return True
+    return False
 
-    # A) «series: [...]» — режем на части по объектам
+def find_gci_series_block(iframe_html: str, station_key: str) -> Optional[List[Tuple[int,float]]]:
+    aliases = _site_aliases(station_key)
+
+    # A) предметный матч по имени
+    for m in SERIES_ITEM_RE.finditer(iframe_html):
+        name_blob = m.group(2)
+        if any(re.search(re.escape(a), name_blob, re.I) for a in aliases):
+            arr = parse_pairs_block(m.group(5))
+            if arr:
+                return arr
+
+    # B) общий блок series: [...]
     sb = SERIES_BLOCK_RE.search(iframe_html)
     if sb:
         block = sb.group(1)
         chunks = re.split(r'\}\s*,\s*\{', block)
         for ch in chunks:
-            m_name = alias_re.search(ch)
-            if not m_name:
-                continue
-            # data: [...]
-            m_data = re.search(r'data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)', ch, re.I | re.DOTALL)
-            if not m_data:
-                continue
-            arr = parse_pairs_block(m_data.group(1))
-            if not arr:
-                continue
-            # понять ключ станции по сработавшему алиасу
-            alias = m_name.group(0)
-            key = next((k for k, al in GCI_ALIASES.items() if alias.lower() in [a.lower() for a in al]), None)
-            if key and key in keys:
-                res[key] = arr
+            if _series_match_any(ch, aliases):
+                m = re.search(r'data\s*:\s*(\[[^\]]*\](?:\s*,\s*\[[^\]]*\])*)', ch, re.I | re.DOTALL)
+                if m:
+                    arr = parse_pairs_block(m.group(1))
+                    if arr:
+                        return arr
 
-    # B) Если не нашли — эвристика по «ближайшему тексту»
-    if not res:
-        for m in PAIR_ARRAY_RE.finditer(iframe_html):
-            arr = parse_pairs_block(m.group(0))
-            if not arr:
-                continue
-            left = iframe_html[max(0, m.start()-1000):m.start()]
-            m_name = alias_re.search(left)
-            if not m_name:
-                continue
-            alias = m_name.group(0)
-            key = next((k for k, al in GCI_ALIASES.items() if alias.lower() in [a.lower() for a in al]), None)
-            if key and key in keys and key not in res:
-                res[key] = arr
+    # C) эвристика «имя рядом с data»
+    for m in NAME_NEAR_DATA_RE.finditer(iframe_html):
+        name = m.group(1)
+        if _series_match_any(name, aliases):
+            arr = parse_pairs_block(m.group(2))
+            if arr:
+                return arr
 
-    return res
+    # D) last resort: самые «увесистые» массивы пар; биас к тем, где рядом подсказка станции
+    candidates: List[Tuple[int, List[Tuple[int,float]]]] = []
+    for m in PAIR_ARRAY_RE.finditer(iframe_html):
+        s = m.group(0)
+        left = iframe_html[max(0, m.start()-1200):m.start()]
+        bias = 100000 if any(re.search(re.escape(a), left, re.I) for a in aliases) else 0
+        arr = parse_pairs_block(s)
+        if arr:
+            candidates.append((len(arr) + bias, arr))
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+    return None
 
-def get_gci_power(station_keys: Optional[List[str]] = None,
-                  page_html: Optional[str] = None) -> Optional[Tuple[int, float, str]]:
+def get_gci_power(station_key: str = GCI_DEFAULT,
+                  page_html: Optional[str] = None) -> Optional[Tuple[int, float]]:
     """
-    Возвращает (ts, power, station_key) для HeartMath. Перебирает станции по приоритету.
+    Возвращает (ts, power) для станции HeartMath (по умолчанию GCI003).
     """
-    keys = station_keys or GCI_STATION_KEYS
-
     # 0) локальная сохранёнка?
     page_html_path = read_env("SCHU_HEARTMATH_HTML", "").strip()
     if page_html is None and page_html_path:
@@ -276,6 +288,7 @@ def get_gci_power(station_keys: Optional[List[str]] = None,
         dbg("No iframe found — assuming given HTML IS the iframe")
         iframe_html = page_html
     else:
+        # относительный путь? → возьмём env или дефолтный live iframe
         if not iframe_url.lower().startswith(("http://", "https://")):
             iframe_url = read_env(
                 "SCHU_GCI_IFRAME",
@@ -289,20 +302,18 @@ def get_gci_power(station_keys: Optional[List[str]] = None,
             dbg(f"Fetch iframe error: {e}")
             return None
 
-    # 3) извлекаем серии сразу для нескольких станций
-    found = extract_series_for_keys(iframe_html, keys)
-    if not found:
-        dbg("No GCI series for requested stations")
+    # 3) извлекаем массив пар для нужной станции
+    pairs = find_gci_series_block(iframe_html, station_key)
+    if not pairs:
+        dbg(f"No {station_key} series found in iframe")
         return None
 
-    # 4) выбираем по приоритету
-    for k in keys:
-        if k in found:
-            latest = pick_latest_pair(found[k])
-            if latest:
-                return (latest[0], latest[1], k)
+    latest = pick_latest_pair(pairs)
+    if not latest:
+        dbg("No latest pair after parsing")
+        return None
 
-    return None
+    return latest  # (ts, power)
 
 # --------------- optional H7 spectrum hook (stub-safe) ---------------
 
@@ -424,6 +435,15 @@ def fetch_custom_url(url: str) -> Optional[Tuple[int, float]]:
 
 # -------------------------- main collect --------------------------
 
+def _try_gci_any_station() -> Optional[Tuple[int,float,str]]:
+    # Перебираем список станций, возвращаем первую успешно распарсенную
+    for key in GCI_STATION_KEYS:
+        r = get_gci_power(key)
+        if r:
+            ts, power = r
+            return ts, power, key
+    return None
+
 def collect() -> int:
     out_path = read_env("SCHU_FILE", "schumann_hourly.json")
     allow_cache = read_env("SCHU_ALLOW_CACHE_ON_FAIL", "1").lower() in ("1","true","yes","on")
@@ -444,14 +464,16 @@ def collect() -> int:
             src = "custom"
             dbg(f"Taken from custom URL: ts={ts}, amp={amp}")
 
-    # 2) HeartMath GCMS — перебор станций по приоритету
-    if (ts is None or amp is None) and read_env("SCHU_GCI_ENABLE","1").lower() in ("1","true","yes","on"):
-        r = get_gci_power(GCI_STATION_KEYS)
-        if r:
-            ts, power, key_used = r
-            amp = float(power) if map_power_to_amp else None
-            src = key_used.lower()
-            dbg(f"Taken from HeartMath: ts={ts}, power={power}, station={key_used}, map_to_amp={map_power_to_amp}")
+    # 2) HeartMath GCMS (перебор станций)
+    if ts is None or amp is None:
+        if read_env("SCHU_GCI_ENABLE","1").lower() in ("1","true","yes","on"):
+            r = _try_gci_any_station()
+            if r:
+                tts, power, used_key = r
+                ts = tts
+                amp = float(power) if map_power_to_amp else None
+                src = used_key.lower()
+                dbg(f"Taken from HeartMath: station={used_key}, ts={ts}, power={power}, map_to_amp={map_power_to_amp}")
 
     # 3) Cache-safe fallback
     if ts is None:
@@ -470,15 +492,7 @@ def collect() -> int:
         amp = amp * scale
 
     append_record(out_path, ts, amp, src or "cache", h7_amp=h7_amp, h7_spike=h7_spike)
-    print(
-        "collect: ok ts={ts} src={src} freq={freq} amp={amp} h7={h7} spike={spike} -> {path}".format(
-            ts=ts, src=src, freq=FREQ,
-            amp=("None" if amp is None else amp),
-            h7=("None" if h7_amp is None else h7_amp),
-            spike=("None" if not isinstance(h7_spike, bool) else h7_spike),
-            path=os.path.abspath(out_path),
-        )
-    )
+    print(f"collect: ok ts={ts} src={src} freq={FREQ} amp={amp if amp is not None else 'None'} h7={h7_amp if h7_amp is not None else 'None'} spike={h7_spike if isinstance(h7_spike,bool) else 'None'} -> {os.path.abspath(out_path)}")
     return 0
 
 # --------------------------- entry ---------------------------
