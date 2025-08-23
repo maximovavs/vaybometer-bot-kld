@@ -2,7 +2,7 @@ name: Collect Schumann
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # каждые 30 минут
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -38,7 +38,14 @@ jobs:
           SCHU_AMP_SCALE: "1"
           SCHU_TREND_WINDOW: "24"
           SCHU_TREND_DELTA: "0.1"
-          H7_URL: ""                   # если появится эндпоинт спектра — укажешь здесь
+          SCHU_ALLOW_CACHE_ON_FAIL: "1"    # <- ключ: не падать, если live умер
+
+          # Если есть твой JSON-эндпоинт с freq/amp — укажи его:
+          # Пример: возвращает {"freq":7.83,"amp":1.2} или любой вложенный JSON — код сам найдёт.
+          SCHU_CUSTOM_URL: ""
+
+          # 7-я гармоника (если есть спектр)
+          H7_URL: ""              # эндпоинт спектра (см. комменты в коде)
           H7_TARGET_HZ: "54.81"
           H7_WINDOW_H: "48"
           H7_Z: "2.5"
@@ -55,7 +62,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet -- schumann_hourly.json; then
             git add schumann_hourly.json
-            git commit -m "schumann: update (ver2 with h7 fields)"
+            git commit -m "schumann: update (v2, cache-safe, H7 capable)"
             git push
           else
             echo "No changes in schumann_hourly.json"
