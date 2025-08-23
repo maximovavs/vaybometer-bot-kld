@@ -6,32 +6,29 @@ post_common.py — VayboMeter (Калининград).
 • Море, прогноз Кёнига (день/ночь, м/с, RH min–max, давление)
 • Рейтинги городов (d/n, код погоды словами + 🌊)
 • Air (+ 🔥 Задымление, если не низкое), пыльца, радиация
-• Kp, Шуман (с 7-й гармоникой)
-• Астрособытия (знак как ♈ … ♓ и VOC по флагу)
+• Kp, Шуман (с фоллбэком чтения JSON; h7_amp/h7_spike)
+• Астрособытия (знак как ♈ … ♓)
 • «Вините …», рекомендации, факт дня
 """
 
 from __future__ import annotations
-import asyncio
+import os
 import json
+import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional, Union
+from typing import Any, Dict, List, Tuple, Optional
 
 import pendulum
 from telegram import Bot, constants
 
-from utils import (
-    compass, get_fact, AIR_EMOJI, pm_color, kp_emoji,
-    kmh_to_ms, smoke_index, pressure_trend, _get,
-)
+from utils       import compass, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index, pressure_trend
 from weather     import get_weather, fetch_tomorrow_temps, day_night_stats
-import air as airmod
+from air         import get_air, get_sst, get_kp
 from pollen      import get_pollen
-from schumann    import get_schumann
+from radiation   import get_radiation
 from astro       import astro_events
 from gpt         import gpt_blurb
-from radiation   import get_radiation
 from settings_klg import SEA_SST_COORD            # точка в заливе
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -39,184 +36,125 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # ────────────────────────── константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
 
-# Мэппинг WMO-кодов в короткие текст+эмодзи (минимализм, без мутной "словески")
+# Мэппинг WMO-кодов в короткие текст+эмодзи
 WMO_DESC = {
     0:"☀️ ясно", 1:"⛅ ч.обл", 2:"☁️ обл", 3:"🌥 пасм",
     45:"🌫 туман", 48:"🌫 изморозь", 51:"🌦 морось",
     61:"🌧 дождь", 71:"❄️ снег", 95:"⛈ гроза",
 }
-def code_desc(c: Any) -> Optional[str]:
+def code_desc(c: Any) -> str | None:
     return WMO_DESC.get(int(c)) if isinstance(c, (int, float)) and int(c) in WMO_DESC else None
 
-# ───────────── безопасные обёртки над air.* + локальный фоллбэк ─────────────
-def _nearest_hour_val(times: List[str], vals: List[Any]) -> Optional[float]:
-    if not times or not vals or len(times) != len(vals):
-        return None
-    try:
-        import time as _t
-        now_iso = _t.strftime("%Y-%m-%dT%H:00", _t.gmtime())
-        idxs = [i for i, t in enumerate(times) if isinstance(t, str) and t <= now_iso]
-        idx = max(idxs) if idxs else 0
-        v = vals[idx]
-        return float(v) if isinstance(v, (int, float)) else None
-    except Exception:
-        return None
+# ───────────── Шуман: чтение JSON-истории (оба формата) ─────────────
+def _read_schumann_history() -> List[Dict[str, Any]]:
+    """
+    Возвращает список записей из schumann_hourly.json (может быть v1 или v2).
+    Поиск файла:
+      1) env SCHU_FILE
+      2) ./schumann_hourly.json (рядом с post_common.py)
+      3) ../schumann_hourly.json (корень репо)
+    """
+    candidates: List[Path] = []
+    env_path = os.getenv("SCHU_FILE")
+    if env_path:
+        candidates.append(Path(env_path))
+    here = Path(__file__).parent
+    candidates += [here / "schumann_hourly.json", here.parent / "schumann_hourly.json"]
 
-def _get_sst_safe(lat: float, lon: float) -> Optional[float]:
-    try:
-        if hasattr(airmod, "get_sst"):
-            return airmod.get_sst(lat, lon)  # type: ignore[attr-defined]
-    except Exception as e:
-        logging.warning("air.get_sst error: %s", e)
-    # локальный фоллбэк (Open‑Meteo Marine)
-    try:
-        j = _get(
-            "https://marine-api.open-meteo.com/v1/marine",
-            latitude=lat, longitude=lon,
-            hourly="sea_surface_temperature", timezone="UTC",
-        )
-        if not j or "hourly" not in j:
-            return None
-        h = j["hourly"]
-        return _nearest_hour_val(h.get("time", []) or [], h.get("sea_surface_temperature", []) or [])
-    except Exception as e:
-        logging.warning("local SST fallback error: %s", e)
-        return None
-
-def _get_air_fallback_openmeteo(lat: float, lon: float) -> Dict[str, Any]:
-    try:
-        j = _get(
-            "https://air-quality-api.open-meteo.com/v1/air-quality",
-            latitude=lat, longitude=lon,
-            hourly="pm10,pm2_5,us_aqi", timezone="UTC",
-        )
-        if not j or "hourly" not in j:
-            return {}
-        h = j["hourly"]
-        t = h.get("time", []) or []
-        aqi  = _nearest_hour_val(t, h.get("us_aqi", []) or [])
-        pm25 = _nearest_hour_val(t, h.get("pm2_5", []) or [])
-        pm10 = _nearest_hour_val(t, h.get("pm10", []) or [])
-        aqi_norm: Union[float,str] = float(aqi) if isinstance(aqi,(int,float)) and aqi >= 0 else "н/д"
-        return {
-            "lvl": ("н/д" if aqi_norm == "н/д" else ("хороший" if aqi_norm <= 50 else "умеренный" if aqi_norm <= 100 else "вредный" if aqi_norm <= 150 else "оч. вредный" if aqi_norm <= 200 else "опасный")),
-            "aqi": aqi_norm,
-            "pm25": float(pm25) if isinstance(pm25,(int,float)) and pm25 >= 0 else None,
-            "pm10": float(pm10) if isinstance(pm10,(int,float)) and pm10 >= 0 else None,
-        }
-    except Exception as e:
-        logging.warning("Open-Meteo AQ fallback error: %s", e)
-        return {}
-
-def _air_is_empty(d: Dict[str, Any]) -> bool:
-    return not d or (str(d.get("aqi","н/д")) == "н/д" and d.get("pm25") in (None,"н/д") and d.get("pm10") in (None,"н/д"))
-
-def _get_air_safe(lat: float, lon: float) -> Dict[str, Any]:
-    res: Dict[str, Any] = {}
-    try:
-        if hasattr(airmod, "get_air"):
-            res = airmod.get_air(lat, lon)  # type: ignore[attr-defined]
-    except Exception as e:
-        logging.warning("air.get_air error: %s", e)
-    if _air_is_empty(res):
-        res = _get_air_fallback_openmeteo(lat, lon)
-    if _air_is_empty(res):  # совсем нет данных — заполним дефолтом
-        res = {"lvl": "н/д", "aqi": "н/д", "pm25": None, "pm10": None}
-    return res
-
-def _parse_kp_from_table(data: Any) -> Optional[float]:
-    if not isinstance(data, list) or not data or not isinstance(data[0], list):
-        return None
-    for row in reversed(data[1:]):
+    for p in candidates:
         try:
-            return float(str(row[-1]).rstrip("Z").replace(",", "."))
-        except Exception:
-            continue
-    return None
-
-def _parse_kp_from_dicts(data: Any) -> Optional[float]:
-    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-        return None
-    for item in reversed(data):
-        raw = item.get("kp_index") or item.get("estimated_kp") or item.get("kp")
-        if raw is None:
-            continue
-        try:
-            return float(str(raw).rstrip("Z").replace(",", "."))
-        except Exception:
-            continue
-    return None
-
-def _get_kp_fallback() -> Tuple[Optional[float], str]:
-    urls = [
-        "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
-        "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
-    ]
-    for u in urls:
-        try:
-            d = _get(u)
-            if not d: 
-                continue
-            kp = _parse_kp_from_table(d) if isinstance(d, list) and d and isinstance(d[0], list) else _parse_kp_from_dicts(d)
-            if kp is not None:
-                state = "спокойно" if kp < 3 else ("неспокойно" if kp < 5 else "буря")
-                return kp, state
+            if p.exists():
+                txt = p.read_text("utf-8").strip()
+                data = json.loads(txt) if txt else []
+                if isinstance(data, list):
+                    return data
         except Exception as e:
-            logging.warning("Kp fallback error: %s", e)
+            logging.warning("Schumann history read error from %s: %s", p, e)
+    return []
+
+def _schumann_trend(values: List[float], delta: float = 0.1) -> str:
+    """Стрелка тренда по сравнению с усреднением предыдущих значений."""
+    if not values:
+        return "→"
+    tail = values[-24:] if len(values) > 24 else values
+    if len(tail) < 2:
+        return "→"
+    avg_prev = sum(tail[:-1]) / (len(tail) - 1)
+    d = tail[-1] - avg_prev
+    return "↑" if d >= delta else "↓" if d <= -delta else "→"
+
+def get_schumann_with_fallback() -> Dict[str, Any]:
+    """
+    Возвращает словарь для рендеринга строки Шумана:
+      {"freq": 7.83|None, "amp": float|None, "trend": "↑/→/↓", "h7_amp": float|None, "h7_spike": bool|None, "cached": bool}
+    Поддерживает оба формата JSON (старый и v2).
+    """
+    arr = _read_schumann_history()
+    if not arr:
+        return {"freq": None, "amp": None, "trend": "→", "h7_amp": None, "h7_spike": None, "cached": True}
+
+    # Собираем амплитуды для тренда, ищем последний валидный рекорд
+    amps: List[float] = []
+    last: Optional[Dict[str, Any]] = None
+
+    for rec in arr:
+        if not isinstance(rec, dict):
             continue
-    return None, "н/д"
+        # v2 формат: {"ts", "freq", "amp", "h7_amp", "h7_spike", "src", ...}
+        if "freq" in rec and ("amp" in rec or "h7_amp" in rec):
+            if isinstance(rec.get("amp"), (int, float)):
+                amps.append(float(rec["amp"]))
+            last = rec
+        # старый формат — поддержка на всякий случай (ключи могли отличаться)
+        elif "amp" in rec:
+            try:
+                amps.append(float(rec["amp"]))
+            except Exception:
+                pass
+            last = rec
 
-def _get_kp_safe() -> Tuple[Optional[float], str]:
-    try:
-        if hasattr(airmod, "get_kp"):
-            return airmod.get_kp()  # type: ignore[attr-defined]
-    except Exception as e:
-        logging.warning("air.get_kp error: %s", e)
-    return _get_kp_fallback()
+    trend = _schumann_trend(amps)
 
-# ───────────── Шуман: live + фоллбэк, оба формата кэша, 7‑я гармоника ─────────────
+    if last is None:
+        return {"freq": None, "amp": None, "trend": trend, "h7_amp": None, "h7_spike": None, "cached": True}
 
+    freq = last.get("freq", 7.83) if isinstance(last.get("freq"), (int, float)) else 7.83
+    amp = last.get("amp") if isinstance(last.get("amp"), (int, float)) else None
+    h7_amp = last.get("h7_amp") if isinstance(last.get("h7_amp"), (int, float)) else None
+    h7_spike = last.get("h7_spike") if isinstance(last.get("h7_spike"), bool) else None
+    src = (last.get("src") or "").lower()
+    cached = (src == "cache")
 
-# ───────────── Шуман ─────────────
-import io, json, os, math
+    return {"freq": freq, "amp": amp, "trend": trend, "h7_amp": h7_amp, "h7_spike": h7_spike, "cached": cached}
 
-SCHU_FILE = os.getenv("SCHU_FILE", "schumann_hourly.json")
+def schumann_line(s: Dict[str, Any]) -> str:
+    """
+    Рендер строки для поста.
+    Пример: 🟢 Шуман: 7.83 Гц / 4.2 pT ↑  (H7: 0.9 ⚡)
+    """
+    if s.get("freq") is None:
+        return "🎵 Шуман: н/д"
+    f = s["freq"]
+    amp = s.get("amp")
+    trend = s.get("trend", "→")
+    h7_amp = s.get("h7_amp")
+    h7_spike = s.get("h7_spike")
 
-def _load_last_schumann(path: str = SCHU_FILE):
-    try:
-        with io.open(path, "r", encoding="utf-8") as f:
-            arr = json.load(f)
-        if isinstance(arr, list) and arr:
-            rec = arr[-1]
-            # поддержка старого формата { "freq":..,"amp":.. } без h7
-            return {
-                "freq": rec.get("freq"),
-                "amp": rec.get("amp"),
-                "h7_amp": rec.get("h7_amp"),
-                "src": rec.get("src", "cache"),
-                "ver": rec.get("ver", 2),
-            }
-    except Exception:
-        pass
-    return {}
+    # эмодзи по частоте (условно)
+    e = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
 
-def schumann_line_from_file() -> str:
-    r = _load_last_schumann()
-    f = r.get("freq")
-    a = r.get("amp")
-    h7 = r.get("h7_amp")
-    # индикатор по частоте (если нет частоты — серый)
-    if isinstance(f, (int, float)):
-        emoji = "🔴" if f < 7.6 else ("🟣" if f > 8.1 else "🟢")
-        freq_str = f"{f:.2f} Гц"
+    base = f"{e} Шуман: {float(f):.2f} Гц"
+    if isinstance(amp, (int, float)):
+        base += f" / {float(amp):.2f} pT {trend}"
     else:
-        emoji = "⚪"
-        freq_str = "н/д"
-    # амплитуда
-    amp_str = "н/д" if (a is None or (isinstance(a, float) and math.isnan(a))) else f"{a:.2f}"
-    # 7-я гармоника (если есть)
-    h7_str = "" if (h7 is None or (isinstance(h7, float) and math.isnan(h7))) else f" / H7 {h7:.2f}"
-    return f"{emoji} Шуман: {freq_str} / {amp_str} pT{h7_str}"
+        base += f" / н/д {trend}"
+
+    if isinstance(h7_amp, (int, float)):
+        base += f" · H7 {h7_amp:.2f}"
+        if isinstance(h7_spike, bool):
+            base += " ⚡" if h7_spike else ""
+    return base
+
 # ───────────── Радиация ─────────────
 def radiation_line(lat: float, lon: float) -> str | None:
     data = get_radiation(lat, lon) or {}
@@ -244,8 +182,9 @@ def zsym(s: str) -> str:
 
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
-                  sea_label: str, sea_cities, other_label: str,
-                  other_cities, tz: pendulum.Timezone) -> str:
+                  sea_label: str, sea_cities,
+                  other_label: str, other_cities,
+                  tz: pendulum.Timezone) -> str:
 
     P: List[str] = []
     today = pendulum.now(tz).date()
@@ -255,7 +194,7 @@ def build_message(region_name: str,
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
     # Море (средняя SST в точке)
-    sst = _get_sst_safe(*SEA_SST_COORD)
+    sst = get_sst(*SEA_SST_COORD)
     P.append(f"🌊 Темп. моря (центр залива): {sst:.1f} °C" if sst is not None
              else "🌊 Темп. моря (центр залива): н/д")
 
@@ -297,7 +236,7 @@ def build_message(region_name: str,
             continue
         wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
         wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
-        temps_sea[city] = (tmax, tmin or tmax, wcx, _get_sst_safe(la, lo))
+        temps_sea[city] = (tmax, tmin or tmax, wcx, get_sst(la, lo))
     if temps_sea:
         P.append(f"🎖️ <b>{sea_label}</b>")
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
@@ -333,12 +272,11 @@ def build_message(region_name: str,
         P.append("———")
 
     # Air + пыльца + радиация
-    air = _get_air_safe(KLD_LAT, KLD_LON) or {}
+    air = get_air(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
-    src_hint = air.get("src_icon") or air.get("src_emoji") or ""
-    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} {src_hint} (AQI {air.get('aqi','н/д')}) | "
-         f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
+    P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
+             f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
     em, lbl = smoke_index(air.get("pm25"), air.get("pm10"))
     if lbl != "низкое":
         P.append(f"🔥 Задымление: {em} {lbl}")
@@ -350,14 +288,14 @@ def build_message(region_name: str,
     P.append("———")
 
     # Kp + Шуман
-    kp, ks = _get_kp_safe()
+    kp, ks = get_kp()
     P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
-P.append(schumann_line_from_file())
+    P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # Астрособытия (VOC печатается внутри astro_events при show_all_voc=True)
+    # Астрособытия
     P.append("🌌 <b>Астрособытия</b>")
-    astro = astro_events(offset_days=1, show_all_voc=True, tz=tz)
+    astro = astro_events(offset_days=1, show_all_voc=True)
     if astro:
         P.extend([zsym(line) for line in astro])
     else:
@@ -373,7 +311,9 @@ P.append(schumann_line_from_file())
     try:
         _, tips = gpt_blurb(culprit)
         for t in tips[:3]:
-            P.append(t.strip())
+            t = t.strip()
+            if t:
+                P.append(t)
     except Exception:
         P.append("— больше воды, меньше стресса, нормальный сон")
 
@@ -385,8 +325,7 @@ P.append(schumann_line_from_file())
 async def send_common_post(bot: Bot, chat_id: int, region_name: str,
                            sea_label: str, sea_cities, other_label: str,
                            other_cities, tz):
-    msg = build_message(region_name, sea_label, sea_cities,
-                        other_label, other_cities, tz)
+    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
     await bot.send_message(chat_id=chat_id, text=msg,
                            parse_mode=constants.ParseMode.HTML,
                            disable_web_page_preview=True)
