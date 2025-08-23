@@ -1,4 +1,4 @@
-8name: Collect Schumann
+name: Collect Schumann
 
 on:
   schedule:
@@ -33,13 +33,14 @@ jobs:
 
       - name: Run collector (writes schumann_hourly.json v2)
         env:
-          # — файл истории
-          SCHU_GCI_ENABLE: "1"          # включаем HeartMath scraper
+          # — HeartMath (GCI)
+          SCHU_GCI_ENABLE: "1"
           SCHU_GCI_STATIONS: "GCI001,GCI003,GCI006,GCI004,GCI005"
           SCHU_GCI_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
           SCHU_GCI_IFRAME: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
           SCHU_MAP_GCI_POWER_TO_AMP: "1"
 
+          # — файл истории и локальный HTML (если есть)
           SCHU_FILE: schumann_hourly.json
           SCHU_MAX_LEN: "5000"
           SCHU_HEARTMATH_HTML: data/gcms_magnetometer_heartmath.html
@@ -48,18 +49,13 @@ jobs:
           SCHU_AMP_SCALE: "1"
           SCHU_TREND_WINDOW: "24"
           SCHU_TREND_DELTA: "0.1"
-          SCHU_ALLOW_CACHE_ON_FAIL: "1"    # не падать, если live недоступен
+          SCHU_ALLOW_CACHE_ON_FAIL: "1"
 
-          # — опциональный твой JSON-эндпоинт с freq/amp
-          # Пример: {"freq":7.83,"amp":1.2} или вложенный JSON — код сам найдёт.
+          # — опциональный свой JSON-эндпоинт
           SCHU_CUSTOM_URL: ""
 
-          # — GCI Magnetometer: скрейпинг Power (hourly)
-          GCMS_PAGE_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
-          GCMS_SITE: "GCI003"   # Lithuania (по умолчанию для этого воркфлоу)
-
-          # — 7-я гармоника (если есть спектр)
-          H7_URL: ""            # эндпоинт спектра (если появится)
+          # — 7-я гармоника (при наличии спектра)
+          H7_URL: ""
           H7_TARGET_HZ: "54.81"
           H7_WINDOW_H: "48"
           H7_Z: "2.5"
