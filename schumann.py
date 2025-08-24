@@ -28,10 +28,6 @@ schumann.py — сбор и выдача данных для «Шумана» (v
   SCHU_AMP_SCALE            = "1"
   SCHU_TREND_WINDOW         = "24"
   SCHU_TREND_DELTA          = "0.1"
-# Станционные коды/названия рядом с данными (пока не используется, но пусть будет корректным)
-NAME_NEAR_DATA_RE = re.compile(
-    r'(?:GCI00[1-6])|(?:Lithuania|Alberta|California|Saudi Arabia|New Zealand|South Africa)',
-    re.IGNORECASE
 )
 
 HeartMath:
@@ -110,9 +106,9 @@ JSON_IN_IFRAME_RE = re.compile(
 )
 
 # Иногда нужная станция подписана как "GCI003" или её человекочитаемое имя рядом
-NAME_NEAR_DATA_RE = re.compile(
-    r'(GCI00[1-6])|(?i)(Lithuania|Alberta|California|Saudi Arabia|New Zealand|South Africa)'
-)
+#NAME_NEAR_DATA_RE = re.compile(
+#    r'(GCI00[1-6])|(?i)(Lithuania|Alberta|California|Saudi Arabia|New Zealand|South Africa)'
+#)
 
 # ────────────────────────── Утилиты I/O, JSON, HTTP ────────────────────
 
