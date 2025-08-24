@@ -5,15 +5,17 @@ post_common.py — VayboMeter (Калининград).
 
 • Море, прогноз Кёнига (день/ночь, м/с, RH min–max, давление)
 • Рейтинги городов (d/n, код погоды словами + 🌊)
-• Air (+ 🔥 Задымление, если не низкое), пыльца, радиация
+• Air (+ 🔥 Задымление, если не низкое), пыльца, радиация, Safecast
 • Kp, Шуман (с фоллбэком чтения JSON; h7_amp/h7_spike)
-• Астрособытия (знак как ♈ … ♓)
+• Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
 • «Вините …», рекомендации, факт дня
 """
 
 from __future__ import annotations
 import os
+import re
 import json
+import math
 import asyncio
 import logging
 from pathlib import Path
@@ -22,7 +24,7 @@ from typing import Any, Dict, List, Tuple, Optional
 import pendulum
 from telegram import Bot, constants
 
-from utils       import compass, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index, pressure_trend
+from utils       import compass, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index
 from weather     import get_weather, fetch_tomorrow_temps, day_night_stats
 from air         import get_air, get_sst, get_kp
 from pollen      import get_pollen
@@ -169,6 +171,91 @@ def radiation_line(lat: float, lon: float) -> str | None:
         emoji, lvl = "🔴", "высокий"
     return f"{emoji} Радиация: {dose:.3f} μSv/h ({lvl})"
 
+# ───────────── Давление: локальный тренд (чувствит. 0.3 гПа) ─────────────
+def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> Tuple[Optional[int], str]:
+    """
+    Возвращает (давление в гПа округл., стрелка тренда).
+    Тренд считаем по последним двум точкам surface_pressure (если есть) с порогом threshold_hpa.
+    """
+    # текущее из current
+    cur_p = (wm.get("current") or {}).get("pressure")
+    if not isinstance(cur_p, (int, float)):
+        hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
+        if isinstance(hp, list) and hp:
+            cur_p = hp[-1]
+            prev = hp[-2] if len(hp) > 1 else None
+        else:
+            prev = None
+    else:
+        # попробуем вытащить предыдущее из hourly
+        hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
+        prev = hp[-1] if isinstance(hp, list) and hp else None
+
+    arrow = "→"
+    if isinstance(cur_p, (int, float)) and isinstance(prev, (int, float)):
+        diff = float(cur_p) - float(prev)
+        if diff >= threshold_hpa:
+            arrow = "↑"
+        elif diff <= -threshold_hpa:
+            arrow = "↓"
+
+    return (int(round(cur_p)) if isinstance(cur_p, (int, float)) else None, arrow)
+
+# ───────────── Safecast (гибкий парсер локальных JSON) ─────────────
+def _pick_latest_record(obj: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(obj, dict):
+        if all(k in obj for k in ("pm25", "pm10")):
+            return obj
+        if "records" in obj and isinstance(obj["records"], list) and obj["records"]:
+            return _pick_latest_record(obj["records"][-1])
+    if isinstance(obj, list) and obj:
+        return _pick_latest_record(obj[-1])
+    return None
+
+def _read_safecast_any(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text("utf-8"))
+        rec = _pick_latest_record(data)
+        if not isinstance(rec, dict):
+            return None
+        out: Dict[str, Any] = {}
+        for k in ("pm25", "pm10", "aqi", "voc_minutes", "voc", "time", "ts"):
+            if k in rec:
+                out[k] = rec[k]
+        # иногда числа приходят строками
+        for k in ("pm25", "pm10", "aqi", "voc_minutes"):
+            if k in out and isinstance(out[k], str):
+                try:
+                    out[k] = float(out[k])
+                except Exception:
+                    pass
+        return out or None
+    except Exception as e:
+        logging.warning("Safecast read error from %s: %s", path, e)
+        return None
+
+def get_safecast() -> Optional[Dict[str, Any]]:
+    """
+    Источник:
+      1) env SAFECAST_FILE
+      2) data/safecast_kaliningrad.json
+      3) data/safecast_cyprus.json
+    Возвращает словарь с ключами: pm25, pm10, aqi (если есть), voc_minutes/voc (если есть).
+    """
+    paths: List[Path] = []
+    if os.getenv("SAFECAST_FILE"):
+        paths.append(Path(os.getenv("SAFECAST_FILE")))
+    here = Path(__file__).parent
+    paths += [here / "data" / "safecast_kaliningrad.json",
+              here / "data" / "safecast_cyprus.json"]
+    for p in paths:
+        rec = _read_safecast_any(p)
+        if rec:
+            return rec
+    return None
+
 # ───────────── Зодиаки → символы ─────────────
 ZODIAC = {
     "Овен":"♈","Телец":"♉","Близнецы":"♊","Рак":"♋","Лев":"♌",
@@ -193,10 +280,7 @@ def build_message(region_name: str,
     # Заголовок
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
-    # Море (средняя SST в точке)
-    sst = get_sst(*SEA_SST_COORD)
-    P.append(f"🌊 Темп. моря (центр залива): {sst:.1f} °C" if sst is not None
-             else "🌊 Темп. моря (центр залива): н/д")
+    # (строка «Темп. моря (центр залива)» — убрана по пожеланию)
 
     # Калининград — день/ночь, код словами (если надёжен), ветер м/с, RH min–max, давление
     stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz.name)
@@ -208,13 +292,9 @@ def build_message(region_name: str,
     rh_min = stats.get("rh_min"); rh_max = stats.get("rh_max")
     t_day_max = stats.get("t_day_max"); t_night_min = stats.get("t_night_min")
 
-    # давление: берём текущее (из current или из hourly), плюс тренд
-    pressure_val = cur.get("pressure")
-    if pressure_val is None:
-        hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
-        if isinstance(hp, list) and hp:
-            pressure_val = hp[-1]
-    press_part = f"{int(round(pressure_val))} гПа {pressure_trend(wm)}" if isinstance(pressure_val, (int, float)) else "н/д"
+    # давление с локальным трендом ↑/↓/→ (0.3 гПа)
+    p_val, p_trend = local_pressure_and_trend(wm, threshold_hpa=0.3)
+    press_part = f"{p_val} гПа {p_trend}" if isinstance(p_val, int) else "н/д"
 
     desc = code_desc(wc)  # может вернуть None — тогда не выводим
     kal_parts = [
@@ -271,12 +351,26 @@ def build_message(region_name: str,
             P.append(f"   • {city}: {d:.1f}/{n:.1f}" + (f" {descx}" if descx else ""))
         P.append("———")
 
-    # Air + пыльца + радиация
+    # Air + пыльца + радиация + Safecast
     air = get_air(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
              f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
+
+    # добавка из Safecast (если файл есть и есть данные)
+    sc = get_safecast()
+    if sc:
+        parts = []
+        if isinstance(sc.get("pm25"), (int, float)):
+            parts.append(f"PM₂.₅ {float(sc['pm25']):.0f}")
+        if isinstance(sc.get("pm10"), (int, float)):
+            parts.append(f"PM₁₀ {float(sc['pm10']):.0f}")
+        if isinstance(sc.get("aqi"), (int, float)):
+            parts.append(f"AQI {int(round(sc['aqi']))}")
+        if parts:
+            P.append("🧪 Safecast: " + " | ".join(parts))
+
     em, lbl = smoke_index(air.get("pm25"), air.get("pm10"))
     if lbl != "низкое":
         P.append(f"🔥 Задымление: {em} {lbl}")
@@ -293,11 +387,19 @@ def build_message(region_name: str,
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # Астрособытия
+    # Астрособытия (скрываем VoC <= 5 минут)
     P.append("🌌 <b>Астрособытия</b>")
-    astro = astro_events(offset_days=1, show_all_voc=True)
-    if astro:
-        P.extend([zsym(line) for line in astro])
+    astro = astro_events(offset_days=1, show_all_voc=True)  # получаем всё, потом фильтруем
+    filtered: List[str] = []
+    for line in (astro or []):
+        m = re.search(r"(VoC|VOC|Луна.*без курса).*?(\d+)\s*мин", line, re.IGNORECASE)
+        if m:
+            mins = int(m.group(2))
+            if mins <= 5:
+                continue  # пропускаем короткие VoC
+        filtered.append(line)
+    if filtered:
+        P.extend([zsym(line) for line in filtered])
     else:
         P.append("— нет данных —")
     P.append("———")
