@@ -5,7 +5,7 @@ post_common.py — VayboMeter (Калининград).
 
 • Море, прогноз Кёнига (день/ночь, м/с, RH min–max, давление)
 • Рейтинги городов (d/n, код погоды словами + 🌊)
-• Air (+ 🔥 Задымление, если не низкое), пыльца, радиация, Safecast
+• Air (+ 🔥 Задымление, если не низкое), пыльца, радиация, SafeCast
 • Kp, Шуман (с фоллбэком чтения JSON; h7_amp/h7_spike)
 • Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
 • «Вините …», рекомендации, факт дня
@@ -201,60 +201,168 @@ def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> 
 
     return (int(round(cur_p)) if isinstance(cur_p, (int, float)) else None, arrow)
 
-# ───────────── Safecast (гибкий парсер локальных JSON) ─────────────
-def _pick_latest_record(obj: Any) -> Optional[Dict[str, Any]]:
-    if isinstance(obj, dict):
-        if all(k in obj for k in ("pm25", "pm10")):
-            return obj
-        if "records" in obj and isinstance(obj["records"], list) and obj["records"]:
-            return _pick_latest_record(obj["records"][-1])
-    if isinstance(obj, list) and obj:
-        return _pick_latest_record(obj[-1])
-    return None
+# ───────────── SafeCast (локальный кэш Калининграда) ─────────────
+SAFECAST_DEFAULT_FILE_KLD = os.getenv("SAFECAST_KLD_FILE", str(Path(__file__).parent / "data" / "safecast_kaliningrad.json"))
+SAFECAST_STALE_HOURS      = int(os.getenv("SAFECAST_STALE_HOURS", "6"))
 
-def _read_safecast_any(path: Path) -> Optional[Dict[str, Any]]:
+def _safecast_read(path: str) -> Optional[Dict[str, Any]]:
     try:
-        if not path.exists():
+        p = Path(path)
+        if not p.exists():
             return None
-        data = json.loads(path.read_text("utf-8"))
-        rec = _pick_latest_record(data)
-        if not isinstance(rec, dict):
-            return None
-        out: Dict[str, Any] = {}
-        for k in ("pm25", "pm10", "aqi", "voc_minutes", "voc", "time", "ts"):
-            if k in rec:
-                out[k] = rec[k]
-        # иногда числа приходят строками
-        for k in ("pm25", "pm10", "aqi", "voc_minutes"):
-            if k in out and isinstance(out[k], str):
-                try:
-                    out[k] = float(out[k])
-                except Exception:
-                    pass
-        return out or None
+        return json.loads(p.read_text("utf-8"))
     except Exception as e:
-        logging.warning("Safecast read error from %s: %s", path, e)
+        logging.warning("SafeCast read error: %s", e)
         return None
 
-def get_safecast() -> Optional[Dict[str, Any]]:
-    """
-    Источник:
-      1) env SAFECAST_FILE
-      2) data/safecast_kaliningrad.json
-      3) data/safecast_cyprus.json
-    Возвращает словарь с ключами: pm25, pm10, aqi (если есть), voc_minutes/voc (если есть).
-    """
-    paths: List[Path] = []
-    if os.getenv("SAFECAST_FILE"):
-        paths.append(Path(os.getenv("SAFECAST_FILE")))
-    here = Path(__file__).parent
-    paths += [here / "data" / "safecast_kaliningrad.json",
-              here / "data" / "safecast_cyprus.json"]
-    for p in paths:
-        rec = _read_safecast_any(p)
-        if rec:
-            return rec
+def _safecast_pick_latest(obj: Any) -> Optional[Dict[str, Any]]:
+    """Гибко находим последний рекорд с полями измерений."""
+    if isinstance(obj, dict):
+        if any(k in obj for k in ("pm25", "pm2_5", "pm2.5", "pm10", "no2", "so2", "co")):
+            return obj
+        for k in ("records", "data", "items"):
+            if k in obj and isinstance(obj[k], list) and obj[k]:
+                return _safecast_pick_latest(obj[k][-1])
+    if isinstance(obj, list) and obj:
+        return _safecast_pick_latest(obj[-1])
     return None
+
+def _to_dt_utc(t: Any):
+    from datetime import datetime, timezone
+    if t is None:
+        return None
+    if isinstance(t, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(t), tz=timezone.utc)
+        except Exception:
+            return None
+    if isinstance(t, str):
+        try:
+            return datetime.fromisoformat(t.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
+
+def _classify(name: str, value: float) -> str:
+    """Пороги (примерно US EPA/WHO). Возвращает уровень: good/moderate/unhealthy_sensitive/unhealthy/very_unhealthy/hazardous."""
+    x = float(value)
+    n = name.lower()
+    if n in ("pm25","pm2_5","pm2.5"):
+        if x <= 12:   return "good"
+        if x <= 35.4: return "moderate"
+        if x <= 55.4: return "unhealthy_sensitive"
+        if x <= 150:  return "unhealthy"
+        if x <= 250:  return "very_unhealthy"
+        return "hazardous"
+    if n == "pm10":
+        if x <= 54:   return "good"
+        if x <= 154:  return "moderate"
+        if x <= 254:  return "unhealthy_sensitive"
+        if x <= 354:  return "unhealthy"
+        if x <= 424:  return "very_unhealthy"
+        return "hazardous"
+    if n == "no2":
+        if x <= 40:   return "good"
+        if x <= 100:  return "moderate"
+        if x <= 200:  return "unhealthy_sensitive"
+        if x <= 400:  return "unhealthy"
+        if x <= 1000: return "very_unhealthy"
+        return "hazardous"
+    if n == "so2":
+        if x <= 20:   return "good"
+        if x <= 50:   return "moderate"
+        if x <= 125:  return "unhealthy_sensitive"
+        if x <= 350:  return "unhealthy"
+        if x <= 500:  return "very_unhealthy"
+        return "hazardous"
+    if n == "co":  # mg/m³
+        if x <= 4:   return "good"
+        if x <= 9:   return "moderate"
+        if x <= 12:  return "unhealthy_sensitive"
+        if x <= 15:  return "unhealthy"
+        if x <= 20:  return "very_unhealthy"
+        return "hazardous"
+    return "good"
+
+def _level_emoji(level: str) -> str:
+    return {
+        "good":"🟢", "moderate":"🟡", "unhealthy_sensitive":"🟠",
+        "unhealthy":"🔴", "very_unhealthy":"🟣", "hazardous":"🟤"
+    }.get(level, "⚪")
+
+def build_safecast_block_for_kaliningrad(
+    path: str = SAFECAST_DEFAULT_FILE_KLD,
+    stale_hours: int = SAFECAST_STALE_HOURS
+) -> Optional[str]:
+    """
+    Читает локальный кэш SafeCast и возвращает готовый блок.
+    Если нет/устарело — возвращает None (ничего не выводим).
+    Поддерживаются поля: ts|timestamp (unix/ISO), pm25|pm2_5|pm2.5, pm10, no2, so2, co.
+    """
+    raw = _safecast_read(path)
+    if not isinstance(raw, (dict, list)):
+        return None
+    rec = _safecast_pick_latest(raw)
+    if not isinstance(rec, dict):
+        return None
+
+    # timestamp
+    ts = rec.get("ts") or rec.get("timestamp") or rec.get("time")
+    dt = _to_dt_utc(ts)
+    if not dt:
+        return None
+    from datetime import datetime, timezone
+    age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+    if age_h > stale_hours:
+        return None
+
+    # значения
+    def pick(*names):
+        for n in names:
+            if n in rec and isinstance(rec[n], (int, float, str)):
+                try:
+                    return float(rec[n])
+                except Exception:
+                    pass
+        return None
+
+    pm25 = pick("pm25","pm2_5","pm2.5")
+    pm10 = pick("pm10")
+    no2  = pick("no2")
+    so2  = pick("so2")
+    co   = pick("co")  # mg/m³
+
+    if all(v is None for v in (pm25, pm10, no2, so2, co)):
+        return None
+
+    # худший уровень
+    levels: List[str] = []
+    for name, val in (("pm25", pm25), ("pm10", pm10), ("no2", no2), ("so2", so2), ("co", co)):
+        if val is not None:
+            levels.append(_classify(name, val))
+    order = ["good","moderate","unhealthy_sensitive","unhealthy","very_unhealthy","hazardous"]
+    worst = max(levels, key=lambda s: order.index(s)) if levels else "good"
+    emoji = _level_emoji(worst)
+    label = {
+        "good":"good", "moderate":"moderate", "unhealthy_sensitive":"unhealthy (SG)",
+        "unhealthy":"unhealthy", "very_unhealthy":"very unhealthy", "hazardous":"hazardous"
+    }[worst]
+
+    # блок
+    lines: List[str] = []
+    lines.append("📡 SafeCast — загрязнение (по городу)")
+    lines.append(f"{emoji} Уровень: {label}")
+    det: List[str] = []
+    if pm25 is not None: det.append(f"PM2.5: {pm25:.1f} µg/m³")
+    if pm10 is not None: det.append(f"PM10: {pm10:.1f} µg/m³")
+    if no2  is not None: det.append(f"NO₂: {no2:.0f} µg/m³")
+    if so2  is not None: det.append(f"SO₂: {so2:.0f} µg/m³")
+    if co   is not None: det.append(f"CO: {co:.1f} mg/m³")
+    if det:
+        lines.append("· " + " | ".join(det))
+    when = dt.astimezone().strftime("%H:%M")
+    lines.append(f"Источник: SafeCast · {when}")
+    return "\n".join(lines)
 
 # ───────────── Зодиаки → символы ─────────────
 ZODIAC = {
@@ -351,25 +459,17 @@ def build_message(region_name: str,
             P.append(f"   • {city}: {d:.1f}/{n:.1f}" + (f" {descx}" if descx else ""))
         P.append("———")
 
-    # Air + пыльца + радиация + Safecast
+    # Air + пыльца + радиация + SafeCast
     air = get_air(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
     P.append("🏭 <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
              f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
 
-    # добавка из Safecast (если файл есть и есть данные)
-    sc = get_safecast()
-    if sc:
-        parts = []
-        if isinstance(sc.get("pm25"), (int, float)):
-            parts.append(f"PM₂.₅ {float(sc['pm25']):.0f}")
-        if isinstance(sc.get("pm10"), (int, float)):
-            parts.append(f"PM₁₀ {float(sc['pm10']):.0f}")
-        if isinstance(sc.get("aqi"), (int, float)):
-            parts.append(f"AQI {int(round(sc['aqi']))}")
-        if parts:
-            P.append("🧪 Safecast: " + " | ".join(parts))
+    # SafeCast (Калининград) — отдельный мини‑блок; скрывается если нет/устарело
+    sc_block = build_safecast_block_for_kaliningrad()
+    if sc_block:
+        P.append(sc_block)
 
     em, lbl = smoke_index(air.get("pm25"), air.get("pm10"))
     if lbl != "низкое":
@@ -423,17 +523,4 @@ def build_message(region_name: str,
     P.append(f"📚 {get_fact(tom, region_name)}")
     return "\n".join(P)
 
-# ───────────── отправка ─────────────
-async def send_common_post(bot: Bot, chat_id: int, region_name: str,
-                           sea_label: str, sea_cities, other_label: str,
-                           other_cities, tz):
-    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
-    await bot.send_message(chat_id=chat_id, text=msg,
-                           parse_mode=constants.ParseMode.HTML,
-                           disable_web_page_preview=True)
-
-async def main_common(bot: Bot, chat_id: int, region_name: str,
-                      sea_label: str, sea_cities, other_label: str,
-                      other_cities, tz):
-    await send_common_post(bot, chat_id, region_name, sea_label,
-                           sea_cities, other_label, other_cities, tz)
+# ───────────── о
