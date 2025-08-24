@@ -2,7 +2,7 @@ name: Collect SafeCast
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # каждые 30 минут
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,21 +19,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Калининград
           - name: "Kaliningrad"
             file: "safecast_kaliningrad.json"
             lat:  "54.7104"
             lon:  "20.4522"
-            dist: "50"      # км радиус
-            hours: "48"     # глубина по времени
+            dist: "300"     # ← радиус увеличен до 300 км
+            hours: "48"
 
-          # Кипр (Лимассол, охват южного побережья)
           - name: "Cyprus"
             file: "safecast_cyprus.json"
             lat:  "34.7071"
             lon:  "33.0226"
-            dist: "100"     # км радиус
-            hours: "72"     # глубина по времени
+            dist: "100"
+            hours: "72"
 
     steps:
       - name: Checkout repo
@@ -60,7 +58,8 @@ jobs:
           HOURS:     ${{ matrix.hours }}
         run: |
           python - <<'PY'
-          import os, json, time, math, datetime as dt
+          import os, json, time, math
+          import datetime as dt
           from typing import List, Dict, Any, Optional, Tuple
           import requests
 
@@ -70,15 +69,7 @@ jobs:
 
           since_dt = dt.datetime.utcnow() - dt.timedelta(hours=hours)
           since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-          HEADERS = {"User-Agent": "VayboMeter/1.1 (+github-actions)"}
-
-          def deg_per_km_lat() -> float: return 1/110.574
-          def deg_per_km_lon(phi_deg: float) -> float: return 1/(111.320*math.cos(math.radians(phi_deg)))
-
-          def bbox_from_center(lat, lon, km) -> Tuple[float,float,float,float]:
-            dlat = km * deg_per_km_lat()
-            dlon = km * deg_per_km_lon(lat)
-            return (lat-dlat, lon-dlon, lat+dlat, lon+dlon)  # south, west, north, east
+          HEADERS = {"User-Agent": "VayboMeter/1.2 (+github-actions)"}
 
           def fetch(url: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
             items: List[Dict[str, Any]] = []
@@ -88,12 +79,10 @@ jobs:
               p.update(params)
               r = requests.get(url, params=p, headers=HEADERS, timeout=30)
               if r.status_code != 200:
-                print(f"debug: GET {r.url} -> {r.status_code}")
                 break
               try:
                 batch = r.json()
               except Exception:
-                print("debug: JSON parse error")
                 break
               if not isinstance(batch, list) or not batch:
                 break
@@ -101,95 +90,84 @@ jobs:
               if len(batch) < per_page:
                 break
               time.sleep(0.2)
-            if items:
-              print(f"debug: first_url={url} params_sample={params}")
             return items
 
           base_urls = [
             "https://api.safecast.org/measurements.json",
             "https://api.safecast.org/en-US/measurements.json",
           ]
-          strategies: List[Tuple[str,Dict[str,Any]]] = []
-
-          # distance: км, метры; с/без captured_after
+          strategies: List[Tuple[str, Dict[str, Any]]] = []
           for u in base_urls:
+            # distance — км и метры; captured_after и его алиас since
             strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km, order="captured_at", direction="desc", captured_after=since_iso)))
             strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000, order="captured_at", direction="desc", captured_after=since_iso)))
-            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km, order="captured_at", direction="desc")))
-            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000, order="captured_at", direction="desc")))
+            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km, order="captured_at", direction="desc", since=since_iso)))
+            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000, order="captured_at", direction="desc", since=since_iso)))
 
-          # bbox-режим
-          s,w,n,e = bbox_from_center(lat, lon, dist_km)
-          for u in base_urls:
-            strategies.append((u, dict(north=n, south=s, east=e, west=w, order="captured_at", direction="desc", captured_after=since_iso)))
-            strategies.append((u, dict(north=n, south=s, east=e, west=w, order="captured_at", direction="desc")))
-
-          raw: List[Dict[str,Any]] = []
-          used = None
+          raw: List[Dict[str, Any]] = []
+          used: Optional[Tuple[str, Dict[str, Any]]] = None
           for url, params in strategies:
             raw = fetch(url, params)
             if raw:
               used = (url, params)
               break
 
-          if not raw:
-            with open(out_file, "w", encoding="utf-8") as f:
-              json.dump([], f, ensure_ascii=False)
-            print(f"safecast ({out_file}): no data fetched")
-            raise SystemExit(0)
-
           def parse_ts(s: str) -> Optional[int]:
             try:
-              if not s: return None
-              if "." in s: s = s.split(".")[0] + "Z"
-              return int(dt.datetime.fromisoformat(s.replace("Z","+00:00")).timestamp())
+              if "." in s:
+                s = s.split(".")[0] + "Z"
+              return int(dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
             except Exception:
               return None
 
-          normalized: List[Dict[str,Any]] = []
-          latest: Dict[str, Dict[str,Any]] = {}  # pm2.5 / pm10 -> {ts,value}
+          normalized: List[Dict[str, Any]] = []
           for m in raw:
-            cap = m.get("captured_at") or m.get("created_at") or ""
-            ts = parse_ts(cap)
-            if ts is None: continue
-            vt = (m.get("value_type") or m.get("unit") or "").lower()
+            ts = parse_ts(m.get("captured_at") or m.get("created_at") or "")
+            if not ts or ts < int(since_dt.timestamp()):
+              continue
+            unit = (m.get("unit") or "").strip()
+            vt   = (m.get("value_type") or "").strip().lower()
+            val  = m.get("value")
             try:
-              val = float(m.get("value"))
+              val = float(val)
             except Exception:
               continue
-            rec = {
-              "ts": ts,
-              "lat": float(m.get("latitude") or 0),
-              "lon": float(m.get("longitude") or 0),
-              "value": val,
-              "value_type": vt,
-              "unit": m.get("unit"),
-              "id": m.get("id"),
-              "device": m.get("device") or m.get("device_id"),
-              "source": "safecast",
-            }
-            normalized.append(rec)
-            if vt in ("pm2.5","pm25","pm_2_5"):
-              if "pm2.5" not in latest or ts > latest["pm2.5"]["ts"]:
-                latest["pm2.5"] = {"ts": ts, "value": val}
-            if vt in ("pm10","pm_10"):
-              if "pm10" not in latest or ts > latest["pm10"]["ts"]:
-                latest["pm10"] = {"ts": ts, "value": val}
-
+            normalized.append({
+              "ts": ts, "lat": float(m.get("latitude", 0)), "lon": float(m.get("longitude", 0)),
+              "val": val, "unit": unit, "vt": vt, "id": m.get("id")
+            })
           normalized.sort(key=lambda x: x["ts"])
-          summary: Dict[str,Any] = {"records": normalized}
-          t_candidates = [d["ts"] for d in latest.values()] or ([normalized[-1]["ts"]] if normalized else [])
-          if t_candidates:
-            summary["ts"] = max(t_candidates)
-            summary["timestamp"] = dt.datetime.utcfromtimestamp(summary["ts"]).strftime("%Y-%m-%dT%H:%M:%SZ")
-          if "pm2.5" in latest: summary["pm25"] = latest["pm2.5"]["value"]
-          if "pm10"  in latest: summary["pm10"]  = latest["pm10"]["value"]
+
+          # агрегаты
+          summary: Dict[str, Any] = {"ts": normalized[-1]["ts"] if normalized else None}
+
+          def latest_by_vt(vt_name: str) -> Optional[Dict[str, Any]]:
+            for d in reversed(normalized):
+              if d["vt"] == vt_name:
+                return d
+            return None
+
+          pm25 = latest_by_vt("pm2.5")
+          pm10 = latest_by_vt("pm10")
+          if pm25: summary["pm25"] = pm25["val"]
+          if pm10: summary["pm10"] = pm10["val"]
+
+          # радиация: берём медиану за последние 6 часов по единицам вида μSv/h
+          cut_ts = int((dt.datetime.utcnow() - dt.timedelta(hours=6)).timestamp())
+          rad_vals = [d["val"] for d in normalized
+                      if d["ts"] >= cut_ts and (("sv/h" in d["unit"].lower()) or d["vt"] in ("usv/h","radiation","radiation_usvh"))]
+          if rad_vals:
+            rad_vals.sort()
+            n = len(rad_vals)
+            med = rad_vals[n//2] if n % 2 else 0.5*(rad_vals[n//2-1] + rad_vals[n//2])
+            summary["radiation"] = med  # μSv/h
 
           with open(out_file, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False)
 
-          n = len(normalized); pm25 = summary.get("pm25"); pm10 = summary.get("pm10")
-          print(f"safecast ({out_file}): {n} raw records; pm25={pm25} pm10={pm10}; used={used}")
+          print(f"safecast ({out_file}): {len(normalized)} raw; "
+                f"pm25={summary.get('pm25')} pm10={summary.get('pm10')} "
+                f"rad={summary.get('radiation')} ; used={used}")
           PY
 
       - name: Commit & push if changed (${{ matrix.name }})
@@ -199,7 +177,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet -- ${{ matrix.file }}; then
             git add ${{ matrix.file }}
-            git commit -m "safecast(${ { matrix.name } }): update ${{ matrix.file }}"
+            git commit -m "safecast(${{ matrix.name }}): update ${{ matrix.file }}"
             git push
           else
             echo "No changes in ${{ matrix.file }}"
