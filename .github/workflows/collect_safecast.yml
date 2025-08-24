@@ -2,7 +2,7 @@ name: Collect SafeCast
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # каждые 30 минут
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,21 +19,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Калининград
           - name: "Kaliningrad"
             file: "safecast_kaliningrad.json"
             lat:  "54.7104"
             lon:  "20.4522"
-            dist: "50"      # км радиус
-            hours: "48"     # за сколько часов тянуть
-
-          # Кипр (Лимассол, охват южного побережья)
+            dist: "50"    # km
+            hours: "48"
           - name: "Cyprus"
             file: "safecast_cyprus.json"
             lat:  "34.7071"
             lon:  "33.0226"
-            dist: "100"     # км радиус
-            hours: "72"     # за сколько часов тянуть
+            dist: "100"   # km
+            hours: "72"
 
     steps:
       - name: Checkout repo
@@ -60,25 +57,22 @@ jobs:
           HOURS:     ${{ matrix.hours }}
         run: |
           python - <<'PY'
-          import os, sys, json, time, math, datetime as dt
-          from typing import List, Dict, Any
+          import os, json, time, datetime as dt
+          from typing import List, Dict, Any, Optional
           import requests
 
           out_file = os.environ["OUT_FILE"]
-          lat = float(os.environ["LAT"])
-          lon = float(os.environ["LON"])
-          dist_km = float(os.environ["DIST"])
-          hours = int(os.environ["HOURS"])
+          lat = float(os.environ["LAT"]); lon = float(os.environ["LON"])
+          dist_km = float(os.environ["DIST"]); hours = int(os.environ["HOURS"])
 
-          # временное окно
           since_dt = dt.datetime.utcnow() - dt.timedelta(hours=hours)
           since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-          # несколько вариантов эндпоинтов/параметров (на случай изменений на стороне SafeCast)
+          HEADERS = {"User-Agent": "VayboMeter/1.0 (+github-actions)"}
+
           candidates = [
             ("https://api.safecast.org/measurements.json", dict(captured_after=since_iso)),
             ("https://api.safecast.org/en-US/measurements.json", dict(captured_after=since_iso)),
-            # иногда встречается алиас "since":
             ("https://api.safecast.org/measurements.json", dict(since=since_iso)),
             ("https://api.safecast.org/en-US/measurements.json", dict(since=since_iso)),
           ]
@@ -86,75 +80,67 @@ jobs:
           def fetch(endpoint: str, base: Dict[str, Any]) -> List[Dict[str, Any]]:
             items: List[Dict[str, Any]] = []
             per_page = 100
-            limit_pages = 50  # максимум ~5000 записей
+            limit_pages = 50
             for page in range(1, limit_pages + 1):
               params = dict(
-                latitude=lat,
-                longitude=lon,
-                distance=dist_km,   # км
-                per_page=per_page,
-                page=page,
-                order="captured_at",
-                direction="desc",
+                latitude=lat, longitude=lon, distance=dist_km,
+                per_page=per_page, page=page,
+                order="captured_at", direction="desc",
               )
               params.update(base)
+              r = requests.get(endpoint, params=params, headers=HEADERS, timeout=30)
+              if r.status_code != 200:
+                time.sleep(1.0)
+                break
               try:
-                r = requests.get(endpoint, params=params, timeout=30)
-                if r.status_code != 200:
-                  # лёгкая пауза и выход
-                  time.sleep(1.0)
-                  break
                 batch = r.json()
-                if not isinstance(batch, list) or len(batch) == 0:
-                  break
-                items.extend(batch)
-                # если вернулось меньше страницы — это конец
-                if len(batch) < per_page:
-                  break
-                time.sleep(0.2)
               except Exception:
                 break
+              if not isinstance(batch, list) or not batch:
+                break
+              items.extend(batch)
+              if len(batch) < per_page:
+                break
+              time.sleep(0.2)
             return items
 
           raw: List[Dict[str, Any]] = []
+          src_url = None
           for url, extra in candidates:
             raw = fetch(url, extra)
             if raw:
               src_url = url
               break
-          else:
-            print("safecast: no data fetched from API (all endpoints failed)")
-            # сохраняем пустой список, чтобы не ломать пайплайн
+
+          # Если ничего — создаём пустой файл, чтобы пайплайн не падал
+          if not raw:
             with open(out_file, "w", encoding="utf-8") as f:
               json.dump([], f, ensure_ascii=False)
-            sys.exit(0)
+            print(f"safecast ({out_file}): no data fetched")
+            raise SystemExit(0)
 
-          # нормализация и базовая фильтрация
-          def parse_time(s):
-            # ожидаем ISO8601
+          # нормализуем записи и одновременно соберём последние pm25/pm10
+          def parse_time(s: str) -> Optional[int]:
             try:
-              # обрезаем микросекунды, если есть
+              if not s:
+                return None
               if "." in s:
                 s = s.split(".")[0] + "Z"
               return int(dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
             except Exception:
               return None
 
-          data = []
+          normalized: List[Dict[str, Any]] = []
+          latest: Dict[str, Dict[str, Any]] = {}  # "pm2.5" -> rec, "pm10" -> rec
+
           for m in raw:
             cap = m.get("captured_at") or m.get("created_at") or ""
-            ts = parse_time(cap) or 0
-            if ts < int(since_dt.timestamp()):
-              # на всякий случай отсечём старьё, если пришло больше, чем просили
+            ts = parse_time(cap)
+            if ts is None or ts < int(since_dt.timestamp()):
               continue
-            lat_m = m.get("latitude")
-            lon_m = m.get("longitude")
+
+            vt = (m.get("value_type") or m.get("unit") or "").lower()
             val = m.get("value")
-            unit = m.get("unit") or m.get("value_type") or ""
-
-            if lat_m is None or lon_m is None or val is None:
-              continue
-
             try:
               val = float(val)
             except Exception:
@@ -162,32 +148,47 @@ jobs:
 
             rec = {
               "ts": ts,
-              "lat": float(lat_m),
-              "lon": float(lon_m),
-              "val": val,
-              "unit": str(unit),
+              "lat": float(m.get("latitude") or 0),
+              "lon": float(m.get("longitude") or 0),
+              "value": val,
+              "value_type": vt,
+              "unit": m.get("unit"),
               "id": m.get("id"),
               "device": m.get("device") or m.get("device_id"),
               "source": "safecast",
             }
-            data.append(rec)
+            normalized.append(rec)
 
-          # сортируем по времени (по возрастанию)
-          data.sort(key=lambda x: x["ts"])
+            # Поддержим именно air‑метрики: pm2.5/pm10
+            if vt in ("pm2.5", "pm25", "pm_2_5"):
+              if "pm2.5" not in latest or ts > latest["pm2.5"]["ts"]:
+                latest["pm2.5"] = {"ts": ts, "value": val}
+            elif vt in ("pm10", "pm_10"):
+              if "pm10" not in latest or ts > latest["pm10"]["ts"]:
+                latest["pm10"] = {"ts": ts, "value": val}
 
-          # пишем файл
+          normalized.sort(key=lambda x: x["ts"])
+
+          # Соберём сводку для post_common: timestamp + pm25/pm10, плюс raw в "records"
+          summary: Dict[str, Any] = {"records": normalized}
+          # Выберем общее время — самое свежее из доступных
+          t_candidates = [d["ts"] for d in latest.values()] or ([normalized[-1]["ts"]] if normalized else [])
+          if t_candidates:
+            summary["ts"] = max(t_candidates)
+            summary["timestamp"] = dt.datetime.utcfromtimestamp(summary["ts"]).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+          if "pm2.5" in latest:
+            summary["pm25"] = latest["pm2.5"]["value"]
+          if "pm10" in latest:
+            summary["pm10"] = latest["pm10"]["value"]
+
           with open(out_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(summary, f, ensure_ascii=False)
 
-          # маленькая сводка
-          n = len(data)
-          if n:
-            vals = [d["val"] for d in data]
-            vmin, vmax = min(vals), max(vals)
-            vmed = sorted(vals)[n//2] if n % 2 == 1 else 0.5*(sorted(vals)[n//2-1] + sorted(vals)[n//2])
-            print(f"safecast ({out_file}): {n} records, val[min/med/max]={vmin:.3f}/{vmed:.3f}/{vmax:.3f} (unit varies)")
-          else:
-            print(f"safecast ({out_file}): no records")
+          # сводка в лог
+          n = len(normalized)
+          pm25 = summary.get("pm25"); pm10 = summary.get("pm10")
+          print(f"safecast ({out_file}): {n} raw records; pm25={pm25} pm10={pm10}; src={src_url}")
           PY
 
       - name: Commit & push if changed (${{ matrix.name }})
@@ -197,7 +198,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet -- ${{ matrix.file }}; then
             git add ${{ matrix.file }}
-            git commit -m "safecast(${ { matrix.name } }): update ${ { matrix.file } }"
+            git commit -m "safecast(${{ matrix.name }}): update ${{ matrix.file }}"
             git push
           else
             echo "No changes in ${{ matrix.file }}"
