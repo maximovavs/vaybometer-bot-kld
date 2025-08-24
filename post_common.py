@@ -156,7 +156,7 @@ def load_safecast() -> Optional[Dict[str, Any]]:
     ts = sc.get("ts")
     if not isinstance(ts, (int, float)): return None
     now_ts = pendulum.now("UTC").int_timestamp
-    if now_ts - int(ts) > 12*3600:  # устарело
+    if now_ts - int(ts) > 24*3600:  # устарело
         return None
     return sc
 
