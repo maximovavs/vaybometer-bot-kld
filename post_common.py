@@ -5,7 +5,7 @@ post_common.py — VayboMeter (Калининград).
 
 • Море, прогноз Кёнига (день/ночь, м/с, RH min–max, давление)
 • Рейтинги городов (d/n, код погоды словами + 🌊)
-• Air (+ 🔥 Задымление, если не низкое), пыльца, радиация, Safecast (PM, μSv/h, CPM)
+• Air (IQAir/ваш источник) + Safecast (PM и CPM), пыльца, радиация
 • Kp, Шуман (с фоллбэком чтения JSON; h7_amp/h7_spike)
 • Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
 • «Вините …», рекомендации, факт дня
@@ -31,16 +31,12 @@ from pollen      import get_pollen
 from radiation   import get_radiation
 from astro       import astro_events
 from gpt         import gpt_blurb
-from settings_klg import SEA_SST_COORD            # точка в заливе
+from settings_klg import SEA_SST_COORD  # not used directly, но оставим импорт
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ────────────────────────── константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
-
-# для грубой оценки перевода CPM → μSv/h
-# Принятое приближение для популярных трубок типа SBM-20: ~175 CPM ≈ 1 μSv/h
-CPM_TO_USVH = 1.0 / 175.0
 
 # Мэппинг WMO-кодов в короткие текст+эмодзи
 WMO_DESC = {
@@ -88,7 +84,6 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 
     amps: List[float] = []
     last: Optional[Dict[str, Any]] = None
-
     for rec in arr:
         if not isinstance(rec, dict):
             continue
@@ -104,7 +99,6 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
             last = rec
 
     trend = _schumann_trend(amps)
-
     if last is None:
         return {"freq": None, "amp": None, "trend": trend, "h7_amp": None, "h7_spike": None, "cached": True}
 
@@ -114,44 +108,126 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
     h7_spike = last.get("h7_spike") if isinstance(last.get("h7_spike"), bool) else None
     src = (last.get("src") or "").lower()
     cached = (src == "cache")
-
     return {"freq": freq, "amp": amp, "trend": trend, "h7_amp": h7_amp, "h7_spike": h7_spike, "cached": cached}
 
 def schumann_line(s: Dict[str, Any]) -> str:
     if s.get("freq") is None:
         return "🎵 Шуман: н/д"
-    f = s["freq"]
-    amp = s.get("amp")
-    trend = s.get("trend", "→")
-    h7_amp = s.get("h7_amp")
-    h7_spike = s.get("h7_spike")
-
+    f = s["freq"]; amp = s.get("amp"); trend = s.get("trend", "→")
+    h7_amp = s.get("h7_amp"); h7_spike = s.get("h7_spike")
     e = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
     base = f"{e} Шуман: {float(f):.2f} Гц"
-    if isinstance(amp, (int, float)):
-        base += f" / {float(amp):.2f} pT {trend}"
-    else:
-        base += f" / н/д {trend}"
-
+    if isinstance(amp, (int, float)): base += f" / {float(amp):.2f} pT {trend}"
+    else: base += f" / н/д {trend}"
     if isinstance(h7_amp, (int, float)):
         base += f" · H7 {h7_amp:.2f}"
-        if isinstance(h7_spike, bool) and h7_spike:
-            base += " ⚡"
+        if isinstance(h7_spike, bool) and h7_spike: base += " ⚡"
     return base
 
-# ───────────── Радиация (основной источник) ─────────────
+# ───────────── Safecast ─────────────
+def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        if not path.exists(): return None
+        data = json.loads(path.read_text("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logging.warning("Safecast read error from %s: %s", path, e)
+        return None
+
+def load_safecast() -> Optional[Dict[str, Any]]:
+    """
+    Ищем JSON:
+      1) env SAFECAST_FILE
+      2) ./data/safecast_kaliningrad.json
+    Возвращаем None, если нет/устарело.
+    """
+    paths: List[Path] = []
+    if os.getenv("SAFECAST_FILE"): paths.append(Path(os.getenv("SAFECAST_FILE")))
+    here = Path(__file__).parent
+    paths.append(here / "data" / "safecast_kaliningrad.json")
+
+    sc: Optional[Dict[str, Any]] = None
+    for p in paths:
+        sc = _read_json(p)
+        if sc: break
+    if not sc: return None
+
+    # staleness: считаем свежими данные не старше 12 часов
+    ts = sc.get("ts")
+    if not isinstance(ts, (int, float)): return None
+    now_ts = pendulum.now("UTC").int_timestamp
+    if now_ts - int(ts) > 24*3600:  # устарело
+        return None
+    return sc
+
+def safecast_pm_level(pm25: Optional[float], pm10: Optional[float]) -> Tuple[str, str]:
+    """
+    Возвращает (emoji, label) по худшему из PM₂.₅/PM₁₀.
+    Пороги — усреднённые: PM2.5 [0-15/15-35/35-55/55+], PM10 [0-30/30-50/50-100/100+]
+    """
+    def level_pm25(x: float) -> int:
+        if x <= 15: return 0
+        if x <= 35: return 1
+        if x <= 55: return 2
+        return 3
+    def level_pm10(x: float) -> int:
+        if x <= 30: return 0
+        if x <= 50: return 1
+        if x <= 100: return 2
+        return 3
+
+    worst = -1
+    if isinstance(pm25, (int, float)): worst = max(worst, level_pm25(float(pm25)))
+    if isinstance(pm10, (int, float)): worst = max(worst, level_pm10(float(pm10)))
+    if worst < 0: return "⚪", "н/д"
+    return (["🟢","🟡","🟠","🔴"][worst],
+            ["низкий","умеренный","высокий","очень высокий"][worst])
+
+def safecast_block_lines() -> List[str]:
+    """
+    Формирует строки SafeCast для раздела «Качество воздуха».
+    Ничего не возвращает ([]) если данных нет/устарели.
+    """
+    sc = load_safecast()
+    if not sc: return []
+
+    pm25 = sc.get("pm25"); pm10 = sc.get("pm10")
+    lines: List[str] = []
+    if isinstance(pm25, (int, float)) or isinstance(pm10, (int, float)):
+        em, lbl = safecast_pm_level(pm25, pm10)
+        parts = []
+        if isinstance(pm25, (int, float)): parts.append(f"PM₂.₅ {pm25:.0f}")
+        if isinstance(pm10, (int, float)): parts.append(f"PM₁₀ {pm10:.0f}")
+        lines.append(f"🧪 Safecast: {em} {lbl} · " + " | ".join(parts))
+
+    # Отдельной строкой CPM (если пришёл)
+    if isinstance(sc.get("cpm"), (int, float)):
+        lines.append(f"📟 CPM: {sc['cpm']:.0f} (медиана 6 ч)")
+
+    return lines
+
+# ───────────── Радиация ─────────────
 def radiation_line(lat: float, lon: float) -> str | None:
+    """
+    Пытаемся выдать радиацию из основного источника; если нет — бэкап из SafeCast (μSv/h).
+    """
     data = get_radiation(lat, lon) or {}
     dose = data.get("dose")
-    if dose is None:
-        return None
-    if dose <= 0.15:
-        emoji, lvl = "🟢", "низкий"
-    elif dose <= 0.30:
-        emoji, lvl = "🟡", "повышенный"
-    else:
-        emoji, lvl = "🔴", "высокий"
-    return f"{emoji} Радиация: {dose:.3f} μSv/h ({lvl})"
+    if isinstance(dose, (int, float)):
+        if dose <= 0.15:  emoji, lvl = "🟢", "низкий"
+        elif dose <= 0.30: emoji, lvl = "🟡", "повышенный"
+        else:              emoji, lvl = "🔴", "высокий"
+        return f"{emoji} Радиация: {dose:.3f} μSv/h ({lvl})"
+
+    # фоллбэк: Safecast radiation_usvh (медиана за 6 ч)
+    sc = load_safecast()
+    r = sc.get("radiation_usvh") if sc else None
+    if isinstance(r, (int, float)):
+        if r <= 0.15:  emoji, lvl = "🟢", "низкий"
+        elif r <= 0.30: emoji, lvl = "🟡", "повышенный"
+        else:           emoji, lvl = "🔴", "высокий"
+        return f"{emoji} Радиация: {r:.3f} μSv/h (Safecast, {lvl})"
+    return None
 
 # ───────────── Давление: локальный тренд (чувствит. 0.3 гПа) ─────────────
 def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> Tuple[Optional[int], str]:
@@ -159,8 +235,7 @@ def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> 
     if not isinstance(cur_p, (int, float)):
         hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
         if isinstance(hp, list) and hp:
-            cur_p = hp[-1]
-            prev = hp[-2] if len(hp) > 1 else None
+            cur_p = hp[-1]; prev = hp[-2] if len(hp) > 1 else None
         else:
             prev = None
     else:
@@ -170,61 +245,10 @@ def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> 
     arrow = "→"
     if isinstance(cur_p, (int, float)) and isinstance(prev, (int, float)):
         diff = float(cur_p) - float(prev)
-        if diff >= threshold_hpa:
-            arrow = "↑"
-        elif diff <= -threshold_hpa:
-            arrow = "↓"
+        if diff >= threshold_hpa: arrow = "↑"
+        elif diff <= -threshold_hpa: arrow = "↓"
 
     return (int(round(cur_p)) if isinstance(cur_p, (int, float)) else None, arrow)
-
-# ───────────── Safecast (чтение локального summary JSON) ─────────────
-def _read_json(path: Path) -> Optional[Dict[str, Any]]:
-    try:
-        if not path.exists():
-            return None
-        return json.loads(path.read_text("utf-8"))
-    except Exception as e:
-        logging.warning("Safecast read error from %s: %s", path, e)
-        return None
-
-def get_safecast_summary(max_age_hours: int = 72) -> Optional[Dict[str, Any]]:
-    """
-    Источники:
-      1) env SAFECAST_FILE
-      2) data/safecast_kaliningrad.json
-    Ожидаемый формат (из workflow): {"ts": int|None, "pm25"?, "pm10"?, "radiation_usvh"?, "cpm"?}
-    Возвращает None, если нет данных или устарели.
-    """
-    candidates: List[Path] = []
-    if os.getenv("SAFECAST_FILE"):
-        candidates.append(Path(os.getenv("SAFECAST_FILE")))
-    here = Path(__file__).parent
-    candidates.append(here / "data" / "safecast_kaliningrad.json")
-
-    now_ts = int(pendulum.now("UTC").int_timestamp)
-    for p in candidates:
-        obj = _read_json(p)
-        if not isinstance(obj, dict):
-            continue
-        ts = obj.get("ts")
-        if not isinstance(ts, int):
-            continue
-        if now_ts - ts > max_age_hours * 3600:
-            continue  # устарело
-        return obj
-    return None
-
-def format_cpm_line(cpm: float) -> str:
-    """Печать CPM и приблизительный перевод в μSv/h."""
-    approx_usvh = cpm * CPM_TO_USVH
-    # округлим: до 0.01 при малых значениях, иначе до 0.1
-    if approx_usvh < 0.1:
-        usv_txt = f"{approx_usvh:.3f}"
-    elif approx_usvh < 1:
-        usv_txt = f"{approx_usvh:.2f}"
-    else:
-        usv_txt = f"{approx_usvh:.1f}"
-    return f"📟 CPM (Safecast): {cpm:.0f} CPM ≈ {usv_txt} μSv/h"
 
 # ───────────── Зодиаки → символы ─────────────
 ZODIAC = {
@@ -250,7 +274,7 @@ def build_message(region_name: str,
     # Заголовок
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
-    # Калининград — день/ночь, код словами (если надёжен), ветер м/с, RH min–max, давление
+    # Калининград — день/ночь, ветер, RH, давление
     stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz.name)
     wm    = get_weather(KLD_LAT, KLD_LON) or {}
     cur   = wm.get("current", {}) or {}
@@ -260,7 +284,6 @@ def build_message(region_name: str,
     rh_min = stats.get("rh_min"); rh_max = stats.get("rh_max")
     t_day_max = stats.get("t_day_max"); t_night_min = stats.get("t_night_min")
 
-    # давление с локальным трендом ↑/↓/→ (0.3 гПа)
     p_val, p_trend = local_pressure_and_trend(wm, threshold_hpa=0.3)
     press_part = f"{p_val} гПа {p_trend}" if isinstance(p_val, int) else "н/д"
 
@@ -276,7 +299,7 @@ def build_message(region_name: str,
     P.append(" • ".join([x for x in kal_parts if x]))
     P.append("———")
 
-    # Морские города (топ-5)
+    # Морские города (топ‑5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     for city, (la, lo) in sea_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -299,7 +322,7 @@ def build_message(region_name: str,
             P.append(line)
         P.append("———")
 
-    # Тёплые/холодные (топ-3 / топ-3)
+    # Тёплые/холодные
     temps_oth: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in other_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -320,23 +343,16 @@ def build_message(region_name: str,
         P.append("———")
 
     # Air + пыльца + радиация + Safecast
+    P.append("🏭 <b>Качество воздуха</b>")
     air = get_air(KLD_LAT, KLD_LON) or {}
     lvl = air.get("lvl", "н/д")
-    P.append("🏭 <b>Качество воздуха</b>")
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
              f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
 
-    # Safecast PM, если есть (из свежего summary)
-    sc = get_safecast_summary(max_age_hours=72)
-    if sc:
-        pm_parts = []
-        if isinstance(sc.get("pm25"), (int, float)):
-            pm_parts.append(f"PM₂.₅ {float(sc['pm25']):.0f}")
-        if isinstance(sc.get("pm10"), (int, float)):
-            pm_parts.append(f"PM₁₀ {float(sc['pm10']):.0f}")
-        if pm_parts:
-            P.append("🧪 Safecast: " + " | ".join(pm_parts))
+    # Safecast (если свежие данные есть — по «варианту A»)
+    P.extend(safecast_block_lines())
 
+    # дымовой индекс
     em, lbl = smoke_index(air.get("pm25"), air.get("pm10"))
     if lbl != "низкое":
         P.append(f"🔥 Задымление: {em} {lbl}")
@@ -345,17 +361,8 @@ def build_message(region_name: str,
         P.append("🌿 <b>Пыльца</b>")
         P.append(f"Деревья: {p['tree']} | Травы: {p['grass']} | Сорняки: {p['weed']} — риск {p['risk']}")
 
-    # Радиация (основной источник)
     if (rl := radiation_line(KLD_LAT, KLD_LON)):
         P.append(rl)
-
-    # Радиация Safecast: μSv/h (медиана 6ч) + отдельной строкой CPM с приблизит. конвертацией
-    if sc:
-        if isinstance(sc.get("radiation_usvh"), (int, float)):
-            P.append(f"☢️ Радиация (Safecast): {float(sc['radiation_usvh']):.3f} μSv/h (медиана 6ч)")
-        if isinstance(sc.get("cpm"), (int, float)):
-            P.append(format_cpm_line(float(sc["cpm"])))
-
     P.append("———")
 
     # Kp + Шуман
