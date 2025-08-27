@@ -1,4 +1,4 @@
-name: Collect SafeCast
+name: Collect SafeCast (Kaliningrad only)
 
 on:
   schedule:
@@ -9,31 +9,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: collect-safecast
+  group: collect-safecast-kld
   cancel-in-progress: false
 
 jobs:
-  collect:
+  collect-kld:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Калининград
-          - name: "Kaliningrad"
-            file: "data/safecast_kaliningrad.json"
-            lat:  "54.7104"
-            lon:  "20.4522"
-            dist: "300"      # км радиус
-            hours: "48"      # за сколько часов тянуть
-
-          # Кипр (Лимассол, южное побережье)
-          - name: "Cyprus"
-            file: "data/safecast_cyprus.json"
-            lat:  "34.7071"
-            lon:  "33.0226"
-            dist: "100"      # км радиус
-            hours: "72"      # за сколько часов тянуть
 
     steps:
       - name: Checkout repo
@@ -51,19 +32,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Ensure data dir
+      - name: Ensure data/ exists
         run: mkdir -p data
 
-      - name: Fetch SafeCast (${{ matrix.name }})
+      - name: Fetch SafeCast (Kaliningrad)
         env:
-          OUT_FILE:  ${{ matrix.file }}
-          LAT:       ${{ matrix.lat }}
-          LON:       ${{ matrix.lon }}
-          DIST:      ${{ matrix.dist }}
-          HOURS:     ${{ matrix.hours }}
+          OUT_FILE: data/safecast_kaliningrad.json
+          LAT: "54.7104"
+          LON: "20.4522"
+          DIST: "300"   # радиус, км
+          HOURS: "48"   # за сколько последних часов брать
         run: |
           python - <<'PY'
-          import os, json, time, math, datetime as dt
+          import os, json, time, math
+          import datetime as dt
           from typing import List, Dict, Any, Optional, Tuple
           import requests
 
@@ -73,126 +55,164 @@ jobs:
 
           since_dt = dt.datetime.utcnow() - dt.timedelta(hours=hours)
           since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-          HEADERS = {"User-Agent": "VayboMeter/1.2 (+github-actions)"}
+          HEADERS = {"User-Agent": "VayboMeter/1.3 (+github-actions)"}
 
           def fetch(url: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-              items: List[Dict[str, Any]] = []
-              per_page = 100
-              for page in range(1, 51):
-                  p = dict(per_page=per_page, page=page)
-                  p.update(params)
-                  try:
-                      r = requests.get(url, params=p, headers=HEADERS, timeout=30)
-                      if r.status_code != 200:
-                          break
-                      batch = r.json()
-                  except Exception:
-                      break
-                  if not isinstance(batch, list) or not batch:
-                      break
-                  items.extend(batch)
-                  if len(batch) < per_page:
-                      break
-                  time.sleep(0.2)
-              return items
+            items: List[Dict[str, Any]] = []
+            per_page = 100
+            for page in range(1, 51):
+              p = dict(per_page=per_page, page=page)
+              p.update(params)
+              try:
+                r = requests.get(url, params=p, headers=HEADERS, timeout=30)
+                if r.status_code != 200:
+                  break
+                batch = r.json()
+              except Exception:
+                break
+              if not isinstance(batch, list) or not batch:
+                break
+              items.extend(batch)
+              if len(batch) < per_page:
+                break
+              time.sleep(0.2)
+            return items
 
           base_urls = [
-              "https://api.safecast.org/measurements.json",
-              "https://api.safecast.org/en-US/measurements.json",
+            "https://api.safecast.org/measurements.json",
+            "https://api.safecast.org/en-US/measurements.json",
           ]
+
           strategies: List[Tuple[str, Dict[str, Any]]] = []
           for u in base_urls:
-              strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km, order="captured_at", direction="desc", captured_after=since_iso)))
-              strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000, order="captured_at", direction="desc", captured_after=since_iso)))
-              strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km, order="captured_at", direction="desc", since=since_iso)))
-              strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000, order="captured_at", direction="desc", since=since_iso)))
+            # distance в км и метрах; captured_after и его алиас since
+            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km,       order="captured_at", direction="desc", captured_after=since_iso)))
+            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000.0, order="captured_at", direction="desc", captured_after=since_iso)))
+            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km,       order="captured_at", direction="desc", since=since_iso)))
+            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000.0, order="captured_at", direction="desc", since=since_iso)))
 
           raw: List[Dict[str, Any]] = []
           used: Optional[Tuple[str, Dict[str, Any]]] = None
           for url, params in strategies:
-              raw = fetch(url, params)
-              if raw:
-                  used = (url, params)
-                  break
+            raw = fetch(url, params)
+            if raw:
+              used = (url, params)
+              break
 
           def parse_ts(s: str) -> Optional[int]:
-              try:
-                  if "." in s:
-                      s = s.split(".")[0] + "Z"
-                  return int(dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
-              except Exception:
-                  return None
+            try:
+              if "." in s:
+                s = s.split(".")[0] + "Z"
+              return int(dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+            except Exception:
+              return None
 
           normalized: List[Dict[str, Any]] = []
           for m in raw:
-              ts = parse_ts(m.get("captured_at") or m.get("created_at") or "")
-              if not ts or ts < int(since_dt.timestamp()):
-                  continue
-              unit = (m.get("unit") or "").strip()
-              vt   = (m.get("value_type") or "").strip().lower()
-              val  = m.get("value")
-              try:
-                  val = float(val)
-              except Exception:
-                  continue
-              normalized.append({
-                  "ts": ts, "lat": float(m.get("latitude", 0)), "lon": float(m.get("longitude", 0)),
-                  "val": val, "unit": unit, "vt": vt, "id": m.get("id")
-              })
+            ts = parse_ts(m.get("captured_at") or m.get("created_at") or "")
+            if not ts or ts < int(since_dt.timestamp()):
+              continue
+            unit = (m.get("unit") or "").strip()
+            vt   = (m.get("value_type") or "").strip().lower()
+            val  = m.get("value")
+            try:
+              val = float(val)
+            except Exception:
+              continue
+            lat_m = m.get("latitude"); lon_m = m.get("longitude")
+            try:
+              lat_m = float(lat_m); lon_m = float(lon_m)
+            except Exception:
+              lat_m = lat; lon_m = lon
+            normalized.append({
+              "ts": ts, "lat": lat_m, "lon": lon_m,
+              "val": val, "unit": unit, "vt": vt, "id": m.get("id")
+            })
+
           normalized.sort(key=lambda x: x["ts"])
 
+          # Сводка
           summary: Dict[str, Any] = {"ts": normalized[-1]["ts"] if normalized else None}
 
           def latest_by_vt(vt_name: str) -> Optional[Dict[str, Any]]:
-              for d in reversed(normalized):
-                  if d["vt"] == vt_name:
-                      return d
-              return None
+            for d in reversed(normalized):
+              if d["vt"] == vt_name:
+                return d
+            return None
 
-          pm25 = latest_by_vt("pm2.5")
-          pm10 = latest_by_vt("pm10")
-          if pm25: summary["pm25"] = pm25["val"]
-          if pm10: summary["pm10"] = pm10["val"]
+          # PM
+          if (pm25 := latest_by_vt("pm2.5")): summary["pm25"] = pm25["val"]
+          if (pm10 := latest_by_vt("pm10")):  summary["pm10"] = pm10["val"]
 
+          # Радиоактивность: μSv/h медиана за 6 часов
           cut_ts = int((dt.datetime.utcnow() - dt.timedelta(hours=6)).timestamp())
-          rad_vals = [d["val"] for d in normalized if d["ts"] >= cut_ts and (("sv/h" in d["unit"].lower()) or d["vt"] in ("usv/h","radiation","radiation_usvh"))]
+          rad_vals = [d["val"] for d in normalized
+                      if d["ts"] >= cut_ts and (
+                          ("sv/h" in d["unit"].lower()) or d["vt"] in ("usv/h","radiation","radiation_usvh")
+                      )]
           if rad_vals:
-              rad_vals.sort()
-              n = len(rad_vals)
-              med = rad_vals[n//2] if n % 2 else 0.5*(rad_vals[n//2-1] + rad_vals[n//2])
-              summary["radiation_usvh"] = med
+            rad_vals.sort()
+            n = len(rad_vals)
+            summary["radiation_usvh"] = (rad_vals[n//2] if n % 2 else 0.5*(rad_vals[n//2-1] + rad_vals[n//2]))
 
-          cpm_vals = [d["val"] for d in normalized if d["ts"] >= cut_ts and (("cpm" in d["unit"].lower()) or d["vt"] == "cpm")]
-          if cpm_vals:
-              cpm_vals.sort()
-              n = len(cpm_vals)
-              med = cpm_vals[n//2] if n % 2 else 0.5*(cpm_vals[n//2-1] + cpm_vals[n//2])
-              summary["cpm"] = med
+          # CPM (counts per minute) — берём последнее значение по vt или unit
+          cpm_latest: Optional[float] = None
+          for d in reversed(normalized):
+            u = d["unit"].lower()
+            if d["vt"] == "cpm" or "cpm" in u:
+              cpm_latest = d["val"]; break
+          if cpm_latest is not None:
+            summary["cpm"] = cpm_latest
 
-          with open(out_file, "w", encoding="utf-8") as f:
+          # Пишем файл (даже если пусто — чтобы пайплайн был детерминированным)
+          if not normalized:
+            with open(out_file, "w", encoding="utf-8") as f:
+              json.dump({"ts": None}, f, ensure_ascii=False)
+          else:
+            with open(out_file, "w", encoding="utf-8") as f:
               json.dump(summary, f, ensure_ascii=False)
 
-          print(f"safecast ({out_file}): {len(normalized)} raw; "
-                f"pm25={summary.get('pm25')} pm10={summary.get('pm10')} "
-                f"rad_usvh={summary.get('radiation_usvh')} cpm={summary.get('cpm')} ; used={used}")
+          print(
+            f"safecast ({out_file}): {len(normalized)} raw; "
+            f"pm25={summary.get('pm25')} pm10={summary.get('pm10')} "
+            f"rad_usvh={summary.get('radiation_usvh')} cpm={summary.get('cpm')} ; "
+            f"used={used}"
+          )
           PY
 
-      - name: Commit & push if changed (${{ matrix.name }})
+      - name: Upload artifact (JSON snapshot)
+        uses: actions/upload-artifact@v4
+        with:
+          name: safecast_kaliningrad.json
+          path: data/safecast_kaliningrad.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Commit & push (safe, with rebase + retry)
         run: |
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain -- ${{ matrix.file }})" ]; then
-            git add ${{ matrix.file }}
-            git commit -m "safecast(${{ matrix.name }}): update ${{ matrix.file }}"
-            git push
-          else
-            echo "No changes in ${{ matrix.file }}"
-          fi
 
-      - name: Upload safecast artifact (${{ matrix.name }})
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}-safecast
-          path: ${{ matrix.file }}
-          if-no-files-found: warn
+          if [ -n "$(git status --porcelain -- data/safecast_kaliningrad.json)" ]; then
+            git add data/safecast_kaliningrad.json
+            git commit -m "safecast(Kaliningrad): update data/safecast_kaliningrad.json"
+
+            BRANCH="${GITHUB_REF_NAME:-main}"
+            for try in 1 2 3 4 5; do
+              echo "Push attempt $try…"
+              git fetch origin
+              git pull --rebase origin "$BRANCH" || { git rebase --abort || true; }
+              if git push origin "HEAD:$BRANCH"; then
+                echo "Pushed successfully on attempt $try"
+                break
+              fi
+              if [ "$try" -eq 5 ]; then
+                echo "Failed to push after $try attempts" >&2
+                exit 1
+              fi
+              sleep 2
+            done
+          else
+            echo "No changes in data/safecast_kaliningrad.json"
+          fi
