@@ -156,7 +156,7 @@ def load_safecast() -> Optional[Dict[str, Any]]:
     ts = sc.get("ts")
     if not isinstance(ts, (int, float)): return None
     now_ts = pendulum.now("UTC").int_timestamp
-    if now_ts - int(ts) > 24*3600:  # устарело
+    if now_ts - int(ts) > 24*3600:
         return None
     return sc
 
@@ -207,102 +207,26 @@ def safecast_block_lines() -> List[str]:
     return lines
 
 # ───────────── Радиация ─────────────
-def _read_local_radiation_usvh() -> Optional[Tuple[float, str]]:
-    """
-    Пытаемся взять «официальные» локальные данные (μSv/h):
-      • ENV RADIATION_FILE  (объект или список)
-      • data/radiation.json
-      • radiation_hourly.json (список, берём последнюю)
-    Считаем свежим ≤ 12ч.
-    """
-    now_ts = pendulum.now("UTC").int_timestamp
-    cand: List[Path] = []
-    if os.getenv("RADIATION_FILE"):
-        cand.append(Path(os.getenv("RADIATION_FILE")))
-    here = Path(__file__).parent
-    cand += [here / "data" / "radiation.json",
-             here / "radiation.json",
-             here / "radiation_hourly.json"]
-
-    for p in cand:
-        try:
-            if not p.exists():
-                continue
-            txt = p.read_text("utf-8").strip()
-            if not txt:
-                continue
-            data = json.loads(txt)
-        except Exception:
-            continue
-
-        # формат: объект
-        if isinstance(data, dict):
-            ts = data.get("ts")
-            val = data.get("usvh") or data.get("dose")
-            if isinstance(val, (int, float)) and (not isinstance(ts, (int, float)) or now_ts - int(ts) <= 12*3600):
-                return float(val), "официальные"
-
-        # формат: список
-        if isinstance(data, list):
-            for rec in reversed(data):
-                if not isinstance(rec, dict):
-                    continue
-                ts = rec.get("ts")
-                val = rec.get("usvh") or rec.get("dose")
-                if isinstance(val, (int, float)) and (not isinstance(ts, (int, float)) or now_ts - int(ts) <= 12*3600):
-                    return float(val), "официальные"
-
-    return None
-
-def _format_radiation_line(usvh: float, src_label: str = "") -> str:
-    if usvh <= 0.15:  emoji, lvl = "🟢", "низкий"
-    elif usvh <= 0.30: emoji, lvl = "🟡", "повышенный"
-    else:              emoji, lvl = "🔴", "высокий"
-    suffix = f" ({src_label}, {lvl})" if src_label else f" ({lvl})"
-    return f"{emoji} Радиация: {usvh:.3f} μSv/h{suffix}"
-
 def radiation_line(lat: float, lon: float) -> str | None:
     """
-    1) Пробуем «официальные» (локальные файлы / модуль get_radiation)
-    2) Фоллбэк — SafeCast:
-       • если есть radiation_usvh — берём её;
-       • иначе, если есть cpm — конвертируем: μSv/h = cpm * CPM_TO_USVH
-         (ENV CPM_TO_USVH, по умолчанию 0.000571).
+    Пытаемся выдать радиацию из основного источника; если нет — бэкап из SafeCast (μSv/h).
     """
-    # 1) локальные «официальные»
-    lr = _read_local_radiation_usvh()
-    if lr:
-        return _format_radiation_line(lr[0], lr[1])
+    data = get_radiation(lat, lon) or {}
+    dose = data.get("dose")
+    if isinstance(dose, (int, float)):
+        if dose <= 0.15:  emoji, lvl = "🟢", "низкий"
+        elif dose <= 0.30: emoji, lvl = "🟡", "повышенный"
+        else:              emoji, lvl = "🔴", "высокий"
+        return f"{emoji} Радиация: {dose:.3f} μSv/h ({lvl})"
 
-    # 1b) онлайн «официальные»
-    try:
-        rd = get_radiation(lat, lon) or {}
-        if isinstance(rd.get("dose"), (int, float)):
-            return _format_radiation_line(float(rd["dose"]), "официальные")
-    except Exception:
-        pass
-
-    # 2) Safecast
+    # фоллбэк: Safecast radiation_usvh (медиана за 6 ч)
     sc = load_safecast()
-    if not sc:
-        return None
-
-    # прямая μSv/h из Safecast (если collector положил 'radiation_usvh')
-    if isinstance(sc.get("radiation_usvh"), (int, float)):
-        return _format_radiation_line(float(sc["radiation_usvh"]), "Safecast")
-
-    # конвертация из CPM → μSv/h
-    if isinstance(sc.get("cpm"), (int, float)):
-        coeff = float(os.getenv("CPM_TO_USVH", "0.000571"))
-        usvh = float(sc["cpm"]) * coeff
-        return _format_radiation_line(usvh, "Safecast (из CPM)")
-
-    # вдруг в Safecast пришло значение с единицей μSv/h напрямую
-    unit = (sc.get("unit") or "").lower()
-    val  = sc.get("value")
-    if isinstance(val, (int, float)) and ("usv/h" in unit or "µsv/h" in unit or "μsv/h" in unit):
-        return _format_radiation_line(float(val), "Safecast")
-
+    r = sc.get("radiation_usvh") if sc else None
+    if isinstance(r, (int, float)):
+        if r <= 0.15:  emoji, lvl = "🟢", "низкий"
+        elif r <= 0.30: emoji, lvl = "🟡", "повышенный"
+        else:           emoji, lvl = "🔴", "высокий"
+        return f"{emoji} Радиация: {r:.3f} μSv/h (Safecast, {lvl})"
     return None
 
 # ───────────── Давление: локальный тренд (чувствит. 0.3 гПа) ─────────────
@@ -341,7 +265,10 @@ def zsym(s: str) -> str:
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
                   other_label: str, other_cities,
-                  tz: pendulum.Timezone) -> str:
+                  tz: pendulum.Timezone | str = "Europe/Kaliningrad") -> str:
+
+    if isinstance(tz, str):
+        tz = pendulum.timezone(tz)
 
     P: List[str] = []
     today = pendulum.now(tz).date()
@@ -486,7 +413,9 @@ def build_message(region_name: str,
 # ───────────── отправка ─────────────
 async def send_common_post(bot: Bot, chat_id: int, region_name: str,
                            sea_label: str, sea_cities, other_label: str,
-                           other_cities, tz):
+                           other_cities, tz: pendulum.Timezone | str = "Europe/Kaliningrad"):
+    if isinstance(tz, str):
+        tz = pendulum.timezone(tz)
     msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
     await bot.send_message(chat_id=chat_id, text=msg,
                            parse_mode=constants.ParseMode.HTML,
@@ -494,6 +423,9 @@ async def send_common_post(bot: Bot, chat_id: int, region_name: str,
 
 async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
-                      other_cities, tz):
+                      other_cities, tz: pendulum.Timezone | str = "Europe/Kaliningrad"):
+    if isinstance(tz, str):
+        tz = pendulum.timezone(tz)
     await send_common_post(bot, chat_id, region_name, sea_label,
-                           sea_cities, other_cities, tz)
+                           sea_cities, other_label, other_cities, tz)
+```0
