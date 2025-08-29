@@ -295,7 +295,7 @@ def build_message(region_name: str,
                   other_label: str, other_cities,
                   tz: Union[pendulum.Timezone, str]) -> str:
 
-    tz_obj = _as_tz(tz)
+    tz_obj = pendulum.timezone(tz) if isinstance(tz, str) else tz
     tz_name = tz_obj.name
 
     P: List[str] = []
