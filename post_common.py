@@ -428,4 +428,3 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
         tz = pendulum.timezone(tz)
     await send_common_post(bot, chat_id, region_name, sea_label,
                            sea_cities, other_label, other_cities, tz)
-```0
