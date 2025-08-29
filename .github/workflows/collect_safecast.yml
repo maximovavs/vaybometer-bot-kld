@@ -2,9 +2,9 @@ name: Collect SafeCast (Kaliningrad)
 
 on:
   schedule:
-    - cron: "0 */6 * * *"     # каждые 6 часов
+    - cron: "0 */6 * * *"   # every 6 hours, UTC
   workflow_dispatch:
-  push:                       # запускаться при ЛЮБОМ коммите
+  push:
     branches:
       - main
 
@@ -14,6 +14,10 @@ permissions:
 concurrency:
   group: safecast-kld
   cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   collect:
@@ -26,12 +30,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Sanity check
-        run: |
-          echo "Ref: $GITHUB_REF  Sha: $GITHUB_SHA  Actor: $GITHUB_ACTOR"
-          echo "Runner: $(uname -a)"
-
-      - name: Sync to origin/main (clean base)
+      - name: Prepare repo
         run: |
           set -euo pipefail
           git fetch origin main
@@ -39,7 +38,7 @@ jobs:
           git reset --hard origin/main
           mkdir -p data
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -61,34 +60,36 @@ jobs:
             --hours 48 \
             --out data/safecast_kaliningrad.json
 
-      - name: Preview JSON
+      - name: Preview file
         run: |
           set -euo pipefail
-          FILE="data/safecast_kaliningrad.json"
-          if [ ! -f "$FILE" ]; then
-            echo "❌ File not found: $FILE"; exit 1
-          fi
-          ls -lah "$FILE"
+          test -f data/safecast_kaliningrad.json
+          ls -lah data/safecast_kaliningrad.json
           python - <<'PY'
-import json, sys, pathlib, datetime
-p=pathlib.Path("data/safecast_kaliningrad.json")
-d=json.loads(p.read_text("utf-8"))
-print("---- Pretty JSON ----")
+import json, pathlib, datetime
+p = pathlib.Path("data/safecast_kaliningrad.json")
+d = json.loads(p.read_text("utf-8"))
 print(json.dumps(d, ensure_ascii=False, indent=2))
 ts = d.get("ts")
-if isinstance(ts,(int,float)):
+if isinstance(ts, (int, float)):
     print("ts_iso:", datetime.datetime.utcfromtimestamp(int(ts)).isoformat()+"Z")
-else:
-    print("ts_iso: n/a")
-print("keys:", list(d.keys()))
 PY
 
-      - name: Commit & push if changed
+      - name: Pull/commit/push if changed
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain -- data/safecast_kaliningrad.json)" ]; then
+
+          # make sure we are up to date and handle local changes safely
+          git fetch origin main
+          if ! git diff --quiet; then
+            git stash push -u -m "pre-pull stash"
+          fi
+          git pull --rebase origin main || git rebase --abort
+
+          CHANGED=$(git status --porcelain -- data/safecast_kaliningrad.json || true)
+          if [ -n "$CHANGED" ]; then
             git add data/safecast_kaliningrad.json
             git commit -m "safecast(Kaliningrad): update data/safecast_kaliningrad.json"
             git push origin HEAD:main
