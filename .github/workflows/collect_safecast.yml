@@ -1,23 +1,17 @@
 name: Collect SafeCast (Kaliningrad)
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"   # every 6 hours, UTC
   workflow_dispatch:
-  push:
-    branches:
-      - main
+  schedule:
+    # каждые 6 часов
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: safecast-kld
-  cancel-in-progress: true
-
-defaults:
-  run:
-    shell: bash
+  group: safecast-kaliningrad
+  cancel-in-progress: false
 
 jobs:
   collect:
@@ -28,78 +22,125 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
-
-      - name: Prepare repo
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          git checkout -B main origin/main
-          git reset --hard origin/main
-          mkdir -p data
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-
       - name: Fetch SafeCast (Kaliningrad)
+        shell: bash
         run: |
           set -euo pipefail
-          python safecast.py \
-            --lat 54.7104 \
-            --lon 20.4522 \
-            --dist 300 \
-            --hours 48 \
-            --out data/safecast_kaliningrad.json
+          mkdir -p data
 
-      - name: Preview file
-        run: |
-          set -euo pipefail
-          test -f data/safecast_kaliningrad.json
-          ls -lah data/safecast_kaliningrad.json
           python - <<'PY'
-import json, pathlib, datetime
-p = pathlib.Path("data/safecast_kaliningrad.json")
-d = json.loads(p.read_text("utf-8"))
-print(json.dumps(d, ensure_ascii=False, indent=2))
-ts = d.get("ts")
-if isinstance(ts, (int, float)):
-    print("ts_iso:", datetime.datetime.utcfromtimestamp(int(ts)).isoformat()+"Z")
-PY
+          import json, urllib.parse, urllib.request
+          from datetime import datetime, timedelta, timezone
+          from statistics import median
 
-      - name: Pull/commit/push if changed
+          # Параметры Калининграда
+          LAT, LON = 54.7104, 20.4522
+          DIST_M   = 300_000    # 300 км
+          HOURS    = 48         # окно по времени
+          OUT_FILE = "data/safecast_kaliningrad.json"
+
+          def iso_to_dt(s: str):
+            # Safecast возвращает ISO8601, иногда с 'Z'
+            s = s.replace("Z", "+00:00")
+            return datetime.fromisoformat(s)
+
+          qs = {
+            "latitude": LAT,
+            "longitude": LON,
+            "distance": DIST_M * 1.0,
+            "order": "captured_at",
+            "direction": "desc",
+            "captured_after": (datetime.now(timezone.utc) - timedelta(hours=HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          url = "https://api.safecast.org/measurements.json?" + urllib.parse.urlencode(qs)
+
+          with urllib.request.urlopen(url, timeout=60) as r:
+            raw = json.loads(r.read().decode("utf-8"))
+
+          # Готовим выборки по типам величин
+          pm25_vals = []
+          pm10_vals = []
+          cpm_vals  = []
+          usvh_vals = []
+
+          for m in raw if isinstance(raw, list) else []:
+            # ожидаем структуру { "value": ..., "unit": ..., "captured_at": ... }
+            try:
+              val  = float(m.get("value"))
+              unit = (m.get("unit") or "").lower()
+              t    = iso_to_dt(m.get("captured_at"))
+            except Exception:
+              continue
+
+            # последние 6 часов для радиации (медиана)
+            if (datetime.now(timezone.utc) - t) <= timedelta(hours=6):
+              if "cpm" in unit:
+                cpm_vals.append(val)
+              # иногда приходят µSv/h в разных написаниях
+              if "usv" in unit or "µsv" in unit or "μsv" in unit:
+                usvh_vals.append(val)
+
+            # PM берём за всё окно HOURS
+            if "pm2.5" in unit or "pm2_5" in unit or unit == "pm25":
+              pm25_vals.append(val)
+            if "pm10" in unit or unit == "pm_10":
+              pm10_vals.append(val)
+
+          def med_or_none(a):
+            try:
+              return float(median(a)) if a else None
+            except Exception:
+              return None
+
+          summary = {
+            "ts": int(datetime.now(tz=timezone.utc).timestamp()),
+            "pm25": med_or_none(pm25_vals),        # µg/m³
+            "pm10": med_or_none(pm10_vals),        # µg/m³
+            "cpm": med_or_none(cpm_vals),          # counts per minute
+            "radiation_usvh": med_or_none(usvh_vals),  # µSv/h
+          }
+
+          with open(OUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False)
+
+          print(f"safecast ({OUT_FILE}): "
+                f"pm25={summary.get('pm25')} pm10={summary.get('pm10')} "
+                f"rad_usvh={summary.get('radiation_usvh')} cpm={summary.get('cpm')}")
+          PY
+
+      - name: Commit & push if changed
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # make sure we are up to date and handle local changes safely
-          git fetch origin main
-          if ! git diff --quiet; then
-            git stash push -u -m "pre-pull stash"
-          fi
-          git pull --rebase origin main || git rebase --abort
+          # показать индекс, но без добавления — чтобы diff отработал и при новом файле
+          git add -N data/safecast_kaliningrad.json >/dev/null 2>&1 || true
 
-          CHANGED=$(git status --porcelain -- data/safecast_kaliningrad.json || true)
-          if [ -n "$CHANGED" ]; then
+          if ! git diff --quiet -- data/safecast_kaliningrad.json; then
+            git add data/safecast_kaliningrad.json
+            # аккуратный rebase с stash, если параллельно были коммиты
+            git stash push -u -m "pre-rebase" || true
+            git pull --rebase || true
+            git stash pop || true
             git add data/safecast_kaliningrad.json
             git commit -m "safecast(Kaliningrad): update data/safecast_kaliningrad.json"
-            git push origin HEAD:main
+            git push
           else
             echo "No changes in data/safecast_kaliningrad.json"
           fi
 
       - name: Upload artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: safecast-kaliningrad
+          name: safecast_kaliningrad.json
           path: data/safecast_kaliningrad.json
+          if-no-files-found: warn
+          retention-days: 3
