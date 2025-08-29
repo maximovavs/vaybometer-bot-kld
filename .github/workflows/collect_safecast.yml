@@ -38,7 +38,7 @@ jobs:
           LAT:      "54.7104"
           LON:      "20.4522"
           DIST:     "300"    # км радиус вокруг Калининграда
-          HOURS:    "48"     # тянуть за последние 48 часов
+          HOURS:    "88"     # тянуть за последние 48 часов
         run: |
           python - <<'PY'
           import os, json, time, math, datetime as dt
