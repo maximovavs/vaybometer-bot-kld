@@ -38,6 +38,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # ────────────────────────── константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
 
+# коэффициент перевода CPM -> μSv/h (переопределяется ENV CPM_TO_USVH)
+CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
+
 # Мэппинг WMO-кодов в короткие текст+эмодзи
 WMO_DESC = {
     0:"☀️ ясно", 1:"⛅ ч.обл", 2:"☁️ обл", 3:"🌥 пасм",
@@ -124,7 +127,7 @@ def schumann_line(s: Dict[str, Any]) -> str:
         if isinstance(h7_spike, bool) and h7_spike: base += " ⚡"
     return base
 
-# ───────────── Safecast ─────────────
+# ───────────── Safecast / чтение файла ─────────────
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
     try:
         if not path.exists(): return None
@@ -160,6 +163,14 @@ def load_safecast() -> Optional[Dict[str, Any]]:
         return None
     return sc
 
+# риск по μSv/h
+def usvh_risk(x: float) -> tuple[str, str]:
+    if x <= 0.15:
+        return "🟢", "низкий"
+    if x <= 0.30:
+        return "🟡", "повышенный"
+    return "🔴", "высокий"
+
 def safecast_pm_level(pm25: Optional[float], pm10: Optional[float]) -> Tuple[str, str]:
     """
     Возвращает (emoji, label) по худшему из PM₂.₅/PM₁₀.
@@ -186,47 +197,58 @@ def safecast_pm_level(pm25: Optional[float], pm10: Optional[float]) -> Tuple[str
 def safecast_block_lines() -> List[str]:
     """
     Формирует строки SafeCast для раздела «Качество воздуха».
-    Ничего не возвращает ([]) если данных нет/устарели.
+    Возвращает [] если данных нет/устарели.
     """
     sc = load_safecast()
-    if not sc: return []
+    if not sc:
+        return []
 
-    pm25 = sc.get("pm25"); pm10 = sc.get("pm10")
     lines: List[str] = []
+
+    # PM-блок
+    pm25 = sc.get("pm25")
+    pm10 = sc.get("pm10")
     if isinstance(pm25, (int, float)) or isinstance(pm10, (int, float)):
         em, lbl = safecast_pm_level(pm25, pm10)
         parts = []
-        if isinstance(pm25, (int, float)): parts.append(f"PM₂.₅ {pm25:.0f}")
-        if isinstance(pm10, (int, float)): parts.append(f"PM₁₀ {pm10:.0f}")
+        if isinstance(pm25, (int, float)):
+            parts.append(f"PM₂.₅ {pm25:.0f}")
+        if isinstance(pm10, (int, float)):
+            parts.append(f"PM₁₀ {pm10:.0f}")
         lines.append(f"🧪 Safecast: {em} {lbl} · " + " | ".join(parts))
 
-    # Отдельной строкой CPM (если пришёл)
-    if isinstance(sc.get("cpm"), (int, float)):
-        lines.append(f"📟 CPM: {sc['cpm']:.0f} (медиана 6 ч)")
+    # Радиация из Safecast: CPM + пересчёт в μSv/h (медиана 6 ч)
+    cpm = sc.get("cpm")
+    usvh = sc.get("radiation_usvh")
+    if not isinstance(usvh, (int, float)) and isinstance(cpm, (int, float)):
+        usvh = float(cpm) * CPM_TO_USVH
+
+    if isinstance(usvh, (int, float)) or isinstance(cpm, (int, float)):
+        if isinstance(usvh, (int, float)):
+            em, lbl = usvh_risk(float(usvh))
+        else:
+            em, lbl = "⚪", "н/д"
+
+        if isinstance(cpm, (int, float)) and isinstance(usvh, (int, float)):
+            lines.append(f"📟 Радиация (Safecast): {cpm:.0f} CPM ≈ {usvh:.3f} μSv/h — {em} {lbl} (медиана 6 ч)")
+        elif isinstance(usvh, (int, float)):
+            lines.append(f"📟 Радиация (Safecast): ≈ {usvh:.3f} μSv/h — {em} {lbl} (медиана 6 ч)")
+        else:
+            lines.append(f"📟 Радиация (Safecast): {cpm:.0f} CPM (медиана 6 ч)")
 
     return lines
 
-# ───────────── Радиация ─────────────
+# ───────────── Радиация (официальный источник) ─────────────
 def radiation_line(lat: float, lon: float) -> str | None:
     """
-    Пытаемся выдать радиацию из основного источника; если нет — бэкап из SafeCast (μSv/h).
+    Отдаём радиацию из официального источника (get_radiation).
+    Без фоллбэка на Safecast — он показывается отдельно в safecast_block_lines().
     """
     data = get_radiation(lat, lon) or {}
     dose = data.get("dose")
     if isinstance(dose, (int, float)):
-        if dose <= 0.15:  emoji, lvl = "🟢", "низкий"
-        elif dose <= 0.30: emoji, lvl = "🟡", "повышенный"
-        else:              emoji, lvl = "🔴", "высокий"
-        return f"{emoji} Радиация: {dose:.3f} μSv/h ({lvl})"
-
-    # фоллбэк: Safecast radiation_usvh (медиана за 6 ч)
-    sc = load_safecast()
-    r = sc.get("radiation_usvh") if sc else None
-    if isinstance(r, (int, float)):
-        if r <= 0.15:  emoji, lvl = "🟢", "низкий"
-        elif r <= 0.30: emoji, lvl = "🟡", "повышенный"
-        else:           emoji, lvl = "🔴", "высокий"
-        return f"{emoji} Радиация: {r:.3f} μSv/h (Safecast, {lvl})"
+        em, lbl = usvh_risk(float(dose))
+        return f"{em} Радиация: {dose:.3f} μSv/h ({lbl})"
     return None
 
 # ───────────── Давление: локальный тренд (чувствит. 0.3 гПа) ─────────────
@@ -265,10 +287,7 @@ def zsym(s: str) -> str:
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
                   other_label: str, other_cities,
-                  tz: pendulum.Timezone | str = "Europe/Kaliningrad") -> str:
-
-    if isinstance(tz, str):
-        tz = pendulum.timezone(tz)
+                  tz: pendulum.Timezone) -> str:
 
     P: List[str] = []
     today = pendulum.now(tz).date()
@@ -413,9 +432,7 @@ def build_message(region_name: str,
 # ───────────── отправка ─────────────
 async def send_common_post(bot: Bot, chat_id: int, region_name: str,
                            sea_label: str, sea_cities, other_label: str,
-                           other_cities, tz: pendulum.Timezone | str = "Europe/Kaliningrad"):
-    if isinstance(tz, str):
-        tz = pendulum.timezone(tz)
+                           other_cities, tz: pendulum.Timezone):
     msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
     await bot.send_message(chat_id=chat_id, text=msg,
                            parse_mode=constants.ParseMode.HTML,
@@ -423,8 +440,6 @@ async def send_common_post(bot: Bot, chat_id: int, region_name: str,
 
 async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
-                      other_cities, tz: pendulum.Timezone | str = "Europe/Kaliningrad"):
-    if isinstance(tz, str):
-        tz = pendulum.timezone(tz)
+                      other_cities, tz: pendulum.Timezone):
     await send_common_post(bot, chat_id, region_name, sea_label,
                            sea_cities, other_label, other_cities, tz)
