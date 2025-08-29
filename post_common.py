@@ -19,7 +19,7 @@ import math
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Union
 
 import pendulum
 from telegram import Bot, constants
@@ -38,8 +38,14 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # ────────────────────────── константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
 
-# коэффициент перевода CPM -> μSv/h (переопределяется ENV CPM_TO_USVH)
+# коэффициент перевода CPM -> μSv/h (можно переопределить ENV CPM_TO_USVH)
 CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
+
+# ──────────── утилита: принять tz как объект или как строку ────────────
+def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
+    if isinstance(tz, str):
+        return pendulum.timezone(tz)
+    return tz
 
 # Мэппинг WMO-кодов в короткие текст+эмодзи
 WMO_DESC = {
@@ -287,17 +293,20 @@ def zsym(s: str) -> str:
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
                   other_label: str, other_cities,
-                  tz: pendulum.Timezone) -> str:
+                  tz: Union[pendulum.Timezone, str]) -> str:
+
+    tz_obj = _as_tz(tz)
+    tz_name = tz_obj.name
 
     P: List[str] = []
-    today = pendulum.now(tz).date()
+    today = pendulum.now(tz_obj).date()
     tom   = today.add(days=1)
 
     # Заголовок
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")
 
     # Калининград — день/ночь, ветер, RH, давление
-    stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz.name)
+    stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz_name)
     wm    = get_weather(KLD_LAT, KLD_LON) or {}
     cur   = wm.get("current", {}) or {}
     wcarr = (wm.get("daily", {}) or {}).get("weathercode", [])
@@ -324,7 +333,7 @@ def build_message(region_name: str,
     # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     for city, (la, lo) in sea_cities:
-        tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
+        tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
         if tmax is None:
             continue
         wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
@@ -347,7 +356,7 @@ def build_message(region_name: str,
     # Тёплые/холодные
     temps_oth: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in other_cities:
-        tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
+        tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
         if tmax is None:
             continue
         wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
@@ -432,7 +441,7 @@ def build_message(region_name: str,
 # ───────────── отправка ─────────────
 async def send_common_post(bot: Bot, chat_id: int, region_name: str,
                            sea_label: str, sea_cities, other_label: str,
-                           other_cities, tz: pendulum.Timezone):
+                           other_cities, tz: Union[pendulum.Timezone, str]):
     msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
     await bot.send_message(chat_id=chat_id, text=msg,
                            parse_mode=constants.ParseMode.HTML,
@@ -440,6 +449,6 @@ async def send_common_post(bot: Bot, chat_id: int, region_name: str,
 
 async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
-                      other_cities, tz: pendulum.Timezone):
+                      other_cities, tz: Union[pendulum.Timezone, str]):
     await send_common_post(bot, chat_id, region_name, sea_label,
                            sea_cities, other_label, other_cities, tz)
