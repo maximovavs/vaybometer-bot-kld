@@ -1,4 +1,4 @@
-name: Collect SafeCast (Kaliningrad only)
+name: Collect SafeCast (Kaliningrad)
 
 on:
   schedule:
@@ -32,21 +32,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Ensure data/ exists
-        run: mkdir -p data
-
-      - name: Fetch SafeCast (Kaliningrad)
+      - name: Fetch SafeCast → data/safecast_kaliningrad.json
         env:
           OUT_FILE: data/safecast_kaliningrad.json
-          LAT: "54.7104"
-          LON: "20.4522"
-          DIST: "300"   # радиус, км
-          HOURS: "48"   # за сколько последних часов брать
+          LAT:      "54.7104"
+          LON:      "20.4522"
+          DIST:     "300"    # км радиус вокруг Калининграда
+          HOURS:    "48"     # тянуть за последние 48 часов
         run: |
           python - <<'PY'
-          import os, json, time, math
-          import datetime as dt
-          from typing import List, Dict, Any, Optional, Tuple
+          import os, json, time, math, datetime as dt
+          from statistics import median
+          from typing import List, Dict, Any, Optional
           import requests
 
           out_file = os.environ["OUT_FILE"]
@@ -65,8 +62,11 @@ jobs:
               p.update(params)
               try:
                 r = requests.get(url, params=p, headers=HEADERS, timeout=30)
-                if r.status_code != 200:
-                  break
+              except Exception:
+                break
+              if r.status_code != 200:
+                break
+              try:
                 batch = r.json()
               except Exception:
                 break
@@ -82,17 +82,18 @@ jobs:
             "https://api.safecast.org/measurements.json",
             "https://api.safecast.org/en-US/measurements.json",
           ]
-
-          strategies: List[Tuple[str, Dict[str, Any]]] = []
+          strategies = []
           for u in base_urls:
-            # distance в км и метрах; captured_after и его алиас since
-            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km,       order="captured_at", direction="desc", captured_after=since_iso)))
-            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000.0, order="captured_at", direction="desc", captured_after=since_iso)))
-            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km,       order="captured_at", direction="desc", since=since_iso)))
-            strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist_km*1000.0, order="captured_at", direction="desc", since=since_iso)))
+            for dist in (dist_km, dist_km*1000):  # км и метры
+              strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist,
+                                         order="captured_at", direction="desc",
+                                         captured_after=since_iso)))
+              strategies.append((u, dict(latitude=lat, longitude=lon, distance=dist,
+                                         order="captured_at", direction="desc",
+                                         since=since_iso)))
 
-          raw: List[Dict[str, Any]] = []
-          used: Optional[Tuple[str, Dict[str, Any]]] = None
+          raw = []
+          used = None
           for url, params in strategies:
             raw = fetch(url, params)
             if raw:
@@ -101,94 +102,71 @@ jobs:
 
           def parse_ts(s: str) -> Optional[int]:
             try:
+              if not s: return None
               if "." in s:
                 s = s.split(".")[0] + "Z"
               return int(dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
             except Exception:
               return None
 
-          normalized: List[Dict[str, Any]] = []
+          norm: List[Dict[str, Any]] = []
           for m in raw:
             ts = parse_ts(m.get("captured_at") or m.get("created_at") or "")
             if not ts or ts < int(since_dt.timestamp()):
               continue
-            unit = (m.get("unit") or "").strip()
-            vt   = (m.get("value_type") or "").strip().lower()
-            val  = m.get("value")
-            try:
-              val = float(val)
-            except Exception:
-              continue
-            lat_m = m.get("latitude"); lon_m = m.get("longitude")
-            try:
-              lat_m = float(lat_m); lon_m = float(lon_m)
-            except Exception:
-              lat_m = lat; lon_m = lon
-            normalized.append({
-              "ts": ts, "lat": lat_m, "lon": lon_m,
-              "val": val, "unit": unit, "vt": vt, "id": m.get("id")
-            })
+            vt = (m.get("value_type") or "").strip().lower()
+            unit = (m.get("unit") or "").strip().lower()
+            val = m.get("value")
+            try: val = float(val)
+            except Exception: continue
+            norm.append({"ts": ts, "vt": vt, "unit": unit, "val": val})
 
-          normalized.sort(key=lambda x: x["ts"])
+          norm.sort(key=lambda x: x["ts"])
 
-          # Сводка
-          summary: Dict[str, Any] = {"ts": normalized[-1]["ts"] if normalized else None}
+          # агрегируем
+          now_ts = int(dt.datetime.utcnow().timestamp())
+          out: Dict[str, Any] = {"ts": now_ts}
 
-          def latest_by_vt(vt_name: str) -> Optional[Dict[str, Any]]:
-            for d in reversed(normalized):
-              if d["vt"] == vt_name:
-                return d
-            return None
+          # PM — берём последний доступный замер
+          for target, key in (("pm2.5","pm25"), ("pm10","pm10")):
+            for d in reversed(norm):
+              if d["vt"] == target:
+                out[key] = d["val"]
+                break
 
-          # PM
-          if (pm25 := latest_by_vt("pm2.5")): summary["pm25"] = pm25["val"]
-          if (pm10 := latest_by_vt("pm10")):  summary["pm10"] = pm10["val"]
+          # Радиация: медиана за 6 ч
+          cut_ts = now_ts - 6*3600
+          usvh_vals = []
+          cpm_vals = []
+          for d in norm:
+            if d["ts"] < cut_ts: continue
+            if ("sv/h" in d["unit"]) or (d["vt"] in ("usv/h","radiation","radiation_usvh")):
+              usvh_vals.append(d["val"])
+            if (d["vt"] in ("cpm","counts_per_minute")) or d["unit"] == "cpm":
+              cpm_vals.append(d["val"])
 
-          # Радиоактивность: μSv/h медиана за 6 часов
-          cut_ts = int((dt.datetime.utcnow() - dt.timedelta(hours=6)).timestamp())
-          rad_vals = [d["val"] for d in normalized
-                      if d["ts"] >= cut_ts and (
-                          ("sv/h" in d["unit"].lower()) or d["vt"] in ("usv/h","radiation","radiation_usvh")
-                      )]
-          if rad_vals:
-            rad_vals.sort()
-            n = len(rad_vals)
-            summary["radiation_usvh"] = (rad_vals[n//2] if n % 2 else 0.5*(rad_vals[n//2-1] + rad_vals[n//2]))
+          if usvh_vals:
+            out["radiation_usvh"] = float(median(usvh_vals))
+          if cpm_vals:
+            out["cpm"] = float(median(cpm_vals))
 
-          # CPM (counts per minute) — берём последнее значение по vt или unit
-          cpm_latest: Optional[float] = None
-          for d in reversed(normalized):
-            u = d["unit"].lower()
-            if d["vt"] == "cpm" or "cpm" in u:
-              cpm_latest = d["val"]; break
-          if cpm_latest is not None:
-            summary["cpm"] = cpm_latest
+          # сохраним
+          os.makedirs(os.path.dirname(out_file), exist_ok=True)
+          with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
 
-          # Пишем файл (даже если пусто — чтобы пайплайн был детерминированным)
-          if not normalized:
-            with open(out_file, "w", encoding="utf-8") as f:
-              json.dump({"ts": None}, f, ensure_ascii=False)
-          else:
-            with open(out_file, "w", encoding="utf-8") as f:
-              json.dump(summary, f, ensure_ascii=False)
-
-          print(
-            f"safecast ({out_file}): {len(normalized)} raw; "
-            f"pm25={summary.get('pm25')} pm10={summary.get('pm10')} "
-            f"rad_usvh={summary.get('radiation_usvh')} cpm={summary.get('cpm')} ; "
-            f"used={used}"
-          )
+          print("safecast out:", json.dumps(out, ensure_ascii=False))
+          print("used:", used)
           PY
 
-      - name: Upload artifact (JSON snapshot)
-        uses: actions/upload-artifact@v4
-        with:
-          name: safecast_kaliningrad.json
-          path: data/safecast_kaliningrad.json
-          if-no-files-found: warn
-          retention-days: 7
+      - name: Show diff
+        run: |
+          git status --porcelain -- data/safecast_kaliningrad.json || true
+          if [ -f data/safecast_kaliningrad.json ]; then
+            echo "File head:" && head -c 300 data/safecast_kaliningrad.json || true
+          fi
 
-      - name: Commit & push (safe, with rebase + retry)
+      - name: Commit & push (with rebase) if changed
         run: |
           set -e
           git config user.name  "github-actions[bot]"
@@ -198,21 +176,23 @@ jobs:
             git add data/safecast_kaliningrad.json
             git commit -m "safecast(Kaliningrad): update data/safecast_kaliningrad.json"
 
-            BRANCH="${GITHUB_REF_NAME:-main}"
-            for try in 1 2 3 4 5; do
-              echo "Push attempt $try…"
-              git fetch origin
-              git pull --rebase origin "$BRANCH" || { git rebase --abort || true; }
-              if git push origin "HEAD:$BRANCH"; then
-                echo "Pushed successfully on attempt $try"
-                break
-              fi
-              if [ "$try" -eq 5 ]; then
-                echo "Failed to push after $try attempts" >&2
-                exit 1
-              fi
-              sleep 2
-            done
+            # подтягиваем удалённые изменения и ребейзим, чтобы избежать non-fast-forward
+            git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" || {
+              echo "Rebase failed, trying to abort…"
+              git rebase --abort || true
+              echo "Falling back to regular pull (merge)…"
+              git pull origin "$(git rev-parse --abbrev-ref HEAD)" || true
+            }
+
+            git push origin "$(git rev-parse --abbrev-ref HEAD)"
           else
             echo "No changes in data/safecast_kaliningrad.json"
           fi
+
+      - name: Upload artifact (safecast_kaliningrad.json)
+        uses: actions/upload-artifact@v4
+        with:
+          name: safecast_kaliningrad
+          path: data/safecast_kaliningrad.json
+          if-no-files-found: warn
+          retention-days: 7
