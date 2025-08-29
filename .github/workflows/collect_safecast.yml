@@ -1,158 +1,81 @@
 name: Collect SafeCast (Kaliningrad)
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 */3 * * *"   # каждые 3 часа
+    - cron: "0 */6 * * *"   # каждые 6 часов
+  workflow_dispatch:
 
 jobs:
-  safecast-kaliningrad:
+  collect:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install requirements
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Fetch SafeCast → data/safecast_kaliningrad.json
-        env:
-          OUT_FILE: data/safecast_kaliningrad.json
-          LAT:      "54.7104"
-          LON:      "20.4522"
-          DIST:     "300"   # км, можно увеличить
-          HOURS:    "48"    # часов, можно увеличить
+      - name: Fetch SafeCast (Kaliningrad)
         run: |
-          python - <<'PY'
-          import os, json, time, datetime as dt
-          from statistics import median
-          from typing import Any, Dict, List, Optional
-          import requests
+          set -e
+          mkdir -p data
+          OUT_FILE="data/safecast_kaliningrad.json"
+          python safecast.py \
+            --lat 54.7104 \
+            --lon 20.4522 \
+            --dist 300 \
+            --hours 48 \
+            --out "$OUT_FILE"
 
-          OUT = os.environ["OUT_FILE"]
-          LAT = float(os.environ["LAT"]); LON = float(os.environ["LON"])
-          DIST = float(os.environ["DIST"])     # км
-          HOURS = int(os.environ["HOURS"])
+      - name: Preview file (size, JSON, ts → ISO)
+        run: |
+          set -e
+          FILE="data/safecast_kaliningrad.json"
+          if [ -f "$FILE" ]; then
+            echo "::group::File info"
+            ls -lah "$FILE"
+            echo "::endgroup::"
 
-          HEADERS = {"User-Agent": "VayboMeter/1.4 (+github-actions)"}
-          since_dt = dt.datetime.utcnow() - dt.timedelta(hours=HOURS)
-          since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-          # прочитаем старый файл
-          old: Dict[str, Any] = {}
-          if os.path.exists(OUT):
-            try:
-              old = json.loads(open(OUT, "r", encoding="utf-8").read())
-            except Exception:
-              old = {}
-
-          def fetch(url: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-            items: List[Dict[str, Any]] = []
-            per_page = 100
-            for page in range(1, 51):
-              p = dict(per_page=per_page, page=page); p.update(params)
-              r = requests.get(url, params=p, headers=HEADERS, timeout=30)
-              if r.status_code != 200: break
-              try: batch = r.json()
-              except Exception: break
-              if not isinstance(batch, list) or not batch: break
-              items.extend(batch)
-              if len(batch) < per_page: break
-              time.sleep(0.2)
-            return items
-
-          def parse_ts(s: str) -> Optional[int]:
-            try:
-              if not s: return None
-              if "." in s: s = s.split(".")[0] + "Z"
-              return int(dt.datetime.fromisoformat(s.replace("Z","+00:00")).timestamp())
-            except Exception:
-              return None
-
-          strategies = []
-          for base in ("https://api.safecast.org/measurements.json",
-                       "https://api.safecast.org/en-US/measurements.json"):
-            for dist in (DIST, DIST*1000):
-              strategies.append((base, dict(latitude=LAT, longitude=LON, distance=dist,
-                                            order="captured_at", direction="desc",
-                                            captured_after=since_iso)))
-              strategies.append((base, dict(latitude=LAT, longitude=LON, distance=dist,
-                                            order="captured_at", direction="desc",
-                                            since=since_iso)))
-
-          raw = []; used = None
-          for url, params in strategies:
-            raw = fetch(url, params)
-            if raw:
-              used = (url, params)
-              break
-
-          norm = []
-          for m in raw:
-            ts = parse_ts(m.get("captured_at") or m.get("created_at") or "")
-            if not ts or ts < int(since_dt.timestamp()): continue
-            vt = str(m.get("value_type") or "").lower().strip()
-            unit = str(m.get("unit") or "").lower().strip()
-            try:
-              val = float(m.get("value"))
-            except Exception:
-              continue
-            norm.append({"ts": ts, "vt": vt, "unit": unit, "val": val})
-          norm.sort(key=lambda x: x["ts"])
-
-          now_ts = int(dt.datetime.utcnow().timestamp())
-          sixh_ts = now_ts - 6*3600
-
-          cpm_vals   = [d["val"] for d in norm
-                        if d["ts"] >= sixh_ts and (d["vt"] in ("cpm","counts_per_minute") or d["unit"]=="cpm")]
-          usvh_vals  = [d["val"] for d in norm
-                        if d["ts"] >= sixh_ts and ("sv/h" in d["unit"] or d["vt"] in ("usv/h","radiation","radiation_usvh"))]
-          pm25_last, pm10_last = None, None
-          for d in reversed(norm):
-            if pm25_last is None and d["vt"] in ("pm2.5","pm25"): pm25_last = d["val"]
-            if pm10_last is None and d["vt"]=="pm10": pm10_last = d["val"]
-            if pm25_last is not None and pm10_last is not None: break
-
-          latest_ts_in_window = max([d["ts"] for d in norm if d["ts"] >= sixh_ts], default=None)
-          last_sample_ts_old = old.get("last_sample_ts")
-
-          if latest_ts_in_window is None or (isinstance(last_sample_ts_old,int) and latest_ts_in_window <= last_sample_ts_old):
-            print("No new samples in last 6h; keeping previous file as is.")
-            print("counts:", {"cpm": len(cpm_vals), "usvh": len(usvh_vals)})
-            print("used:", used)
-            raise SystemExit(0)
-
-          out = {
-            "ts": now_ts,
-            "last_sample_ts": latest_ts_in_window,
-          }
-          if cpm_vals:  out["cpm"] = float(median(cpm_vals))
-          if usvh_vals: out["radiation_usvh"] = float(median(usvh_vals))
-          if pm25_last is not None: out["pm25"] = float(pm25_last)
-          if pm10_last is not None: out["pm10"] = float(pm10_last)
-
-          os.makedirs(os.path.dirname(OUT), exist_ok=True)
-          with open(OUT, "w", encoding="utf-8") as f:
-            json.dump(out, f, ensure_ascii=False)
-
-          print("safecast out:", json.dumps(out, ensure_ascii=False))
-          print("counts:", {"cpm": len(cpm_vals), "usvh": len(usvh_vals)})
-          print("used:", used)
-          PY
+            echo "::group::Pretty JSON"
+            python - <<'PY'
+import json, sys, os
+from datetime import datetime, timezone
+p = "data/safecast_kaliningrad.json"
+with open(p, "r", encoding="utf-8") as f:
+    d = json.load(f)
+print(json.dumps(d, ensure_ascii=False, indent=2))
+ts = d.get("ts")
+if isinstance(ts, (int, float)):
+    print("ts_iso:", datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat())
+else:
+    print("ts_iso: n/a")
+print("keys:", list(d.keys()))
+PY
+            echo "::endgroup::"
+          else
+            echo "File not found: $FILE"
+            exit 1
+          fi
 
       - name: Commit & Push if changed
         run: |
+          set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase
+
+          # безопасный pull с автозастэшем
+          git pull --rebase --autostash
+
           if [ -n "$(git status --porcelain -- data/safecast_kaliningrad.json)" ]; then
             git add data/safecast_kaliningrad.json
             git commit -m "safecast(Kaliningrad): update data/safecast_kaliningrad.json"
