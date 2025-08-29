@@ -2,12 +2,11 @@ name: Collect SafeCast (Kaliningrad)
 
 on:
   schedule:
-    - cron: "0 */6 * * *"         # каждые 6 часов
+    - cron: "0 */6 * * *"     # каждые 6 часов
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/collect_safecast.yml"
-      - "safecast.py"
+  push:                       # запускаться при ЛЮБОМ коммите
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -21,34 +20,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Set up Python
+      - name: Sanity check
+        run: |
+          echo "Ref: $GITHUB_REF  Sha: $GITHUB_SHA  Actor: $GITHUB_ACTOR"
+          echo "Runner: $(uname -a)"
+
+      - name: Sync to origin/main (clean base)
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+          mkdir -p data
+
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install requirements
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
 
-      - name: Prepare worktree (rebase on latest)
-        run: |
-          set -e
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash
-          mkdir -p data
-
       - name: Fetch SafeCast (Kaliningrad)
         run: |
-          set -e
+          set -euo pipefail
           python safecast.py \
             --lat 54.7104 \
             --lon 20.4522 \
@@ -56,38 +61,37 @@ jobs:
             --hours 48 \
             --out data/safecast_kaliningrad.json
 
-      - name: Preview file (size, JSON, ts → ISO)
+      - name: Preview JSON
         run: |
-          set -e
+          set -euo pipefail
           FILE="data/safecast_kaliningrad.json"
           if [ ! -f "$FILE" ]; then
-            echo "File not found: $FILE"; exit 1
+            echo "❌ File not found: $FILE"; exit 1
           fi
           ls -lah "$FILE"
           python - <<'PY'
-import json
-from datetime import datetime, timezone
-p="data/safecast_kaliningrad.json"
-with open(p, "r", encoding="utf-8") as f:
-    d=json.load(f)
+import json, sys, pathlib, datetime
+p=pathlib.Path("data/safecast_kaliningrad.json")
+d=json.loads(p.read_text("utf-8"))
 print("---- Pretty JSON ----")
 print(json.dumps(d, ensure_ascii=False, indent=2))
-ts=d.get("ts")
+ts = d.get("ts")
 if isinstance(ts,(int,float)):
-    iso=datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
-    print("ts_iso:", iso)
+    print("ts_iso:", datetime.datetime.utcfromtimestamp(int(ts)).isoformat()+"Z")
 else:
     print("ts_iso: n/a")
 print("keys:", list(d.keys()))
 PY
 
-      - name: Commit & Push if changed
+      - name: Commit & push if changed
         run: |
-          set -e
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ -n "$(git status --porcelain -- data/safecast_kaliningrad.json)" ]; then
             git add data/safecast_kaliningrad.json
             git commit -m "safecast(Kaliningrad): update data/safecast_kaliningrad.json"
-            git push
+            git push origin HEAD:main
           else
             echo "No changes in data/safecast_kaliningrad.json"
           fi
