@@ -152,7 +152,7 @@ def load_safecast() -> Optional[Dict[str, Any]]:
         if sc: break
     if not sc: return None
 
-    # staleness: считаем свежими данные не старше 12 часов
+    # staleness: считаем свежими данные не старше 24 часов
     ts = sc.get("ts")
     if not isinstance(ts, (int, float)): return None
     now_ts = pendulum.now("UTC").int_timestamp
@@ -202,31 +202,107 @@ def safecast_block_lines() -> List[str]:
 
     # Отдельной строкой CPM (если пришёл)
     if isinstance(sc.get("cpm"), (int, float)):
-        lines.append(f"📟 CPM: {sc['cpm']:.0f} (медиана 6 ч)")
+        lines.append(f"📟 CPM: {sc['cpm']:.0f} (медиана 6 ч)")
 
     return lines
 
 # ───────────── Радиация ─────────────
+def _read_local_radiation_usvh() -> Optional[Tuple[float, str]]:
+    """
+    Пытаемся взять «официальные» локальные данные (μSv/h):
+      • ENV RADIATION_FILE  (объект или список)
+      • data/radiation.json
+      • radiation_hourly.json (список, берём последнюю)
+    Считаем свежим ≤ 12ч.
+    """
+    now_ts = pendulum.now("UTC").int_timestamp
+    cand: List[Path] = []
+    if os.getenv("RADIATION_FILE"):
+        cand.append(Path(os.getenv("RADIATION_FILE")))
+    here = Path(__file__).parent
+    cand += [here / "data" / "radiation.json",
+             here / "radiation.json",
+             here / "radiation_hourly.json"]
+
+    for p in cand:
+        try:
+            if not p.exists():
+                continue
+            txt = p.read_text("utf-8").strip()
+            if not txt:
+                continue
+            data = json.loads(txt)
+        except Exception:
+            continue
+
+        # формат: объект
+        if isinstance(data, dict):
+            ts = data.get("ts")
+            val = data.get("usvh") or data.get("dose")
+            if isinstance(val, (int, float)) and (not isinstance(ts, (int, float)) or now_ts - int(ts) <= 12*3600):
+                return float(val), "официальные"
+
+        # формат: список
+        if isinstance(data, list):
+            for rec in reversed(data):
+                if not isinstance(rec, dict):
+                    continue
+                ts = rec.get("ts")
+                val = rec.get("usvh") or rec.get("dose")
+                if isinstance(val, (int, float)) and (not isinstance(ts, (int, float)) or now_ts - int(ts) <= 12*3600):
+                    return float(val), "официальные"
+
+    return None
+
+def _format_radiation_line(usvh: float, src_label: str = "") -> str:
+    if usvh <= 0.15:  emoji, lvl = "🟢", "низкий"
+    elif usvh <= 0.30: emoji, lvl = "🟡", "повышенный"
+    else:              emoji, lvl = "🔴", "высокий"
+    suffix = f" ({src_label}, {lvl})" if src_label else f" ({lvl})"
+    return f"{emoji} Радиация: {usvh:.3f} μSv/h{suffix}"
+
 def radiation_line(lat: float, lon: float) -> str | None:
     """
-    Пытаемся выдать радиацию из основного источника; если нет — бэкап из SafeCast (μSv/h).
+    1) Пробуем «официальные» (локальные файлы / модуль get_radiation)
+    2) Фоллбэк — SafeCast:
+       • если есть radiation_usvh — берём её;
+       • иначе, если есть cpm — конвертируем: μSv/h = cpm * CPM_TO_USVH
+         (ENV CPM_TO_USVH, по умолчанию 0.000571).
     """
-    data = get_radiation(lat, lon) or {}
-    dose = data.get("dose")
-    if isinstance(dose, (int, float)):
-        if dose <= 0.15:  emoji, lvl = "🟢", "низкий"
-        elif dose <= 0.30: emoji, lvl = "🟡", "повышенный"
-        else:              emoji, lvl = "🔴", "высокий"
-        return f"{emoji} Радиация: {dose:.3f} μSv/h ({lvl})"
+    # 1) локальные «официальные»
+    lr = _read_local_radiation_usvh()
+    if lr:
+        return _format_radiation_line(lr[0], lr[1])
 
-    # фоллбэк: Safecast radiation_usvh (медиана за 6 ч)
+    # 1b) онлайн «официальные»
+    try:
+        rd = get_radiation(lat, lon) or {}
+        if isinstance(rd.get("dose"), (int, float)):
+            return _format_radiation_line(float(rd["dose"]), "официальные")
+    except Exception:
+        pass
+
+    # 2) Safecast
     sc = load_safecast()
-    r = sc.get("radiation_usvh") if sc else None
-    if isinstance(r, (int, float)):
-        if r <= 0.15:  emoji, lvl = "🟢", "низкий"
-        elif r <= 0.30: emoji, lvl = "🟡", "повышенный"
-        else:           emoji, lvl = "🔴", "высокий"
-        return f"{emoji} Радиация: {r:.3f} μSv/h (Safecast, {lvl})"
+    if not sc:
+        return None
+
+    # прямая μSv/h из Safecast (если collector положил 'radiation_usvh')
+    if isinstance(sc.get("radiation_usvh"), (int, float)):
+        return _format_radiation_line(float(sc["radiation_usvh"]), "Safecast")
+
+    # конвертация из CPM → μSv/h
+    if isinstance(sc.get("cpm"), (int, float)):
+        coeff = float(os.getenv("CPM_TO_USVH", "0.000571"))
+        usvh = float(sc["cpm"]) * coeff
+        return _format_radiation_line(usvh, "Safecast (из CPM)")
+
+    # вдруг в Safecast пришло значение с единицей μSv/h напрямую
+    unit = (sc.get("unit") or "").lower()
+    val  = sc.get("value")
+    if isinstance(val, (int, float)) and ("usv/h" in unit or "µsv/h" in unit or "μsv/h" in unit):
+        return _format_radiation_line(float(val), "Safecast")
+
     return None
 
 # ───────────── Давление: локальный тренд (чувствит. 0.3 гПа) ─────────────
@@ -299,7 +375,7 @@ def build_message(region_name: str,
     P.append(" • ".join([x for x in kal_parts if x]))
     P.append("———")
 
-    # Морские города (топ‑5)
+    # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     for city, (la, lo) in sea_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz.name)
@@ -420,4 +496,4 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz):
     await send_common_post(bot, chat_id, region_name, sea_label,
-                           sea_cities, other_label, other_cities, tz)
+                           sea_cities, other_cities, tz)
