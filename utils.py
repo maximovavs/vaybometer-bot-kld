@@ -471,6 +471,35 @@ def pressure_trend(w: Dict[str, Any]) -> str:
         return "↓"
     return "→"
 
+def _freq_status(freq: Optional[float]) -> tuple[str, str]:
+    """
+    Возвращает (label, code):
+      🟢 в норме — 7.7..8.1
+      🟡 колебания — внутри 7.4..8.4, но вне зелёного коридора
+      🔴 сильное отклонение — <7.4 или >8.4
+    """
+    if not isinstance(freq, (int, float)):
+        return "🟡 колебания", "yellow"
+    f = float(freq)
+    if 7.4 <= f <= 8.4:
+        return ("🟢 в норме", "green") if (7.7 <= f <= 8.1) else ("🟡 колебания", "yellow")
+    return "🔴 сильное отклонение", "red"
+
+def _trend_text(sym: str) -> str:
+    return {"↑": "растёт", "↓": "снижается", "→": "стабильно"}.get(sym, "стабильно")
+
+def _h7_text(h7_amp: Optional[float], h7_spike: Optional[bool]) -> str:
+    if isinstance(h7_amp, (int, float)):
+        return f"· H7: {h7_amp:.1f} (⚡ всплеск)" if h7_spike else f"· H7: {h7_amp:.1f} — спокойно"
+    return "· H7: — нет данных"
+
+def _gentle_interpretation(code: str) -> str:
+    if code == "green":
+        return "Волны Шумана близки к норме — организм реагирует как на обычный день."
+    if code == "yellow":
+        return "Заметны колебания — возможна лёгкая чувствительность к погоде и настроению."
+    return "Сильные отклонения — прислушивайтесь к самочувствию и снижайте перегрузки."
+
 # ──────────────────────── HTTP-обёртки ───────────────────────────────────
 _HEADERS = {
     "User-Agent": "VayboMeter/1.0 (+https://github.com/)",
