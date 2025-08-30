@@ -8,17 +8,17 @@ air.py
   1) IQAir / nearest_city  (API key: AIRVISUAL_KEY)
   2) Open-Meteo Air-Quality (без ключа)
 
-• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Meteo
+• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Mетео
 • get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
 • get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
-• get_kp()               — индекс Kp (последний замер) с кешем (TTL 6 ч)
-• NEW: get_solar_wind()  — Bz/Bt, скорость/плотность/температура (SWPC, кэш 30 мин)
+• get_kp()               — индекс Kp (последний замер) с кешем (возвращает и «свежесть»)
+• get_solar_wind()       — Bz, Bt, скорость и плотность солнечного ветра + «статус»
 
 Особенности:
-- Open-Meteо: берём значения по ближайшему прошедшему часу (UTC).
+- Open-Meteo: берём значения по ближайшему прошедшему часу (UTC).
 - SST: то же правило ближайшего часа.
-- Kp: парсим ПОСЛЕДНЕЕ значение из обоих эндпоинтов SWPC; кэш валиден 6 часов.
-- NEW: Возвращаем источник AQI:
+- Kp: парсим ПОСЛЕДНЕЕ значение из обоих эндпоинтов SWPC; кэш валиден 3 ч (раньше было 6).
+- Возвращаем источник AQI:
     'src' ∈ {'iqair','openmeteo','n/d'},
     'src_emoji' ∈ {'📡','🛰','⚪'},
     'src_icon'  ∈ {'📡 IQAir','🛰 OM','⚪ н/д'}.
@@ -30,7 +30,6 @@ import time
 import json
 import math
 import logging
-import calendar
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
 
@@ -49,6 +48,12 @@ KP_CACHE = CACHE_DIR / "kp.json"
 KP_URLS = [
     "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
     "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
+]
+
+# DSCOVR (L1): SWPC прокси с усреднением по минутам
+SW_URLS = [
+    "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json",   # Bt/Bz
+    "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json" # v/n
 ]
 
 SRC_EMOJI = {"iqair": "📡", "openmeteo": "🛰", "n/d": "⚪"}
@@ -127,7 +132,7 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             hourly="pm10,pm2_5,us_aqi", timezone="UTC",
         )
     except Exception as e:
-        logging.warning("Open-Meteо AQ request error: %s", e)
+        logging.warning("Open-Meteo AQ request error: %s", e)
         return None
     if not resp or "hourly" not in resp:
         return None
@@ -225,18 +230,20 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
         logging.warning("Marine SST parse error: %s", e)
         return None
 
-# ───────────────────────── Kp + кеш (TTL 6 ч) ──────────────────────
+# ───────────────────────── Kp + кеш (TTL 3 ч, с меткой времени) ──────────────────────
 
-def _load_kp_cache() -> Tuple[Optional[float], Optional[int]]:
+def _load_kp_cache() -> Tuple[Optional[float], Optional[int], Optional[str], Optional[int]]:
     try:
         data = json.loads(KP_CACHE.read_text(encoding="utf-8"))
-        return data.get("kp"), data.get("ts")
+        return data.get("kp"), data.get("ts"), data.get("src"), data.get("obs_ts")
     except Exception:
-        return None, None
+        return None, None, None, None
 
-def _save_kp_cache(kp: float) -> None:
+def _save_kp_cache(kp: float, src: str, obs_ts: Optional[int]) -> None:
     try:
-        KP_CACHE.write_text(json.dumps({"kp": kp, "ts": int(time.time())}, ensure_ascii=False))
+        KP_CACHE.write_text(json.dumps(
+            {"kp": kp, "ts": int(time.time()), "src": src, "obs_ts": int(obs_ts) if obs_ts else None},
+            ensure_ascii=False))
     except Exception as e:
         logging.warning("Kp cache write error: %s", e)
 
@@ -248,30 +255,48 @@ def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optiona
         time.sleep(backoff ** i)
     return None
 
-def _parse_kp_from_table(data: Any) -> Optional[float]:
+def _parse_kp_from_table(data: Any) -> Tuple[Optional[float], Optional[int]]:
+    # services.swpc.noaa.gov/products/noaa-planetary-k-index.json (таблица)
     if not isinstance(data, list) or not data or not isinstance(data[0], list):
-        return None
+        return None, None
     for row in reversed(data[1:]):
         try:
-            return float(str(row[-1]).rstrip("Z").replace(",", "."))
+            kp_val = float(str(row[-1]).replace(",", "."))
+            t = str(row[0]).replace(" ", "T")  # "YYYY-MM-DD HH:MM:SS"
+            obs_ts = int(time.mktime(time.strptime(t, "%Y-%m-%dT%H:%M:%S")))
+            return kp_val, obs_ts
         except Exception:
             continue
-    return None
+    return None, None
 
-def _parse_kp_from_dicts(data: Any) -> Optional[float]:
+def _parse_kp_from_dicts(data: Any) -> Tuple[Optional[float], Optional[int]]:
+    # services.swpc.noaa.gov/json/planetary_k_index_1m.json (массив словарей)
     if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-        return None
+        return None, None
     for item in reversed(data):
         raw = item.get("kp_index") or item.get("estimated_kp") or item.get("kp")
+        t   = item.get("time_tag") or item.get("time_tag_updated") or item.get("time_tag_estimated")
         if raw is None:
             continue
         try:
-            return float(str(raw).rstrip("Z").replace(",", "."))
+            kp_val = float(str(raw).replace(",", "."))
+            obs_ts = None
+            if isinstance(t, str):
+                t2 = t.split(".")[0].rstrip("Z")
+                obs_ts = int(time.mktime(time.strptime(t2, "%Y-%m-%dT%H:%M:%S")))
+            return kp_val, obs_ts
         except Exception:
             continue
-    return None
+    return None, None
 
-def get_kp() -> Tuple[Optional[float], str]:
+def get_kp() -> Tuple[Optional[float], str, Optional[int], str]:
+    """
+    Возвращает (kp, state, obs_ts, src)
+      kp: float | None
+      state: 'спокойно'|'неспокойно'|'буря'|'н/д'
+      obs_ts: Unix-время наблюдения (UTC) или None
+      src: 'table'|'dict'|'cache'|'n/d'
+    """
     for url in KP_URLS:
         data = _fetch_kp_data(url)
         logging.info("Kp fetch from %s -> %s", url, bool(data))
@@ -279,158 +304,107 @@ def get_kp() -> Tuple[Optional[float], str]:
             continue
         try:
             if isinstance(data, list) and data:
-                kp_value = _parse_kp_from_table(data) if isinstance(data[0], list) else _parse_kp_from_dicts(data)
+                if isinstance(data[0], list):
+                    kp_value, obs_ts = _parse_kp_from_table(data)
+                    src = "table"
+                else:
+                    kp_value, obs_ts = _parse_kp_from_dicts(data)
+                    src = "dict"
             else:
-                kp_value = None
+                kp_value, obs_ts, src = None, None, "n/d"
             if kp_value is None:
                 raise ValueError("no parsable kp in response")
-            _save_kp_cache(kp_value)
-            return kp_value, _kp_state(kp_value)
+            _save_kp_cache(kp_value, src, obs_ts)
+            return kp_value, _kp_state(kp_value), obs_ts, src
         except Exception as e:
             logging.warning("Kp parse error %s: %s", url, e)
 
-    cached_kp, ts = _load_kp_cache()
+    cached_kp, ts, src, obs_ts = _load_kp_cache()
     if cached_kp is not None and ts:
         age = int(time.time()) - int(ts)
-        if age <= 6 * 60 * 60:
+        if age <= 3 * 60 * 60:  # кэш не старше 3 часов
             logging.info("Using cached Kp=%s age=%ss", cached_kp, age)
-            return cached_kp, _kp_state(cached_kp)
+            return cached_kp, _kp_state(cached_kp), obs_ts, "cache"
 
-    return None, "н/д"
+    return None, "н/д", None, "n/d"
 
-# ─────────────────────── Solar Wind (SWPC) + кэш ───────────────────────
+# ───────────────────────── Солнечный ветер (DSCOVR @L1) ────────────
 
-SOLAR_WIND_CACHE = CACHE_DIR / "solar_wind.json"
-SWPC_MAG_URL    = "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json"
-SWPC_PLASMA_URL = "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json"
-
-def _save_sw_cache(payload: Dict[str, Any]) -> None:
-    try:
-        SOLAR_WIND_CACHE.write_text(json.dumps(payload, ensure_ascii=False))
-    except Exception as e:
-        logging.warning("solar wind cache write error: %s", e)
-
-def _load_sw_cache(max_age_sec: int = 1800) -> Optional[Dict[str, Any]]:
-    try:
-        data = json.loads(SOLAR_WIND_CACHE.read_text(encoding="utf-8"))
-        ts = data.get("ts")
-        if isinstance(ts, int) and (time.time() - ts) <= max_age_sec:
-            return data
-    except Exception:
-        pass
-    return None
-
-def _parse_swpc_last_row(url: str) -> Optional[Dict[str, Any]]:
+def _avg_recent(rows: List[List[Any]], value_idx: int, minutes: int = 15) -> Tuple[Optional[float], Optional[int]]:
     """
-    Возвращает {'ts': epoch_utc, 'headers': [...], 'row': [...]}
-    mag-1-day:   [time, bx_gsm, by_gsm, bz_gsm, lon_gsm, lat_gsm, bt]
-    plasma-1-day:[time, density, speed, temperature]
+    Берём последние ≤ minutes минут значений и усредняем.
+    Возвращает (avg, last_ts_utc).
     """
-    try:
-        data = _get(url)
-    except Exception as e:
-        logging.warning("SWPC request error %s: %s", url, e)
-        return None
-
-    if not isinstance(data, list) or len(data) < 2 or not isinstance(data[0], list):
-        return None
-
-    headers = [str(x).strip() for x in data[0]]
-    # идём с хвоста — первая валидная строка
-    for row in reversed(data[1:]):
-        if not isinstance(row, list) or not row:
-            continue
-        ts_s = str(row[0] or "").strip()
-        if not ts_s:
-            continue
-        # Форматы вида "YYYY-MM-DD HH:MM:SS.mmm" (UTC)
+    if not rows or not isinstance(rows[0], list):
+        return None, None
+    # rows: [ ["time_tag","bx_gsm","by_gsm","bz_gsm","bt"], ... ]
+    recent = []
+    last_ts = None
+    now = int(time.time())
+    cutoff = now - minutes * 60
+    for r in rows[1:]:
         try:
-            if "T" in ts_s:
-                ts_s = ts_s.replace("T", " ")
-            if "Z" in ts_s:
-                ts_s = ts_s.replace("Z", "")
-            if "." in ts_s:
-                ts_s = ts_s.split(".")[0]
-            # UTC → epoch
-            tt = time.strptime(ts_s, "%Y-%m-%d %H:%M:%S")
-            ts_epoch = calendar.timegm(tt)  # корректный UTC
+            t = str(r[0]).replace(" ", "T").split(".")[0]  # "YYYY-MM-DDTHH:MM:SS"
+            ts = int(time.mktime(time.strptime(t, "%Y-%m-%dT%H:%M:%S")))
+            if ts >= cutoff:
+                v = r[value_idx]
+                if isinstance(v, (int, float)) and math.isfinite(v):
+                    recent.append(float(v))
+                last_ts = ts
         except Exception:
             continue
-        return {"ts": int(ts_epoch), "headers": headers, "row": row}
-    return None
+    if not recent:
+        return None, last_ts
+    return sum(recent) / len(recent), last_ts
 
-def get_solar_wind() -> Optional[Dict[str, Any]]:
+def get_solar_wind() -> Dict[str, Any]:
     """
-    Возвращает словарь с последними значениями солнечного ветра/магн. поля:
-    {
-      'ts': int (epoch UTC),
-      'bz': float (nT, GSM),   'bt': float (nT),
-      'speed': float (км/с),   'density': float (см^-3),
-      'temp': float (K),
-      'src': 'swpc'
-    }
-    Кэш: 30 минут. При ошибке — отдаём кэш, если свежий.
+    Возвращает dict:
+      {'bz': float|None, 'bt': float|None, 'speed_kms': float|None, 'density': float|None,
+       'status': 'спокойно'|'умеренно'|'напряжённо'|'буря-потенц', 'ts': int|None}
     """
-    mag = _parse_swpc_last_row(SWPC_MAG_URL)
-    plasma = _parse_swpc_last_row(SWPC_PLASMA_URL)
+    bz = bt = spd = den = None
+    ts1 = ts2 = None
 
-    if not mag or not plasma:
-        cached = _load_sw_cache(max_age_sec=1800)
-        if cached:
-            return cached
-        return None
-
-    # MAG
-    bz = bt = None
     try:
-        hdr = [h.lower() for h in mag["headers"]]
-        r   = mag["row"]
-        i_bz = hdr.index("bz_gsm") if "bz_gsm" in hdr else None
-        i_bt = hdr.index("bt")     if "bt"     in hdr else None
-        if i_bz is not None and r[i_bz] not in (None, ""):
-            bz = float(r[i_bz])
-        if i_bt is not None and r[i_bt] not in (None, ""):
-            bt = float(r[i_bt])
-    except Exception:
-        pass
-    ts_mag = int(mag.get("ts") or 0)
+        mag = _get(SW_URLS[0])  # MAG: Bt/Bz
+        if isinstance(mag, list) and mag:
+            # header: ["time_tag","bx_gsm","by_gsm","bz_gsm","bt"]
+            bz, ts1 = _avg_recent(mag, 3, minutes=15)
+            bt, _   = _avg_recent(mag, 4, minutes=15)
+    except Exception as e:
+        logging.warning("Solar wind MAG error: %s", e)
 
-    # PLASMA
-    density = speed = temp = None
     try:
-        hdr2 = [h.lower() for h in plasma["headers"]]
-        r2   = plasma["row"]
-        i_den = hdr2.index("density")     if "density"     in hdr2 else None
-        i_spd = hdr2.index("speed")       if "speed"       in hdr2 else None
-        i_tmp = hdr2.index("temperature") if "temperature" in hdr2 else None
-        if i_den is not None and r2[i_den] not in (None, ""):
-            density = float(r2[i_den])
-        if i_spd is not None and r2[i_spd] not in (None, ""):
-            speed   = float(r2[i_spd])
-        if i_tmp is not None and r2[i_tmp] not in (None, ""):
-            temp    = float(r2[i_tmp])
-    except Exception:
-        pass
-    ts_plasma = int(plasma.get("ts") or 0)
+        pls = _get(SW_URLS[1])  # Plasma: speed/density
+        if isinstance(pls, list) and pls:
+            # header: ["time_tag","density","speed","temperature"]
+            den, ts2 = _avg_recent(pls, 1, minutes=15)
+            spd, _   = _avg_recent(pls, 2, minutes=15)
+    except Exception as e:
+        logging.warning("Solar wind PLASMA error: %s", e)
 
-    ts = max(ts_mag, ts_plasma)
-    if ts == 0 and not any(v is not None for v in (bz, bt, speed, density, temp)):
-        cached = _load_sw_cache(max_age_sec=1800)
-        if cached:
-            return cached
-        return None
+    ts = ts1 or ts2
 
-    out = {
-        "ts": ts,
-        "bz": bz,
-        "bt": bt,
-        "speed": speed,
-        "density": density,
-        "temp": temp,
-        "src": "swpc",
+    # Простая эвристика статуса
+    status = "н/д"
+    if all(v is None for v in (bz, bt, spd, den)):
+        status = "н/д"
+    else:
+        south = (bz is not None and bz <= -5.0) or (bz is not None and bz <= -3.0 and bt and bt >= 6.0)
+        fast  = (spd is not None and spd >= 600)
+        dense = (den is not None and den >= 10)
+        if south and (fast or dense):
+            status = "буря-потенц"
+        elif south or fast or dense:
+            status = "напряжённо"
+        else:
+            status = "спокойно"
+
+    return {
+        "bz": bz, "bt": bt, "speed_kms": spd, "density": den,
+        "status": status, "ts": ts
     }
-    _save_sw_cache(out)
-    return out
 
 # ───────────────────────── CLI ─────────────────────────────────────
 
