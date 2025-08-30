@@ -8,7 +8,7 @@ post_common.py — VayboMeter (Калининград).
 • Air (IQAir/ваш источник) + Safecast (PM и CPM→μSv/h, мягкая шкала 🟢🟡🔵), пыльца
 • Радиация из офиц. источника (строгая шкала 🟢🟡🔴)
 • Геомагнитка: Kp со «свежестью» + Солнечный ветер (Bz/Bt/v/n + статус)
-• Шуман (фоллбэк чтения JSON)
+• Шуман (фоллбэк чтения JSON; либо прямой импорт schumann.get_schumann())
 • Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
 • «Вините …», рекомендации, факт дня
 """
@@ -86,52 +86,126 @@ def _schumann_trend(values: List[float], delta: float = 0.1) -> str:
     d = tail[-1] - avg_prev
     return "↑" if d >= delta else "↓" if d <= -delta else "→"
 
+# ───────────── Шуман: вспомогалки для статуса/текста ─────────────
+def _freq_status(freq: Optional[float]) -> tuple[str, str]:
+    """
+    Возвращает (label, code):
+      🟢 в норме — 7.7..8.1
+      🟡 колебания — внутри 7.4..8.4, но вне зелёного коридора
+      🔴 сильное отклонение — <7.4 или >8.4
+    """
+    if not isinstance(freq, (int, float)):
+        return "🟡 колебания", "yellow"
+    f = float(freq)
+    if 7.4 <= f <= 8.4:
+        return ("🟢 в норме", "green") if (7.7 <= f <= 8.1) else ("🟡 колебания", "yellow")
+    return "🔴 сильное отклонение", "red"
+
+def _trend_text(sym: str) -> str:
+    return {"↑": "растёт", "↓": "снижается", "→": "стабильно"}.get(sym, "стабильно")
+
+def _h7_text(h7_amp: Optional[float], h7_spike: Optional[bool]) -> str:
+    if isinstance(h7_amp, (int, float)):
+        return f"· H7: {h7_amp:.1f} (⚡ всплеск)" if h7_spike else f"· H7: {h7_amp:.1f} — спокойно"
+    return "· H7: — нет данных"
+
+def _gentle_interpretation(code: str) -> str:
+    if code == "green":
+        return "Волны Шумана близки к норме — организм реагирует как на обычный день."
+    if code == "yellow":
+        return "Заметны колебания — возможна лёгкая чувствительность к погоде и настроению."
+    return "Сильные отклонения — прислушивайтесь к самочувствию и снижайте перегрузки."
+
 def get_schumann_with_fallback() -> Dict[str, Any]:
+    """
+    Пытаемся взять агрегированное состояние из модуля schumann.py (если есть).
+    Иначе — читаем локальный JSON как раньше.
+    Возвращаем унифицированный словарь с ключами:
+      freq, amp, trend, trend_text, status, status_code,
+      h7_text, h7_amp, h7_spike, interpretation, cached
+    """
+    # 1) прямой импорт schumann.py — предпочтительно
+    try:
+        import schumann  # локальный модуль из репозитория
+        if hasattr(schumann, "get_schumann"):
+            payload = schumann.get_schumann() or {}
+            return {
+                "freq": payload.get("freq"),
+                "amp": payload.get("amp"),
+                "trend": payload.get("trend", "→"),
+                "trend_text": payload.get("trend_text") or _trend_text(payload.get("trend", "→")),
+                "status": payload.get("status") or _freq_status(payload.get("freq"))[0],
+                "status_code": payload.get("status_code") or _freq_status(payload.get("freq"))[1],
+                "h7_text": payload.get("h7_text") or _h7_text(payload.get("h7_amp"), payload.get("h7_spike")),
+                "h7_amp": payload.get("h7_amp"),
+                "h7_spike": payload.get("h7_spike"),
+                "interpretation": payload.get("interpretation") or _gentle_interpretation(
+                    payload.get("status_code") or _freq_status(payload.get("freq"))[1]
+                ),
+                "cached": bool(payload.get("cached")),
+            }
+    except Exception:
+        # тихо падаем в фоллбэк
+        pass
+
+    # 2) фоллбэк к локальной истории JSON
     arr = _read_schumann_history()
     if not arr:
-        return {"freq": None, "amp": None, "trend": "→", "h7_amp": None, "h7_spike": None, "cached": True}
+        return {"freq": None, "amp": None, "trend": "→",
+                "trend_text": "стабильно", "status": "🟡 колебания", "status_code": "yellow",
+                "h7_text": _h7_text(None, None), "h7_amp": None, "h7_spike": None,
+                "interpretation": _gentle_interpretation("yellow"), "cached": True}
 
     amps: List[float] = []
     last: Optional[Dict[str, Any]] = None
     for rec in arr:
         if not isinstance(rec, dict):
             continue
-        if "freq" in rec and ("amp" in rec or "h7_amp" in rec):
-            if isinstance(rec.get("amp"), (int, float)):
-                amps.append(float(rec["amp"]))
-            last = rec
-        elif "amp" in rec:
-            try:
-                amps.append(float(rec["amp"]))
-            except Exception:
-                pass
-            last = rec
+        if isinstance(rec.get("amp"), (int, float)):
+            amps.append(float(rec["amp"]))
+        last = rec
 
     trend = _schumann_trend(amps)
-    if last is None:
-        return {"freq": None, "amp": None, "trend": trend, "h7_amp": None, "h7_spike": None, "cached": True}
-
-    freq = last.get("freq", 7.83) if isinstance(last.get("freq"), (int, float)) else 7.83
-    amp = last.get("amp") if isinstance(last.get("amp"), (int, float)) else None
-    h7_amp = last.get("h7_amp") if isinstance(last.get("h7_amp"), (int, float)) else None
-    h7_spike = last.get("h7_spike") if isinstance(last.get("h7_spike"), bool) else None
-    src = (last.get("src") or "").lower()
+    freq = (last.get("freq") if last else None)
+    amp = (last.get("amp") if last else None)
+    h7_amp = (last.get("h7_amp") if last else None)
+    h7_spike = (last.get("h7_spike") if last else None)
+    src = ((last or {}).get("src") or "").lower()
     cached = (src == "cache")
-    return {"freq": freq, "amp": amp, "trend": trend, "h7_amp": h7_amp, "h7_spike": h7_spike, "cached": cached}
+
+    status, code = _freq_status(freq)
+    return {
+        "freq": freq if isinstance(freq, (int, float)) else None,
+        "amp": amp if isinstance(amp, (int, float)) else None,
+        "trend": trend,
+        "trend_text": _trend_text(trend),
+        "status": status,
+        "status_code": code,
+        "h7_text": _h7_text(h7_amp, h7_spike),
+        "h7_amp": h7_amp if isinstance(h7_amp, (int, float)) else None,
+        "h7_spike": h7_spike if isinstance(h7_spike, bool) else None,
+        "interpretation": _gentle_interpretation(code),
+        "cached": cached,
+    }
 
 def schumann_line(s: Dict[str, Any]) -> str:
-    if s.get("freq") is None:
-        return "🎵 Шуман: н/д"
-    f = s["freq"]; amp = s.get("amp"); trend = s.get("trend", "→")
-    h7_amp = s.get("h7_amp"); h7_spike = s.get("h7_spike")
-    e = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
-    base = f"{e} Шуман: {float(f):.2f} Гц"
-    if isinstance(amp, (int, float)): base += f" / {float(amp):.2f} pT {trend}"
-    else: base += f" / н/д {trend}"
-    if isinstance(h7_amp, (int, float)):
-        base += f" · H7 {h7_amp:.2f}"
-        if isinstance(h7_spike, bool) and h7_spike: base += " ⚡"
-    return base
+    """
+    Пример:
+    🟢 Шуман: 7.83 Гц / 1.14 pT — тренд: стабильно • · H7: — нет данных
+    Волны Шумана близки к норме — организм реагирует как на обычный день.
+    Возврат в две строки (если нужна одна строка — верни только main).
+    """
+    freq = s.get("freq")
+    amp  = s.get("amp")
+    trend_text = s.get("trend_text") or _trend_text(s.get("trend", "→"))
+    status = s.get("status") or _freq_status(freq)[0]
+    h7line = s.get("h7_text") or _h7_text(s.get("h7_amp"), s.get("h7_spike"))
+    interp = s.get("interpretation") or _gentle_interpretation(s.get("status_code") or _freq_status(freq)[1])
+
+    fstr = f"{freq:.2f}" if isinstance(freq, (int, float)) else "н/д"
+    astr = f"{amp:.2f} pT" if isinstance(amp, (int, float)) else "н/д"
+    main = f"{status} Шуман: {fstr} Гц / {astr} — тренд: {trend_text} • {h7line}"
+    return main + "\n" + interp
 
 # ───────────── Safecast / чтение файла ─────────────
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -421,78 +495,4 @@ def build_message(region_name: str,
     if isinstance(kp, (int, float)):
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks}{age_txt})")
     else:
-        P.append("🧲 Геомагнитка: н/д")
-
-    # Солнечный ветер (Bz/Bt/v/n) — показываем только если есть хоть что-то
-    sw = get_solar_wind() or {}
-    bz = sw.get("bz"); bt = sw.get("bt"); v = sw.get("speed_kms"); n = sw.get("density")
-    wind_status = sw.get("status", "н/д")
-    parts = []
-    if isinstance(bz, (int, float)): parts.append(f"Bz {bz:.1f} nT")
-    if isinstance(bt, (int, float)): parts.append(f"Bt {bt:.1f} nT")
-    if isinstance(v,  (int, float)): parts.append(f"v {v:.0f} км/с")
-    if isinstance(n,  (int, float)): parts.append(f"n {n:.1f} см⁻³")
-    if parts:
-        P.append("🌬️ Солнечный ветер: " + ", ".join(parts) + f" — {wind_status}")
-
-    # если Kp высокий, но ветер спокойный — пояснение
-    try:
-        if (isinstance(kp, (int, float)) and kp >= 5) and isinstance(wind_status, str) and ("спокой" in wind_status.lower()):
-            P.append("ℹ️ По ветру сейчас спокойно; Kp — глобальный индекс за 3 ч.")
-    except Exception:
-        pass
-
-    # Шуман
-    P.append(schumann_line(get_schumann_with_fallback()))
-    P.append("———")
-
-    # Астрособытия (скрываем VoC <= 5 минут)
-    P.append("🌌 <b>Астрособытия</b>")
-    astro = astro_events(offset_days=1, show_all_voc=True)
-    filtered: List[str] = []
-    for line in (astro or []):
-        m = re.search(r"(VoC|VOC|Луна.*без курса).*?(\d+)\s*мин", line, re.IGNORECASE)
-        if m:
-            mins = int(m.group(2))
-            if mins <= 5:
-                continue
-        filtered.append(line)
-    if filtered:
-        P.extend([zsym(line) for line in filtered])
-    else:
-        P.append("— нет данных —")
-    P.append("———")
-
-    # Вывод + советы
-    culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
-    P.append("📜 <b>Вывод</b>")
-    P.append(f"Если что-то пойдёт не так, вините {culprit}! 😉")
-    P.append("———")
-    P.append("✅ <b>Рекомендации</b>")
-    try:
-        _, tips = gpt_blurb(culprit)
-        for t in tips[:3]:
-            t = t.strip()
-            if t:
-                P.append(t)
-    except Exception:
-        P.append("— больше воды, меньше стресса, нормальный сон")
-
-    P.append("———")
-    P.append(f"📚 {get_fact(tom, region_name)}")
-    return "\n".join(P)
-
-# ───────────── отправка ─────────────
-async def send_common_post(bot: Bot, chat_id: int, region_name: str,
-                           sea_label: str, sea_cities, other_label: str,
-                           other_cities, tz: Union[pendulum.Timezone, str]):
-    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
-    await bot.send_message(chat_id=chat_id, text=msg,
-                           parse_mode=constants.ParseMode.HTML,
-                           disable_web_page_preview=True)
-
-async def main_common(bot: Bot, chat_id: int, region_name: str,
-                      sea_label: str, sea_cities, other_label: str,
-                      other_cities, tz: Union[pendulum.Timezone, str]):
-    await send_common_post(bot, chat_id, region_name, sea_label,
-                           sea_cities, other_label, other_cities, tz)
+        P.append("🧲 
