@@ -495,4 +495,58 @@ def build_message(region_name: str,
         pass
 
     # Шуман
-    P.appe
+    P.append(schumann_line(get_schumann_with_fallback()))
+    P.append("———")
+
+    # Астрособытия (скрываем VoC <= 5 минут)
+    P.append("🌌 <b>Астрособытия</b>")
+    astro = astro_events(offset_days=1, show_all_voc=True)
+    filtered: List[str] = []
+    for line in (astro or []):
+        m = re.search(r"(VoC|VOC|Луна.*без курса).*?(\d+)\s*мин", line, re.IGNORECASE)
+        if m:
+            mins = int(m.group(2))
+            if mins <= 5:
+                continue
+        filtered.append(line)
+    if filtered:
+        P.extend([zsym(line) for line in filtered])
+    else:
+        P.append("— нет данных —")
+    P.append("———")
+
+    # Вывод + советы
+    culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
+    P.append("📜 <b>Вывод</b>")
+    P.append(f"Если что-то пойдёт не так, вините {culprit}! 😉")
+    P.append("———")
+    P.append("✅ <b>Рекомендации</b>")
+    try:
+        _, tips = gpt_blurb(culprit)
+        for t in tips[:3]:
+            t = t.strip()
+            if t:
+                P.append(t)
+    except Exception:
+        P.append("— больше воды, меньше стресса, нормальный сон")
+
+    P.append("———")
+    P.append(f"📚 {get_fact(tom, region_name)}")
+    return "\n".join(P)
+
+# ───────────── отправка ─────────────
+async def send_common_post(bot: Bot, chat_id: int, region_name: str,
+                           sea_label: str, sea_cities, other_label: str,
+                           other_cities, tz: Union[pendulum.Timezone, str]):
+    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=msg,
+        parse_mode=constants.ParseMode.HTML,
+        disable_web_page_preview=True
+    )
+
+async def main_common(bot: Bot, chat_id: int, region_name: str,
+                      sea_label: str, sea_cities, other_label: str,
+                      other_cities, tz: Union[pendulum.Timezone, str]):
+    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
