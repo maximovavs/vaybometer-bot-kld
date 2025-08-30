@@ -7,7 +7,7 @@ post_common.py — VayboMeter (Калининград).
 • Рейтинги городов (d/n, код погоды словами + 🌊)
 • Air (IQAir/ваш источник) + Safecast (PM и CPM→μSv/h, мягкая шкала 🟢🟡🔵), пыльца
 • Радиация из офиц. источника (строгая шкала 🟢🟡🔴)
-• Kp, Шуман (фоллбэк чтения JSON)
+• Kp, Солнечный ветер (Bz/Bt, v, n), Шуман (фоллбэк чтения JSON)
 • Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
 • «Вините …», рекомендации, факт дня
 """
@@ -26,7 +26,7 @@ from telegram import Bot, constants
 
 from utils        import compass, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index
 from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
-from air          import get_air, get_sst, get_kp
+from air          import get_air, get_sst, get_kp, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
 from astro        import astro_events
@@ -289,6 +289,51 @@ def zsym(s: str) -> str:
         s = s.replace(name, sym)
     return s
 
+# ───────────── Магнитка: солнечный ветер ─────────────
+def _sw_state(bz: Optional[float], bt: Optional[float], v: Optional[float], n: Optional[float]) -> Tuple[str, str]:
+    """
+    Мягкая эвристика состояния магнитной обстановки по солнечному ветру.
+    Возвращает (emoji, label) без «красной тревоги», чтобы не пугать.
+    """
+    score = 0
+    try:
+        if isinstance(bz, (int, float)):
+            if bz <= -5: score += 2
+            elif bz <= -2: score += 1
+        if isinstance(v, (int, float)):
+            if v >= 600: score += 2
+            elif v >= 500: score += 1
+        if isinstance(n, (int, float)) and n >= 15:
+            score += 1
+        if isinstance(bt, (int, float)) and bt >= 10:
+            score += 1
+    except Exception:
+        pass
+    if score >= 4:   return "🟠", "возмущённо"
+    if score >= 2:   return "🟡", "активно"
+    return "🟢", "спокойно"
+
+def solar_wind_line() -> Optional[str]:
+    sw = get_solar_wind() or {}
+    if not sw:
+        return None
+    bz  = sw.get("bz")
+    bt  = sw.get("bt")
+    v   = sw.get("speed")
+    den = sw.get("density")
+    # выводим только, если есть хотя бы что-то осмысленное
+    if all(x is None for x in (bz, bt, v, den)):
+        return None
+    em, lbl = _sw_state(bz, bt, v, den)
+    parts: List[str] = []
+    if isinstance(bz, (int, float)): parts.append(f"Bz {bz:.1f} nT")
+    if isinstance(bt, (int, float)): parts.append(f"Bt {bt:.1f} nT")
+    if isinstance(v,  (int, float)): parts.append(f"v {v:.0f} км/с")
+    if isinstance(den,(int, float)): parts.append(f"n {den:.1f} см⁻³")
+    if not parts:
+        return None
+    return f"{em} Солнечный ветер: {', '.join(parts)} — {lbl}"
+
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
@@ -397,9 +442,13 @@ def build_message(region_name: str,
         P.append(rl)
     P.append("———")
 
-    # Kp + Шуман
+    # Kp + Солнечный ветер + Шуман
     kp, ks = get_kp()
     P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
+
+    if (sw := solar_wind_line()):
+        P.append(sw)
+
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
@@ -452,4 +501,4 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
     await send_common_post(bot, chat_id, region_name, sea_label,
-                           sea_cities, other_label, other_cities, tz)
+                           sea_cities, other_cities, tz)
