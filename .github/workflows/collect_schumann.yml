@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: collect-schumann
-  cancel-in-progress: false
+  cancel-in-progress: true  # безопаснее, чем параллельные ранки
 
 jobs:
   collect:
@@ -25,6 +25,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install deps
         run: |
@@ -63,12 +64,16 @@ jobs:
 
           # — user agent для HeartMath
           SCHU_USER_AGENT: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+          # — circuit breaker для лайва
+          SCHU_BREAKER_THRESHOLD: "3"
+          SCHU_BREAKER_COOLDOWN:  "1800"
         run: |
           python schumann.py --collect || echo "WARN: collector failed"
 
-      - name: Fix & dedupe history
+      - name: Fix history (normalize + dedupe)
         run: |
-          python schumann.py --dedupe || true
+          python schumann.py --fix-history || true
 
       - name: Make trend charts (48h & 7d)
         run: |
@@ -76,7 +81,8 @@ jobs:
           import json, datetime as dt, matplotlib.pyplot as plt
           with open("schumann_hourly.json","r",encoding="utf-8") as f:
               data=json.load(f)
-          points=[(dt.datetime.utcfromtimestamp(r["ts"]), r["amp"]) for r in data if isinstance(r.get("amp"),(int,float))]
+          points=[(dt.datetime.utcfromtimestamp(r["ts"]), r.get("amp")) for r in data]
+          points=[(t,a) for t,a in points if isinstance(a,(int,float))]
           def save_chart(hours,out):
               if not points: return
               t_cut=points[-1][0]-dt.timedelta(hours=hours)
@@ -97,20 +103,24 @@ jobs:
           print("Charts written: schumann_amp_48h.png, schumann_amp_7d.png")
           PY
 
-      - name: Commit & push if changed
+      - name: Commit & push if changed (JSON + charts)
+        id: commit
         run: |
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- schumann_hourly.json; then
-            git add schumann_hourly.json
-            git commit -m "schumann: update (v2, live GCI power, fixed history)"
-            git push
+          git add schumann_hourly.json schumann_amp_48h.png schumann_amp_7d.png || true
+          if git diff --cached --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes to commit"
           else
-            echo "No changes in schumann_hourly.json"
+            git commit -m "schumann: update (v2.1; fix-history; charts) $(date -u +'%Y-%m-%dT%H:%MZ')"
+            git push
+            echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload artifacts (JSON + charts)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: schumann-data
@@ -123,3 +133,18 @@ jobs:
           compression-level: 6
           overwrite: false
           include-hidden-files: false
+
+      # — опционально: автопост в Telegram (включается переменной TG_ENABLED=1)
+      - name: Post to Telegram (optional)
+        if: steps.commit.outputs.changed == 'true' && vars.TG_ENABLED == '1'
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID:   ${{ secrets.CHANNEL_ID }}
+        run: |
+          CAPTION="Schumann update • $(date +'%Y-%m-%d %H:%M')"
+          curl -s -F chat_id="$CHAT_ID" -F caption="$CAPTION (48h)" -F parse_mode="HTML" \
+               -F photo="@schumann_amp_48h.png" \
+               "https://api.telegram.org/bot$BOT_TOKEN/sendPhoto"
+          curl -s -F chat_id="$CHAT_ID" -F caption="$CAPTION (7d)" -F parse_mode="HTML" \
+               -F photo="@schumann_amp_7d.png" \
+               "https://api.telegram.org/bot$BOT_TOKEN/sendPhoto"
