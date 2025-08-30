@@ -6,7 +6,7 @@ post_common.py — VayboMeter (Калининград).
 • Море, прогноз Кёнига (день/ночь, м/с, RH min–max, давление)
 • Рейтинги городов (d/n, код погоды словами + 🌊)
 • Air (IQAir/ваш источник) + Safecast (PM и CPM), пыльца, радиация
-• Kp, Шуман (с фоллбэком чтения JSON; h7_amp/h7_spike)
+• Kp, Шуман (фоллбэк чтения JSON; h7_amp/h7_spike)
 • Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
 • «Вините …», рекомендации, факт дня
 """
@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import re
 import json
-import math
 import asyncio
 import logging
 from pathlib import Path
@@ -24,14 +23,14 @@ from typing import Any, Dict, List, Tuple, Optional, Union
 import pendulum
 from telegram import Bot, constants
 
-from utils       import compass, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index
-from weather     import get_weather, fetch_tomorrow_temps, day_night_stats
-from air         import get_air, get_sst, get_kp
-from pollen      import get_pollen
-from radiation   import get_radiation
-from astro       import astro_events
-from gpt         import gpt_blurb
-from settings_klg import SEA_SST_COORD  # not used directly, но оставим импорт
+from utils        import compass, get_fact, AIR_EMOJI, pm_color, kp_emoji, kmh_to_ms, smoke_index
+from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
+from air          import get_air, get_sst, get_kp
+from pollen       import get_pollen
+from radiation    import get_radiation
+from astro        import astro_events
+from gpt          import gpt_blurb
+from settings_klg import SEA_SST_COORD  # не используется напрямую, оставим импорт
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -43,18 +42,20 @@ CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
 
 # ──────────── утилита: принять tz как объект или как строку ────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
-    if isinstance(tz, str):
-        return pendulum.timezone(tz)
-    return tz
+    return pendulum.timezone(tz) if isinstance(tz, str) else tz
 
 # Мэппинг WMO-кодов в короткие текст+эмодзи
 WMO_DESC = {
-    0:"☀️ ясно", 1:"⛅ ч.обл", 2:"☁️ обл", 3:"🌥 пасм",
-    45:"🌫 туман", 48:"🌫 изморозь", 51:"🌦 морось",
-    61:"🌧 дождь", 71:"❄️ снег", 95:"⛈ гроза",
+    0: "☀️ ясно", 1: "⛅ ч.обл", 2: "☁️ обл", 3: "🌥 пасм",
+    45: "🌫 туман", 48: "🌫 изморозь", 51: "🌦 морось",
+    61: "🌧 дождь", 71: "❄️ снег", 95: "⛈ гроза",
 }
-def code_desc(c: Any) -> str | None:
-    return WMO_DESC.get(int(c)) if isinstance(c, (int, float)) and int(c) in WMO_DESC else None
+def code_desc(c: Any) -> Optional[str]:
+    try:
+        ci = int(c)
+        return WMO_DESC.get(ci)
+    except Exception:
+        return None
 
 # ───────────── Шуман: чтение JSON-истории (оба формата) ─────────────
 def _read_schumann_history() -> List[Dict[str, Any]]:
@@ -97,8 +98,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         if not isinstance(rec, dict):
             continue
         if "freq" in rec and ("amp" in rec or "h7_amp" in rec):
-            if isinstance(rec.get("amp"), (int, float)):
-                amps.append(float(rec["amp"]))
+            if isinstance(rec.get("amp"), (int, float)): amps.append(float(rec["amp"]))
             last = rec
         elif "amp" in rec:
             try:
@@ -126,17 +126,18 @@ def schumann_line(s: Dict[str, Any]) -> str:
     h7_amp = s.get("h7_amp"); h7_spike = s.get("h7_spike")
     e = "🔴" if f < 7.6 else "🟣" if f > 8.1 else "🟢"
     base = f"{e} Шуман: {float(f):.2f} Гц"
-    if isinstance(amp, (int, float)): base += f" / {float(amp):.2f} pT {trend}"
-    else: base += f" / н/д {trend}"
+    base += f" / {float(amp):.2f} pT {trend}" if isinstance(amp, (int, float)) else f" / н/д {trend}"
     if isinstance(h7_amp, (int, float)):
         base += f" · H7 {h7_amp:.2f}"
-        if isinstance(h7_spike, bool) and h7_spike: base += " ⚡"
+        if isinstance(h7_spike, bool) and h7_spike:
+            base += " ⚡"
     return base
 
 # ───────────── Safecast / чтение файла ─────────────
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
     try:
-        if not path.exists(): return None
+        if not path.exists():
+            return None
         data = json.loads(path.read_text("utf-8"))
         return data if isinstance(data, dict) else None
     except Exception as e:
@@ -151,25 +152,30 @@ def load_safecast() -> Optional[Dict[str, Any]]:
     Возвращаем None, если нет/устарело.
     """
     paths: List[Path] = []
-    if os.getenv("SAFECAST_FILE"): paths.append(Path(os.getenv("SAFECAST_FILE")))
+    env = os.getenv("SAFECAST_FILE")
+    if env:
+        paths.append(Path(env))
     here = Path(__file__).parent
     paths.append(here / "data" / "safecast_kaliningrad.json")
 
     sc: Optional[Dict[str, Any]] = None
     for p in paths:
         sc = _read_json(p)
-        if sc: break
-    if not sc: return None
+        if sc:
+            break
+    if not sc:
+        return None
 
-    # staleness: считаем свежими данные не старше 24 часов
+    # свежесть: <= 24 часов
     ts = sc.get("ts")
-    if not isinstance(ts, (int, float)): return None
+    if not isinstance(ts, (int, float)):
+        return None
     now_ts = pendulum.now("UTC").int_timestamp
-    if now_ts - int(ts) > 24*3600:
+    if now_ts - int(ts) > 24 * 3600:
         return None
     return sc
 
-# риск по μSv/h
+# риск по μSv/h (для официальных данных)
 def usvh_risk(x: float) -> tuple[str, str]:
     if x <= 0.15:
         return "🟢", "низкий"
@@ -178,10 +184,7 @@ def usvh_risk(x: float) -> tuple[str, str]:
     return "🔴", "высокий"
 
 def safecast_pm_level(pm25: Optional[float], pm10: Optional[float]) -> Tuple[str, str]:
-    """
-    Возвращает (emoji, label) по худшему из PM₂.₅/PM₁₀.
-    Пороги — усреднённые: PM2.5 [0-15/15-35/35-55/55+], PM10 [0-30/30-50/50-100/100+]
-    """
+    """ Грубая классификация PM по худшему показателю. """
     def level_pm25(x: float) -> int:
         if x <= 15: return 0
         if x <= 35: return 1
@@ -197,13 +200,16 @@ def safecast_pm_level(pm25: Optional[float], pm10: Optional[float]) -> Tuple[str
     if isinstance(pm25, (int, float)): worst = max(worst, level_pm25(float(pm25)))
     if isinstance(pm10, (int, float)): worst = max(worst, level_pm10(float(pm10)))
     if worst < 0: return "⚪", "н/д"
-    return (["🟢","🟡","🟠","🔴"][worst],
-            ["низкий","умеренный","высокий","очень высокий"][worst])
+    return (["🟢", "🟡", "🟠", "🔴"][worst],
+            ["низкий", "умеренный", "высокий", "очень высокий"][worst])
 
 def safecast_block_lines() -> List[str]:
     """
     Формирует строки SafeCast для раздела «Качество воздуха».
     Возвращает [] если данных нет/устарели.
+
+    ⚠️ ВАЖНО: радиация из Safecast выводится нейтрально (без цветовых рисков),
+    как неофициальные данные.
     """
     sc = load_safecast()
     if not sc:
@@ -223,31 +229,25 @@ def safecast_block_lines() -> List[str]:
             parts.append(f"PM₁₀ {pm10:.0f}")
         lines.append(f"🧪 Safecast: {em} {lbl} · " + " | ".join(parts))
 
-    # Радиация из Safecast: CPM + пересчёт в μSv/h (медиана 6 ч)
+    # Радиация из Safecast: CPM + пересчёт в μSv/h — НЕОФИЦИАЛЬНО, без цветов
     cpm = sc.get("cpm")
     usvh = sc.get("radiation_usvh")
     if not isinstance(usvh, (int, float)) and isinstance(cpm, (int, float)):
         usvh = float(cpm) * CPM_TO_USVH
 
-    if isinstance(usvh, (int, float)) or isinstance(cpm, (int, float)):
-        if isinstance(usvh, (int, float)):
-            em, lbl = usvh_risk(float(usvh))
-        else:
-            em, lbl = "⚪", "н/д"
-
-        if isinstance(cpm, (int, float)) and isinstance(usvh, (int, float)):
-            lines.append(f"📟 Радиация (Safecast): {cpm:.0f} CPM ≈ {usvh:.3f} μSv/h — {em} {lbl} (медиана 6 ч)")
-        elif isinstance(usvh, (int, float)):
-            lines.append(f"📟 Радиация (Safecast): ≈ {usvh:.3f} μSv/h — {em} {lbl} (медиана 6 ч)")
-        else:
-            lines.append(f"📟 Радиация (Safecast): {cpm:.0f} CPM (медиана 6 ч)")
+    if isinstance(cpm, (int, float)) and isinstance(usvh, (int, float)):
+        lines.append(f"📟 Радиация (Safecast, неофиц.): {cpm:.0f} CPM ≈ {usvh:.3f} μSv/h (медиана 6 ч)")
+    elif isinstance(usvh, (int, float)):
+        lines.append(f"📟 Радиация (Safecast, неофиц.): ≈ {usvh:.3f} μSv/h (медиана 6 ч)")
+    elif isinstance(cpm, (int, float)):
+        lines.append(f"📟 Радиация (Safecast, неофиц.): {cpm:.0f} CPM (медиана 6 ч)")
 
     return lines
 
 # ───────────── Радиация (официальный источник) ─────────────
-def radiation_line(lat: float, lon: float) -> str | None:
+def radiation_line(lat: float, lon: float) -> Optional[str]:
     """
-    Отдаём радиацию из официального источника (get_radiation).
+    Официальный источник (get_radiation): с оценкой риска и цветами.
     Без фоллбэка на Safecast — он показывается отдельно в safecast_block_lines().
     """
     data = get_radiation(lat, lon) or {}
@@ -263,7 +263,8 @@ def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> 
     if not isinstance(cur_p, (int, float)):
         hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
         if isinstance(hp, list) and hp:
-            cur_p = hp[-1]; prev = hp[-2] if len(hp) > 1 else None
+            cur_p = hp[-1]
+            prev = hp[-2] if len(hp) > 1 else None
         else:
             prev = None
     else:
@@ -273,16 +274,18 @@ def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> 
     arrow = "→"
     if isinstance(cur_p, (int, float)) and isinstance(prev, (int, float)):
         diff = float(cur_p) - float(prev)
-        if diff >= threshold_hpa: arrow = "↑"
-        elif diff <= -threshold_hpa: arrow = "↓"
+        if diff >= threshold_hpa:
+            arrow = "↑"
+        elif diff <= -threshold_hpa:
+            arrow = "↓"
 
     return (int(round(cur_p)) if isinstance(cur_p, (int, float)) else None, arrow)
 
 # ───────────── Зодиаки → символы ─────────────
 ZODIAC = {
-    "Овен":"♈","Телец":"♉","Близнецы":"♊","Рак":"♋","Лев":"♌",
-    ", Дева":"♍","Весы":"♎",", Скорпион":"♏","Стрелец":"♐",
-    "Козерог":"♑","Водолей":"♒","Рыбы":"♓",
+    "Овен": "♈", "Телец": "♉", "Близнецы": "♊", "Рак": "♋", "Лев": "♌",
+    ", Дева": "♍", "Весы": "♎", ", Скорпион": "♏", "Стрелец": "♐",
+    "Козерог": "♑", "Водолей": "♒", "Рыбы": "♓",
 }
 def zsym(s: str) -> str:
     for name, sym in ZODIAC.items():
@@ -295,7 +298,7 @@ def build_message(region_name: str,
                   other_label: str, other_cities,
                   tz: Union[pendulum.Timezone, str]) -> str:
 
-    tz_obj = pendulum.timezone(tz) if isinstance(tz, str) else tz
+    tz_obj = _as_tz(tz)
     tz_name = tz_obj.name
 
     P: List[str] = []
@@ -380,18 +383,19 @@ def build_message(region_name: str,
     P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | "
              f"PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
 
-    # Safecast (если свежие данные есть — по «варианту A»)
+    # Safecast (если свежие данные есть)
     P.extend(safecast_block_lines())
 
     # дымовой индекс
-    em, lbl = smoke_index(air.get("pm25"), air.get("pm10"))
-    if lbl != "низкое":
-        P.append(f"🔥 Задымление: {em} {lbl}")
+    em_smk, lbl_smk = smoke_index(air.get("pm25"), air.get("pm10"))
+    if lbl_smk != "низкое":
+        P.append(f"🔥 Задымление: {em_smk} {lbl_smk}")
 
     if (p := get_pollen()):
         P.append("🌿 <b>Пыльца</b>")
         P.append(f"Деревья: {p['tree']} | Травы: {p['grass']} | Сорняки: {p['weed']} — риск {p['risk']}")
 
+    # Официальная радиация — отдельной строкой с цветами/риском
     if (rl := radiation_line(KLD_LAT, KLD_LON)):
         P.append(rl)
     P.append("———")
