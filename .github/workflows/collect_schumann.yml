@@ -78,6 +78,55 @@ jobs:
           python schumann.py --fix-history
           python schumann.py --dedupe
 
+      # ── Графики амплитуды (PNG) ───────────────────────────────────────
+      - name: Install plotting deps
+        run: |
+          python -m pip install matplotlib
+
+      - name: Make trend charts (48h & 7d)
+        run: |
+          python - <<'PY'
+          import json, math, datetime as dt
+          import matplotlib.pyplot as plt
+
+          PATH = "schumann_hourly.json"
+
+          # читать историю
+          with open(PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+          # преобразование
+          points = []
+          for r in data:
+            ts = r.get("ts")
+            amp = r.get("amp")
+            if isinstance(ts, int) and isinstance(amp, (int, float)) and not math.isnan(amp):
+              points.append((dt.datetime.utcfromtimestamp(ts), float(amp)))
+          points.sort(key=lambda x: x[0])
+
+          def save_chart(hours, out):
+            if not points:
+              return
+            t_cut = points[-1][0] - dt.timedelta(hours=hours)
+            xs = [t for t,a in points if t >= t_cut]
+            ys = [a for t,a in points if t >= t_cut]
+            if len(xs) < 2:
+              return
+            plt.figure(figsize=(10,4), dpi=160)
+            plt.plot(xs, ys, marker='o', linewidth=1.5, markersize=2)  # цвет по умолчанию
+            plt.grid(True, alpha=0.3)
+            plt.title(f"Schumann amplitude (last {hours}h, UTC) — n={len(xs)}; last={ys[-1]:.2f}")
+            plt.xlabel("Time (UTC)")
+            plt.ylabel("Amplitude")
+            plt.tight_layout()
+            plt.savefig(out)
+            plt.close()
+
+          save_chart(48, "schumann_amp_48h.png")
+          save_chart(24*7, "schumann_amp_7d.png")
+          print("Charts written: schumann_amp_48h.png, schumann_amp_7d.png")
+          PY
+
       - name: Commit & push if changed
         run: |
           set -e
@@ -91,9 +140,12 @@ jobs:
             echo "No changes in schumann_hourly.json"
           fi
 
-      - name: Upload artifact (schumann_hourly.json)
+      - name: Upload artifacts (JSON + charts)
         uses: actions/upload-artifact@v4
         with:
           name: schumann-data
-          path: schumann_hourly.json
+          path: |
+            schumann_hourly.json
+            schumann_amp_48h.png
+            schumann_amp_7d.png
           retention-days: 7
