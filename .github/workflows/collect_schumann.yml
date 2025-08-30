@@ -78,32 +78,66 @@ jobs:
         run: |
           python schumann.py --fix-history || true
 
+      - name: Ensure schumann_hourly.json exists (init if empty)
+        run: |
+          if [ ! -s schumann_hourly.json ]; then
+            echo "[]" > schumann_hourly.json
+            echo "Initialized empty schumann_hourly.json"
+          fi
+
       - name: Make trend charts (48h & 7d)
         run: |
           python - <<'PY'
-          import json, datetime as dt, matplotlib.pyplot as plt
-          with open("schumann_hourly.json","r",encoding="utf-8") as f:
-              data=json.load(f)
-          points=[(dt.datetime.utcfromtimestamp(r["ts"]), r.get("amp")) for r in data]
-          points=[(t,a) for t,a in points if isinstance(a,(int,float))]
-          def save_chart(hours,out):
-              if not points: return
-              t_cut=points[-1][0]-dt.timedelta(hours=hours)
-              xs=[t for t,a in points if t>=t_cut]
-              ys=[a for t,a in points if t>=t_cut]
-              if len(xs)<2: return
-              plt.figure(figsize=(10,4),dpi=160)
-              plt.plot(xs,ys,marker="o",linewidth=1.5,markersize=2)
-              plt.grid(True,alpha=0.3)
-              plt.title(f"Schumann amplitude (last {hours}h, UTC) — n={len(xs)}; last={ys[-1]:.2f}")
-              plt.xlabel("Time (UTC)")
-              plt.ylabel("Amplitude")
-              plt.tight_layout()
-              plt.savefig(out)
-              plt.close()
-          save_chart(48,"schumann_amp_48h.png")
-          save_chart(24*7,"schumann_amp_7d.png")
-          print("Charts written: schumann_amp_48h.png, schumann_amp_7d.png")
+          import os, json, datetime as dt
+          import matplotlib.pyplot as plt
+
+          path = "schumann_hourly.json"
+
+          # безопасное чтение
+          data = []
+          try:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+              with open(path, "r", encoding="utf-8") as f:
+                txt = f.read().strip()
+                data = json.loads(txt) if txt else []
+          except Exception as e:
+            print("WARN: cannot parse schumann_hourly.json:", e)
+            data = []
+
+          # извлекаем валидные точки амплитуды
+          points = []
+          for r in data if isinstance(data, list) else []:
+            try:
+              ts = int(float(r.get("ts", 0)))
+              amp = r.get("amp")
+              if isinstance(amp, (int, float)):
+                points.append((dt.datetime.utcfromtimestamp(ts), float(amp)))
+            except Exception:
+              pass
+
+          def save_chart(hours, out):
+            if not points:
+              print(f"No points -> skip {out}")
+              return
+            t_cut = points[-1][0] - dt.timedelta(hours=hours)
+            xs = [t for t, a in points if t >= t_cut]
+            ys = [a for t, a in points if t >= t_cut]
+            if len(xs) < 2:
+              print(f"Not enough data ({len(xs)} pts) -> skip {out}")
+              return
+            plt.figure(figsize=(10,4), dpi=160)
+            plt.plot(xs, ys, marker="o", linewidth=1.5, markersize=2)
+            plt.grid(True, alpha=0.3)
+            plt.title(f"Schumann amplitude (last {hours}h, UTC) — n={len(xs)}; last={ys[-1]:.2f}")
+            plt.xlabel("Time (UTC)")
+            plt.ylabel("Amplitude (pT)")
+            plt.tight_layout()
+            plt.savefig(out)
+            plt.close()
+            print("Chart saved:", out)
+
+          save_chart(48, "schumann_amp_48h.png")
+          save_chart(24*7, "schumann_amp_7d.png")
           PY
 
       - name: Commit & push if changed (JSON + charts)
