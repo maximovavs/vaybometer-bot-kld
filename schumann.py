@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-schumann.py — сбор и выдача данных для «Шумана» (v2)
+schumann.py — сбор и выдача данных для «Шумана» (v2.1)
 
 Возможности:
-• Сбор ежечасной точки с безопасным кеш-фоллбэком (не плодит null).
+• Сбор ежечасной точки с безопасным кеш-фоллбэком (минимум null).
 • Источники:
   - CUSTOM JSON (SCHU_CUSTOM_URL) — любой JSON, где удаётся найти freq/amp.
   - HeartMath GCI (страница + iframe + JSON), перебор станций GCI001..006:
@@ -19,8 +19,8 @@ schumann.py — сбор и выдача данных для «Шумана» (v
 • CLI:
     --collect      собрать очередную точку (для GitHub Actions)
     --last         вывести последнюю точку
-    --dedupe       очистить дубли (перезаписать историю)
-    --fix-history  привести историю к v2: дедуп, abs(amp), заполнить поля
+    --dedupe       очистить дубли (перезаписать историю, с приоритетом источников)
+    --fix-history  привести историю к v2: нормализация + дедуп
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import sys
 import re
 import json
 import time
+import calendar
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -47,6 +48,12 @@ ALLOW_CACHE   = os.getenv("SCHU_ALLOW_CACHE_ON_FAIL", "1") == "1"
 AMP_SCALE     = float(os.getenv("SCHU_AMP_SCALE", "1"))
 TREND_WINDOW  = int(os.getenv("SCHU_TREND_WINDOW", "24"))
 TREND_DELTA   = float(os.getenv("SCHU_TREND_DELTA", "0.1"))
+
+# Диапазоны значений (санити-чеки)
+FREQ_MIN = float(os.getenv("SCHU_FREQ_MIN", "0"))
+FREQ_MAX = float(os.getenv("SCHU_FREQ_MAX", "100"))
+AMP_MIN  = float(os.getenv("SCHU_AMP_MIN",  "0"))
+AMP_MAX  = float(os.getenv("SCHU_AMP_MAX",  "1000000"))
 
 # HeartMath / GCI
 GCI_ENABLE       = os.getenv("SCHU_GCI_ENABLE", "0") == "1"
@@ -73,6 +80,11 @@ USER_AGENT       = os.getenv(
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
+# Circuit Breaker (персистентный между раннами)
+BREAKER_FILE      = ".schu_breaker.json"
+BREAKER_THRESHOLD = int(os.getenv("SCHU_BREAKER_THRESHOLD", "3"))
+BREAKER_COOLDOWN  = int(os.getenv("SCHU_BREAKER_COOLDOWN",  "1800"))  # сек, 30 мин
+
 # ────────────────────────── Регэкспы для HeartMath ─────────────────────
 
 IFRAME_SRC_RE = re.compile(
@@ -88,9 +100,10 @@ JSON_IN_IFRAME_RE = re.compile(
 # ────────────────────────── Утилиты I/O, JSON ──────────────────────────
 
 def _now_hour_ts_utc() -> int:
-    # метка времени на начало текущего часа (UTC)
+    """метка времени на начало текущего часа (UTC)"""
     t = time.gmtime()
-    return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, 0, 0, 0, 0, 0)))
+    # calendar.timegm корректно интерпретирует как UTC (в отличие от mktime)
+    return int(calendar.timegm((t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, 0, 0)))
 
 def _load_history(path: str) -> List[Dict[str, Any]]:
     try:
@@ -106,16 +119,53 @@ def _write_history(path: str, items: List[Dict[str, Any]]) -> None:
         json.dump(items, f, ensure_ascii=False)
     os.replace(tmp, path)
 
+# ────────────────────────── Приоритет источников и апсерт ──────────────
+
+def _src_rank(src: str) -> int:
+    # больше — «важнее»
+    return {
+        "live": 3,
+        "custom": 2, "gci_live": 2, "gci_saved": 2, "gci_iframe": 2, "custom_fail": 0,
+        "cache": 1,
+        "none": 0, "gci_disabled": 0, "gci_circuit_open": 0, "gci_fail": 0
+    }.get(str(src), 0)
+
+def _better_record(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Выбираем «лучший» из двух записей одного ts:
+      • по рангу источника,
+      • при равном ранге — запись с валидным amp,
+      • иначе — более свежая (b).
+    """
+    ra, rb = _src_rank(a.get("src")), _src_rank(b.get("src"))
+    if ra != rb:
+        return a if ra > rb else b
+    a_amp = a.get("amp"); b_amp = b.get("amp")
+    if isinstance(a_amp, (int, float)) and not isinstance(b_amp, (int, float)):
+        return a
+    if isinstance(b_amp, (int, float)) and not isinstance(a_amp, (int, float)):
+        return b
+    return b
+
 def upsert_record(path: str, rec: Dict[str, Any], max_len: int | None = None) -> None:
-    """Вставляет/обновляет запись по ключу ts без дублей."""
+    """Вставляет/обновляет запись по ключу ts без дублей и без перезаписи live кэшем."""
     hist = _load_history(path)
-    ts = rec.get("ts")
-    hist = [r for r in hist if r.get("ts") != ts]
-    hist.append(rec)
-    hist.sort(key=lambda r: r.get("ts", 0))
-    if isinstance(max_len, int) and max_len > 0 and len(hist) > max_len:
-        hist = hist[-max_len:]
-    _write_history(path, hist)
+    try:
+        ts = int(rec.get("ts"))
+    except Exception:
+        return
+    merged: Dict[int, Dict[str, Any]] = {}
+    for r in hist:
+        try:
+            t = int(r.get("ts"))
+        except Exception:
+            continue
+        merged[t] = r if t not in merged else _better_record(merged[t], r)
+    merged[ts] = rec if ts not in merged else _better_record(merged[ts], rec)
+    out = [merged[t] for t in sorted(merged.keys())]
+    if isinstance(max_len, int) and max_len > 0 and len(out) > max_len:
+        out = out[-max_len:]
+    _write_history(path, out)
 
 def last_known_amp(path: str) -> Optional[float]:
     hist = _load_history(path)
@@ -162,6 +212,38 @@ def _get(url: str, **params) -> Optional[requests.Response]:
         return s.get(url, params=params, timeout=15, allow_redirects=True)
     except Exception:
         return None
+
+# ────────────────────────── Circuit Breaker ─────────────────────────────
+
+def _breaker_state():
+    try:
+        return json.load(open(BREAKER_FILE, "r", encoding="utf-8"))
+    except Exception:
+        return {"fail": 0, "until": 0}
+
+def _breaker_save(state):
+    tmp = BREAKER_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False)
+    os.replace(tmp, BREAKER_FILE)
+
+def breaker_allow() -> bool:
+    st = _breaker_state()
+    return time.time() >= st.get("until", 0)
+
+def breaker_ok():
+    st = _breaker_state()
+    if st.get("fail", 0) != 0 or st.get("until", 0) != 0:
+        st["fail"] = 0
+        st["until"] = 0
+        _breaker_save(st)
+
+def breaker_bad():
+    st = _breaker_state()
+    st["fail"] = int(st.get("fail", 0)) + 1
+    if st["fail"] >= BREAKER_THRESHOLD:
+        st["until"] = int(time.time()) + BREAKER_COOLDOWN
+    _breaker_save(st)
 
 # ────────────────────────── HTML/JSON helpers ──────────────────────────
 
@@ -272,6 +354,9 @@ def get_gci_power() -> Tuple[Optional[float], str]:
     if not GCI_ENABLE or requests is None:
         return None, "gci_disabled"
 
+    if not breaker_allow():
+        return None, "gci_circuit_open"
+
     # 1) сохранённая страница
     if GCI_SAVED_HTML:
         html = _read_file_text(GCI_SAVED_HTML)
@@ -290,6 +375,7 @@ def get_gci_power() -> Tuple[Optional[float], str]:
                 print("DEBUG: iframe JSON present:", isinstance(data, (dict, list)))
             power = deep_find_number(data, "power", "value", "amp", "amplitude")
             if isinstance(power, (int, float)):
+                breaker_ok()
                 return float(power), "gci_saved"
 
     # 2) онлайн страница -> iframe
@@ -305,6 +391,7 @@ def get_gci_power() -> Tuple[Optional[float], str]:
                     data = extract_json_from_iframe(rr.text)
                     power = deep_find_number(data, "power", "value", "amp", "amplitude")
                     if isinstance(power, (int, float)):
+                        breaker_ok()
                         return float(power), "gci_live"
 
     # 3) прямой iframe
@@ -314,11 +401,22 @@ def get_gci_power() -> Tuple[Optional[float], str]:
             data = extract_json_from_iframe(rr.text)
             power = deep_find_number(data, "power", "value", "amp", "amplitude")
             if isinstance(power, (int, float)):
+                breaker_ok()
                 return float(power), "gci_iframe"
 
+    breaker_bad()
     return None, "gci_fail"
 
 # ────────────────────────── Бизнес-логика сбора ─────────────────────────
+
+def _clamp_or_none(val, lo, hi):
+    try:
+        v = float(val)
+        if lo <= v <= hi:
+            return v
+    except Exception:
+        pass
+    return None
 
 def collect_once() -> Dict[str, Any]:
     """
@@ -358,6 +456,11 @@ def collect_once() -> Dict[str, Any]:
     # freq по умолчанию
     if freq_val is None:
         freq_val = 7.83
+
+    # Санити-чеки
+    freq_val = _clamp_or_none(freq_val, FREQ_MIN, FREQ_MAX) or 7.83
+    if amp_val is not None:
+        amp_val = _clamp_or_none(amp_val, AMP_MIN, AMP_MAX)
 
     # 3) Фоллбэк из кеша (forward-fill amp)
     if amp_val is None and ALLOW_CACHE:
@@ -426,10 +529,10 @@ def get_schumann() -> Dict[str, Any]:
 def fix_history(path: str) -> Tuple[int, int]:
     """
     Приводит историю к формату v2:
-      • дедуп по ts (последний побеждает);
-      • отрицательные amp → abs(amp);
-      • freq → float, дефолт 7.83;
-      • src/ver присутствуют; h7_* присутствуют.
+      • дедуп по ts (с приоритетом источников);
+      • отрицательные/грязные amp → None (либо abs в допустимом диапазоне);
+      • freq → float в диапазоне, дефолт 7.83;
+      • src/ver/h7_* присутствуют.
     Возвращает (старый размер, новый размер).
     """
     hist = _load_history(path)
@@ -441,41 +544,43 @@ def fix_history(path: str) -> Tuple[int, int]:
     by_ts: Dict[int, Dict[str, Any]] = {}
     for r in hist:
         ts = r.get("ts")
-        if not isinstance(ts, int):
-            # округлённый int, если вдруг float/str
-            try:
-                ts = int(float(ts))
-            except Exception:
-                continue
-        rr: Dict[str, Any] = dict(r)
-        # freq
-        f = rr.get("freq")
         try:
-            f = float(f) if f is not None else 7.83
+            ts = int(float(ts))
+        except Exception:
+            continue
+        rr: Dict[str, Any] = dict(r)
+
+        # freq
+        try:
+            f = float(rr.get("freq"))
         except Exception:
             f = 7.83
-        rr["freq"] = f
-        # amp (abs)
+        rr["freq"] = f if FREQ_MIN <= f <= FREQ_MAX else 7.83
+
+        # amp
         a = rr.get("amp")
+        aa = None
         if isinstance(a, (int, float)):
-            rr["amp"] = float(abs(a))
-        else:
-            rr["amp"] = None if a is None else None  # всё некорректное в None
+            a = abs(float(a))
+            if AMP_MIN <= a <= AMP_MAX:
+                aa = a
+        rr["amp"] = aa
+
         # h7
         if "h7_amp" not in rr:
             rr["h7_amp"] = None
         if "h7_spike" not in rr:
             rr["h7_spike"] = None
+
         # служебные
         rr["ver"] = 2
         rr["src"] = rr.get("src") or "cache"
-        # опциональные мусорные ключи убираем
         rr.pop("comment", None)
         rr["ts"] = ts
-        by_ts[ts] = rr  # последний побеждает
 
-    cleaned = list(by_ts.values())
-    cleaned.sort(key=lambda r: r.get("ts", 0))
+        by_ts[ts] = rr if ts not in by_ts else _better_record(by_ts[ts], rr)
+
+    cleaned = [by_ts[k] for k in sorted(by_ts.keys())]
     _write_history(path, cleaned)
     return (old_len, len(cleaned))
 
@@ -483,69 +588,4 @@ def fix_history(path: str) -> Tuple[int, int]:
 
 def cmd_collect() -> int:
     rec = collect_once()
-    upsert_record(DEF_FILE, rec, max_len=DEF_MAX_LEN)
-    print(
-        f"collect: ts={rec['ts']} src={rec['src']} "
-        f"freq={rec['freq']} amp={rec['amp']} -> {os.path.abspath(DEF_FILE)}"
-    )
-    # В отладке покажем предупреждение, если ушли в cache
-    if rec.get("src") == "cache":
-        print("WARN: fell back to cache (no live data). "
-              "Check SCHU_CUSTOM_URL / HeartMath access.")
-    # показать последнюю запись компактно
-    last = _load_history(DEF_FILE)[-1]
-    print("Last record JSON:", json.dumps(last, ensure_ascii=False))
-    return 0
-
-def cmd_last() -> int:
-    hist = _load_history(DEF_FILE)
-    if not hist:
-        print("no data")
-        return 2
-    last = hist[-1]
-    print(json.dumps(last, ensure_ascii=False, indent=2))
-    return 0
-
-def cmd_dedupe() -> int:
-    hist = _load_history(DEF_FILE)
-    seen: Dict[int, Dict[str, Any]] = {}
-    for r in hist:
-        ts = r.get("ts")
-        try:
-            ts = int(float(ts))
-        except Exception:
-            continue
-        seen[ts] = r  # последний побеждает
-    cleaned = list(seen.values())
-    cleaned.sort(key=lambda r: r.get("ts", 0))
-    _write_history(DEF_FILE, cleaned)
-    print(f"dedupe: {len(hist)} -> {len(cleaned)}")
-    return 0
-
-def cmd_fix_history() -> int:
-    old, new = fix_history(DEF_FILE)
-    print(f"fix-history: size {old} -> {new}; file: {os.path.abspath(DEF_FILE)}")
-    # покажем последнюю точку
-    hist = _load_history(DEF_FILE)
-    if hist:
-        print("Last record JSON:", json.dumps(hist[-1], ensure_ascii=False, indent=2))
-    return 0
-
-def main(argv: List[str]) -> int:
-    if len(argv) <= 1:
-        print("Usage: schumann.py --collect | --last | --dedupe | --fix-history")
-        return 1
-    cmd = argv[1]
-    if cmd == "--collect":
-        return cmd_collect()
-    if cmd == "--last":
-        return cmd_last()
-    if cmd == "--dedupe":
-        return cmd_dedupe()
-    if cmd == "--fix-history":
-        return cmd_fix_history()
-    print("Unknown command:", cmd)
-    return 1
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    upser
