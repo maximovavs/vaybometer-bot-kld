@@ -384,9 +384,9 @@ def build_message(region_name: str,
     # Safecast (мягкая шкала)
     P.extend(safecast_block_lines())
 
-    # дымовой индекс
+    # дымовой индекс — показываем ТОЛЬКО если не низкое/н/д
     em_sm, lbl_sm = smoke_index(air.get("pm25"), air.get("pm10"))
-    if lbl_sm != "низкое":
+    if lbl_sm and str(lbl_sm).lower() not in ("низкое", "низкий", "нет", "н/д"):
         P.append(f"🔥 Задымление: {em_sm} {lbl_sm}")
 
     if (p := get_pollen()):
@@ -409,18 +409,21 @@ def build_message(region_name: str,
 
     age_txt = ""
     if isinstance(kp_ts, int) and kp_ts > 0:
-        age_min = int((pendulum.now("UTC").int_timestamp - kp_ts) / 60)
-        if age_min > 180:
-            age_txt = f", 🕓 {age_min//60}ч назад"
-        elif age_min >= 0:
-            age_txt = f", {age_min} мин назад"
+        try:
+            age_min = int((pendulum.now("UTC").int_timestamp - kp_ts) / 60)
+            if age_min > 180:
+                age_txt = f", 🕓 {age_min//60}ч назад"
+            elif age_min >= 0:
+                age_txt = f", {age_min} мин назад"
+        except Exception:
+            age_txt = ""
 
-    if kp is not None:
+    if isinstance(kp, (int, float)):
         P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks}{age_txt})")
     else:
         P.append("🧲 Геомагнитка: н/д")
 
-    # Солнечный ветер (Bz/Bt/v/n)
+    # Солнечный ветер (Bz/Bt/v/n) — показываем только если есть хоть что-то
     sw = get_solar_wind() or {}
     bz = sw.get("bz"); bt = sw.get("bt"); v = sw.get("speed_kms"); n = sw.get("density")
     wind_status = sw.get("status", "н/д")
@@ -434,7 +437,7 @@ def build_message(region_name: str,
 
     # если Kp высокий, но ветер спокойный — пояснение
     try:
-        if (isinstance(kp, (int, float)) and kp >= 5) and isinstance(wind_status, str) and ("спокойно" in wind_status.lower()):
+        if (isinstance(kp, (int, float)) and kp >= 5) and isinstance(wind_status, str) and ("спокой" in wind_status.lower()):
             P.append("ℹ️ По ветру сейчас спокойно; Kp — глобальный индекс за 3 ч.")
     except Exception:
         pass
