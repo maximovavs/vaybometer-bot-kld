@@ -6,15 +6,16 @@ air.py
 
 • Источники качества воздуха:
   1) IQAir / nearest_city  (API key: AIRVISUAL_KEY)
-  2) Open‑Meteo Air‑Quality (без ключа)
+  2) Open-Meteo Air-Quality (без ключа)
 
-• merge_air_sources() — объединяет словари с приоритетом IQAir → Open‑Meteo
+• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Meteo
 • get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
 • get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
 • get_kp()               — индекс Kp (последний замер) с кешем (TTL 6 ч)
+• NEW: get_solar_wind()  — Bz/Bt, скорость/плотность/температура (SWPC, кэш 30 мин)
 
 Особенности:
-- Open‑Meteo: берём значения по ближайшему прошедшему часу (UTC).
+- Open-Meteо: берём значения по ближайшему прошедшему часу (UTC).
 - SST: то же правило ближайшего часа.
 - Kp: парсим ПОСЛЕДНЕЕ значение из обоих эндпоинтов SWPC; кэш валиден 6 часов.
 - NEW: Возвращаем источник AQI:
@@ -29,12 +30,13 @@ import time
 import json
 import math
 import logging
+import calendar
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
 
 from utils import _get  # HTTP-обёртка (_get_retry внутри)
 
-__all__ = ("get_air", "get_sst", "get_kp")
+__all__ = ("get_air", "get_sst", "get_kp", "get_solar_wind")
 
 # ───────────────────────── Константы / кеш ─────────────────────────
 
@@ -125,7 +127,7 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             hourly="pm10,pm2_5,us_aqi", timezone="UTC",
         )
     except Exception as e:
-        logging.warning("Open‑Meteo AQ request error: %s", e)
+        logging.warning("Open-Meteо AQ request error: %s", e)
         return None
     if not resp or "hourly" not in resp:
         return None
@@ -140,7 +142,7 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and math.isfinite(pm10_val) and pm10_val >= 0 else None
         return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm, "src": "openmeteo"}
     except Exception as e:
-        logging.warning("Open‑Meteo AQ parse error: %s", e)
+        logging.warning("Open-Mетео AQ parse error: %s", e)
         return None
 
 # ───────────────────────── Merge AQI ───────────────────────────────
@@ -296,6 +298,140 @@ def get_kp() -> Tuple[Optional[float], str]:
 
     return None, "н/д"
 
+# ─────────────────────── Solar Wind (SWPC) + кэш ───────────────────────
+
+SOLAR_WIND_CACHE = CACHE_DIR / "solar_wind.json"
+SWPC_MAG_URL    = "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json"
+SWPC_PLASMA_URL = "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json"
+
+def _save_sw_cache(payload: Dict[str, Any]) -> None:
+    try:
+        SOLAR_WIND_CACHE.write_text(json.dumps(payload, ensure_ascii=False))
+    except Exception as e:
+        logging.warning("solar wind cache write error: %s", e)
+
+def _load_sw_cache(max_age_sec: int = 1800) -> Optional[Dict[str, Any]]:
+    try:
+        data = json.loads(SOLAR_WIND_CACHE.read_text(encoding="utf-8"))
+        ts = data.get("ts")
+        if isinstance(ts, int) and (time.time() - ts) <= max_age_sec:
+            return data
+    except Exception:
+        pass
+    return None
+
+def _parse_swpc_last_row(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Возвращает {'ts': epoch_utc, 'headers': [...], 'row': [...]}
+    mag-1-day:   [time, bx_gsm, by_gsm, bz_gsm, lon_gsm, lat_gsm, bt]
+    plasma-1-day:[time, density, speed, temperature]
+    """
+    try:
+        data = _get(url)
+    except Exception as e:
+        logging.warning("SWPC request error %s: %s", url, e)
+        return None
+
+    if not isinstance(data, list) or len(data) < 2 or not isinstance(data[0], list):
+        return None
+
+    headers = [str(x).strip() for x in data[0]]
+    # идём с хвоста — первая валидная строка
+    for row in reversed(data[1:]):
+        if not isinstance(row, list) or not row:
+            continue
+        ts_s = str(row[0] or "").strip()
+        if not ts_s:
+            continue
+        # Форматы вида "YYYY-MM-DD HH:MM:SS.mmm" (UTC)
+        try:
+            if "T" in ts_s:
+                ts_s = ts_s.replace("T", " ")
+            if "Z" in ts_s:
+                ts_s = ts_s.replace("Z", "")
+            if "." in ts_s:
+                ts_s = ts_s.split(".")[0]
+            # UTC → epoch
+            tt = time.strptime(ts_s, "%Y-%m-%d %H:%M:%S")
+            ts_epoch = calendar.timegm(tt)  # корректный UTC
+        except Exception:
+            continue
+        return {"ts": int(ts_epoch), "headers": headers, "row": row}
+    return None
+
+def get_solar_wind() -> Optional[Dict[str, Any]]:
+    """
+    Возвращает словарь с последними значениями солнечного ветра/магн. поля:
+    {
+      'ts': int (epoch UTC),
+      'bz': float (nT, GSM),   'bt': float (nT),
+      'speed': float (км/с),   'density': float (см^-3),
+      'temp': float (K),
+      'src': 'swpc'
+    }
+    Кэш: 30 минут. При ошибке — отдаём кэш, если свежий.
+    """
+    mag = _parse_swpc_last_row(SWPC_MAG_URL)
+    plasma = _parse_swpc_last_row(SWPC_PLASMA_URL)
+
+    if not mag or not plasma:
+        cached = _load_sw_cache(max_age_sec=1800)
+        if cached:
+            return cached
+        return None
+
+    # MAG
+    bz = bt = None
+    try:
+        hdr = [h.lower() for h in mag["headers"]]
+        r   = mag["row"]
+        i_bz = hdr.index("bz_gsm") if "bz_gsm" in hdr else None
+        i_bt = hdr.index("bt")     if "bt"     in hdr else None
+        if i_bz is not None and r[i_bz] not in (None, ""):
+            bz = float(r[i_bz])
+        if i_bt is not None and r[i_bt] not in (None, ""):
+            bt = float(r[i_bt])
+    except Exception:
+        pass
+    ts_mag = int(mag.get("ts") or 0)
+
+    # PLASMA
+    density = speed = temp = None
+    try:
+        hdr2 = [h.lower() for h in plasma["headers"]]
+        r2   = plasma["row"]
+        i_den = hdr2.index("density")     if "density"     in hdr2 else None
+        i_spd = hdr2.index("speed")       if "speed"       in hdr2 else None
+        i_tmp = hdr2.index("temperature") if "temperature" in hdr2 else None
+        if i_den is not None and r2[i_den] not in (None, ""):
+            density = float(r2[i_den])
+        if i_spd is not None and r2[i_spd] not in (None, ""):
+            speed   = float(r2[i_spd])
+        if i_tmp is not None and r2[i_tmp] not in (None, ""):
+            temp    = float(r2[i_tmp])
+    except Exception:
+        pass
+    ts_plasma = int(plasma.get("ts") or 0)
+
+    ts = max(ts_mag, ts_plasma)
+    if ts == 0 and not any(v is not None for v in (bz, bt, speed, density, temp)):
+        cached = _load_sw_cache(max_age_sec=1800)
+        if cached:
+            return cached
+        return None
+
+    out = {
+        "ts": ts,
+        "bz": bz,
+        "bt": bt,
+        "speed": speed,
+        "density": density,
+        "temp": temp,
+        "src": "swpc",
+    }
+    _save_sw_cache(out)
+    return out
+
 # ───────────────────────── CLI ─────────────────────────────────────
 
 if __name__ == "__main__":
@@ -306,3 +442,5 @@ if __name__ == "__main__":
     print(get_sst(54.710426, 20.452214))
     print("\n=== Пример get_kp ===")
     print(get_kp())
+    print("\n=== Пример get_solar_wind ===")
+    pprint(get_solar_wind())
