@@ -7,7 +7,8 @@ post_common.py — VayboMeter (Калининград).
 • Рейтинги городов (d/n, код погоды словами + 🌊)
 • Air (IQAir/ваш источник) + Safecast (PM и CPM→μSv/h, мягкая шкала 🟢🟡🔵), пыльца
 • Радиация из офиц. источника (строгая шкала 🟢🟡🔴)
-• Kp, Солнечный ветер (Bz/Bt, v, n), Шуман (фоллбэк чтения JSON)
+• Геомагнитка: Kp со «свежестью» + Солнечный ветер (Bz/Bt/v/n + статус)
+• Шуман (фоллбэк чтения JSON)
 • Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
 • «Вините …», рекомендации, факт дня
 """
@@ -289,51 +290,6 @@ def zsym(s: str) -> str:
         s = s.replace(name, sym)
     return s
 
-# ───────────── Магнитка: солнечный ветер ─────────────
-def _sw_state(bz: Optional[float], bt: Optional[float], v: Optional[float], n: Optional[float]) -> Tuple[str, str]:
-    """
-    Мягкая эвристика состояния магнитной обстановки по солнечному ветру.
-    Возвращает (emoji, label) без «красной тревоги», чтобы не пугать.
-    """
-    score = 0
-    try:
-        if isinstance(bz, (int, float)):
-            if bz <= -5: score += 2
-            elif bz <= -2: score += 1
-        if isinstance(v, (int, float)):
-            if v >= 600: score += 2
-            elif v >= 500: score += 1
-        if isinstance(n, (int, float)) and n >= 15:
-            score += 1
-        if isinstance(bt, (int, float)) and bt >= 10:
-            score += 1
-    except Exception:
-        pass
-    if score >= 4:   return "🟠", "возмущённо"
-    if score >= 2:   return "🟡", "активно"
-    return "🟢", "спокойно"
-
-def solar_wind_line() -> Optional[str]:
-    sw = get_solar_wind() or {}
-    if not sw:
-        return None
-    bz  = sw.get("bz")
-    bt  = sw.get("bt")
-    v   = sw.get("speed")
-    den = sw.get("density")
-    # выводим только, если есть хотя бы что-то осмысленное
-    if all(x is None for x in (bz, bt, v, den)):
-        return None
-    em, lbl = _sw_state(bz, bt, v, den)
-    parts: List[str] = []
-    if isinstance(bz, (int, float)): parts.append(f"Bz {bz:.1f} nT")
-    if isinstance(bt, (int, float)): parts.append(f"Bt {bt:.1f} nT")
-    if isinstance(v,  (int, float)): parts.append(f"v {v:.0f} км/с")
-    if isinstance(den,(int, float)): parts.append(f"n {den:.1f} см⁻³")
-    if not parts:
-        return None
-    return f"{em} Солнечный ветер: {', '.join(parts)} — {lbl}"
-
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
@@ -442,13 +398,48 @@ def build_message(region_name: str,
         P.append(rl)
     P.append("———")
 
-    # Kp + Солнечный ветер + Шуман
-    kp, ks = get_kp()
-    P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks})" if kp is not None else "🧲 Геомагнитка: н/д")
+    # Геомагнитка: Kp (со свежестью) + Солнечный ветер
+    kp_tuple = get_kp() or (None, "н/д", None, "n/d")
+    try:
+        kp, ks, kp_ts, kp_src = kp_tuple
+    except Exception:
+        kp = kp_tuple[0] if isinstance(kp_tuple, (list, tuple)) and len(kp_tuple) > 0 else None
+        ks = kp_tuple[1] if isinstance(kp_tuple, (list, tuple)) and len(kp_tuple) > 1 else "н/д"
+        kp_ts, kp_src = None, "n/d"
 
-    if (sw := solar_wind_line()):
-        P.append(sw)
+    age_txt = ""
+    if isinstance(kp_ts, int) and kp_ts > 0:
+        age_min = int((pendulum.now("UTC").int_timestamp - kp_ts) / 60)
+        if age_min > 180:
+            age_txt = f", 🕓 {age_min//60}ч назад"
+        elif age_min >= 0:
+            age_txt = f", {age_min} мин назад"
 
+    if kp is not None:
+        P.append(f"{kp_emoji(kp)} Геомагнитка: Kp={kp:.1f} ({ks}{age_txt})")
+    else:
+        P.append("🧲 Геомагнитка: н/д")
+
+    # Солнечный ветер (Bz/Bt/v/n)
+    sw = get_solar_wind() or {}
+    bz = sw.get("bz"); bt = sw.get("bt"); v = sw.get("speed_kms"); n = sw.get("density")
+    wind_status = sw.get("status", "н/д")
+    parts = []
+    if isinstance(bz, (int, float)): parts.append(f"Bz {bz:.1f} nT")
+    if isinstance(bt, (int, float)): parts.append(f"Bt {bt:.1f} nT")
+    if isinstance(v,  (int, float)): parts.append(f"v {v:.0f} км/с")
+    if isinstance(n,  (int, float)): parts.append(f"n {n:.1f} см⁻³")
+    if parts:
+        P.append("🌬️ Солнечный ветер: " + ", ".join(parts) + f" — {wind_status}")
+
+    # если Kp высокий, но ветер спокойный — пояснение
+    try:
+        if (isinstance(kp, (int, float)) and kp >= 5) and isinstance(wind_status, str) and ("спокойно" in wind_status.lower()):
+            P.append("ℹ️ По ветру сейчас спокойно; Kp — глобальный индекс за 3 ч.")
+    except Exception:
+        pass
+
+    # Шуман
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
@@ -470,7 +461,7 @@ def build_message(region_name: str,
     P.append("———")
 
     # Вывод + советы
-    culprit = "магнитные бури" if kp is not None and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
+    culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
     P.append("📜 <b>Вывод</b>")
     P.append(f"Если что-то пойдёт не так, вините {culprit}! 😉")
     P.append("———")
@@ -497,20 +488,8 @@ async def send_common_post(bot: Bot, chat_id: int, region_name: str,
                            parse_mode=constants.ParseMode.HTML,
                            disable_web_page_preview=True)
 
-# ───────────── отправка ─────────────
-async def send_common_post(bot: Bot, chat_id: int, region_name: str,
-                           sea_label: str, sea_cities, other_label: str,
-                           other_cities, tz: Union[pendulum.Timezone, str]):
-    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
-    await bot.send_message(chat_id=chat_id, text=msg,
-                           parse_mode=constants.ParseMode.HTML,
-                           disable_web_page_preview=True)
-
 async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
-    # ✅ ВАЖНО: передаём other_label перед other_cities
-    await send_common_post(bot, chat_id, region_name,
-                           sea_label, sea_cities,
-                           other_label, other_cities,
-                           tz)
+    await send_common_post(bot, chat_id, region_name, sea_label,
+                           sea_cities, other_label, other_cities, tz)
