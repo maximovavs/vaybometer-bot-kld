@@ -8,17 +8,18 @@ air.py
   1) IQAir / nearest_city  (API key: AIRVISUAL_KEY)
   2) Open-Meteo Air-Quality (без ключа)
 
-• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Mетео
-• get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
-• get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
-• get_geomag()           — стабильный 3-часовой индекс Kp (+ метаданные, кэш)
-• get_kp()               — обратная совместимость: (kp, state) из get_geomag()
+• get_air(lat, lon)       — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
+• get_sst(lat, lon)       — Sea Surface Temperature (по ближайшему часу)
+• get_kp()                — совместимая обёртка: (kp, 'спокойно/неспокойно/буря')
+• get_geomag()            — расширенно: {'kp','state','ts','age_min','src'}
+• get_solar_wind()        — {'bz','bt','speed','density','state','ts','age_min','src','window'}
 
 Особенности:
 - Open-Meteо: берём значения по ближайшему прошедшему часу (UTC).
 - SST: то же правило ближайшего часа.
-- Геомагнитка: используем ТОЛЬКО 3-часовой продукт SWPC (noaa-planetary-k-index.json),
-  без 1-минутного nowcast, чтобы исключить «скачки».
+- Kp: берём POSLEDNEE значение из двух эндпоинтов SWPC; кэш 6 ч.
+- Solar wind (DSCOVR): берём последние 5 записей (≈5 мин) для medians.
+  Данные старше 20 мин считаем невалидными и не возвращаем.
 """
 
 from __future__ import annotations
@@ -32,7 +33,11 @@ from typing import Any, Dict, Optional, Tuple, Union, List
 
 from utils import _get  # HTTP-обёртка (_get_retry внутри)
 
-__all__ = ("get_air", "get_sst", "get_geomag", "get_kp")
+__all__ = (
+    "get_air", "get_sst",
+    "get_kp", "get_geomag",
+    "get_solar_wind",
+)
 
 # ───────────────────────── Константы / кеш ─────────────────────────
 
@@ -40,14 +45,20 @@ AIR_KEY = os.getenv("AIRVISUAL_KEY")
 
 CACHE_DIR = Path.home() / ".cache" / "vaybometer"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+KP_CACHE = CACHE_DIR / "kp.json"
 
-KP_CACHE = CACHE_DIR / "kp.json"  # кэш со структурой get_geomag()
-KP_3H_URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+# SWPC / NOAA
+KP_URLS = [
+    "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+    "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
+]
+SW_MAG = "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json"
+SW_PLA = "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json"
 
 SRC_EMOJI = {"iqair": "📡", "openmeteo": "🛰", "n/d": "⚪"}
 SRC_ICON  = {"iqair": "📡 IQAir", "openmeteo": "🛰 OM", "n/d": "⚪ н/д"}
 
-# ───────────────────────── Утилиты AQI/Kp ──────────────────────────
+# ───────────────────────── Утилиты общие ───────────────────────────
 
 def _aqi_level(aqi: Union[int, float, str, None]) -> str:
     if aqi in (None, "н/д"):
@@ -67,8 +78,40 @@ def _kp_state(kp: float) -> str:
     if kp < 5.0: return "неспокойно"
     return "буря"
 
+def _iso_to_epoch(s: str) -> Optional[int]:
+    """Парсим ISO 'YYYY-MM-DDTHH:MM:SSZ' → epoch (UTC)."""
+    try:
+        if not isinstance(s, str):
+            return None
+        s = s.strip().replace(" ", "T")
+        if s.endswith("Z"):
+            s = s[:-1]
+        # допускаем без секунд
+        parts = s.split("T")
+        y, m, d = parts[0].split("-")
+        hh, mm, *rest = parts[1].split(":")
+        ss = rest[0] if rest else "00"
+        tm = time.strptime(f"{y}-{m}-{d} {hh}:{mm}:{ss}", "%Y-%m-%d %H:%M:%S")
+        return int(time.mktime(tm) - time.timezone)  # к UTC
+    except Exception:
+        return None
+
+def _minutes_ago(ts_iso: str) -> Optional[int]:
+    ep = _iso_to_epoch(ts_iso)
+    if ep is None:
+        return None
+    return max(0, int((time.time() - ep) / 60))
+
+def _median(xs: List[float]) -> Optional[float]:
+    arr = [float(x) for x in xs if isinstance(x, (int, float)) and math.isfinite(x)]
+    if not arr:
+        return None
+    arr.sort()
+    n = len(arr)
+    mid = n // 2
+    return arr[mid] if n % 2 == 1 else 0.5 * (arr[mid - 1] + arr[mid])
+
 def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[float]:
-    """Берём значение по ближайшему прошедшему часу (UTC)."""
     if not arr_time or not arr_val or len(arr_time) != len(arr_val):
         return None
     try:
@@ -80,19 +123,6 @@ def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[floa
             return None
         v = float(v)
         return v if (math.isfinite(v) and v >= 0) else None
-    except Exception:
-        return None
-
-def _minutes_ago(ts_iso: str) -> Optional[int]:
-    """Сколько минут назад от текущего UTC был ts_iso (YYYY-MM-DDTHH:MM:SSZ / ...)."""
-    try:
-        # Нормализуем «YYYY-MM-DDTHH:MM:SSZ» → без 'Z'
-        ts_iso = str(ts_iso).rstrip("Z")
-        # Оставляем только до минут (чтобы не споткнуться о разные форматы)
-        base = ts_iso[:16]  # YYYY-MM-DDTHH:MM
-        tm = time.strptime(base, "%Y-%m-%dT%H:%M")
-        ts = int(time.mktime(tm))  # локаль -> но мы сравниваем разницу, погрешность некритична
-        return max(0, int(time.time()) - ts) // 60
     except Exception:
         return None
 
@@ -149,20 +179,13 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and math.isfinite(pm10_val) and pm10_val >= 0 else None
         return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm, "src": "openmeteo"}
     except Exception as e:
-        logging.warning("Open-Meteo AQ parse error: %s", e)
+        logging.warning("Open-Mетео AQ parse error: %s", e)
         return None
 
-# ───────────────────────── Merge AQI ───────────────────────────────
-
 def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Соединяет данные двух источников AQI (приоритет src1 → src2).
-    Возвращает {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}.
-    """
     aqi_val: Union[float, str, None] = "н/д"
     src_tag: str = "n/d"
 
-    # AQI источник
     for s in (src1, src2):
         if not s:
             continue
@@ -172,7 +195,6 @@ def merge_air_sources(src1: Optional[Dict[str, Any]], src2: Optional[Dict[str, A
             src_tag = s.get("src") or src_tag
             break
 
-    # PM first-non-null
     pm25 = None
     pm10 = None
     for s in (src1, src2):
@@ -232,93 +254,200 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
         logging.warning("Marine SST parse error: %s", e)
         return None
 
-# ───────────────────────── Кэш JSON ────────────────────────────────
+# ───────────────────────── Геомагнитка (Kp) ────────────────────────
 
-def _load_json(path: Path) -> Optional[Dict[str, Any]]:
+def _load_kp_cache() -> Tuple[Optional[float], Optional[int]]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(KP_CACHE.read_text(encoding="utf-8"))
+        return data.get("kp"), data.get("ts")
     except Exception:
-        return None
+        return None, None
 
-def _save_json(path: Path, data: Dict[str, Any]) -> None:
+def _save_kp_cache(kp: float) -> None:
     try:
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        KP_CACHE.write_text(json.dumps({"kp": kp, "ts": int(time.time())}, ensure_ascii=False))
     except Exception as e:
-        logging.warning("Cache write error %s: %s", path, e)
+        logging.warning("Kp cache write error: %s", e)
 
-# ───────────────────────── Kp: ТОЛЬКО стабильный 3h ────────────────
-
-def _parse_kp_from_table(data: Any) -> Optional[Tuple[float, str]]:
-    """
-    Разбираем таблицу из noaa-planetary-k-index.json:
-      [ [header...],
-        ["2025-08-30 09:00:00", "0.3"],
-        ... ]
-    Возвращаем (kp_float, ts_iso) по последней строке.
-    """
-    if not isinstance(data, list) or len(data) < 2:
-        return None
-    # Идём с конца, ищем первую пригодную строку
-    for row in reversed(data[1:]):
-        if not isinstance(row, list) or len(row) < 2:
-            continue
-        ts = str(row[0]).strip().replace(" ", "T")  # → YYYY-MM-DDTHH:MM:SS
-        raw = row[-1]
+def _fetch_json(url: str, attempts: int = 3, backoff: float = 2.0) -> Optional[Any]:
+    for i in range(attempts):
         try:
-            kp_val = float(str(raw).replace(",", "."))
-            if math.isfinite(kp_val):
-                return kp_val, ts
+            data = _get(url)
+            if data:
+                return data
         except Exception:
-            continue
+            pass
+        time.sleep(backoff ** i)
     return None
 
+def _parse_kp_from_table(data: Any) -> Tuple[Optional[float], Optional[str]]:
+    if not isinstance(data, list) or not data or not isinstance(data[0], list):
+        return None, None
+    # формат: первая строка — заголовок, далее данные; последний столбец — kp, первый — время
+    for row in reversed(data[1:]):
+        try:
+            ts_iso = str(row[0])
+            kp_val = float(str(row[-1]).replace(",", "."))
+            return kp_val, ts_iso
+        except Exception:
+            continue
+    return None, None
+
+def _parse_kp_from_dicts(data: Any) -> Tuple[Optional[float], Optional[str]]:
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None, None
+    for item in reversed(data):
+        raw = item.get("kp_index") or item.get("estimated_kp") or item.get("kp")
+        ts_iso = item.get("time_tag") or item.get("time") or item.get("timestamp")
+        if raw is None:
+            continue
+        try:
+            kp_val = float(str(raw).replace(",", "."))
+            return kp_val, ts_iso
+        except Exception:
+            continue
+    return None, None
+
 def get_geomag() -> Dict[str, Any]:
-    """
-    Детальная геомагнитка из стабильного 3-часового продукта SWPC.
-    Без nowcast. Если сети нет — используем кэш (до 6 часов).
-    Возвращает:
-      {'kp','state','ts','age_min','src':'swpc_3h','window':'3h'}
-    """
-    # Онлайн попытка
-    try:
-        data = _get(KP_3H_URL)
-        if isinstance(data, list):
-            parsed = _parse_kp_from_table(data)
-            if parsed:
-                kp_val, ts = parsed
-                res = {
-                    "kp": kp_val,
-                    "state": _kp_state(kp_val),
-                    "ts": ts,
-                    "age_min": _minutes_ago(ts),
-                    "src": "swpc_3h",
-                    "window": "3h",
-                }
-                _save_json(KP_CACHE, res)
-                return res
-    except Exception as e:
-        logging.warning("Kp 3h request/parse error: %s", e)
+    """Расширенная геомагнитка: {'kp','state','ts','age_min','src'} с кешем."""
+    for url in KP_URLS:
+        data = _fetch_json(url)
+        if not data:
+            continue
+        try:
+            if isinstance(data, list) and data:
+                if isinstance(data[0], list):
+                    kp_value, ts_iso = _parse_kp_from_table(data)
+                else:
+                    kp_value, ts_iso = _parse_kp_from_dicts(data)
+            else:
+                kp_value, ts_iso = (None, None)
 
-    # Фоллбэк — кэш (до 6 часов считаем приемлемым)
-    cached = _load_json(KP_CACHE)
-    if isinstance(cached, dict) and "kp" in cached:
-        age = cached.get("age_min")
-        # если age не сохранён, пересчитаем от ts
-        if age is None and isinstance(cached.get("ts"), str):
-            cached["age_min"] = _minutes_ago(cached["ts"])
-            age = cached["age_min"]
-        if isinstance(age, int) and age <= 360:
-            return cached
+            if kp_value is None:
+                raise ValueError("no parsable kp in response")
 
-    # Совсем нет данных
-    return {"kp": None, "state": "н/д", "ts": "", "age_min": None, "src": "swpc_3h", "window": "3h"}
+            _save_kp_cache(kp_value)
+            age = _minutes_ago(ts_iso) if ts_iso else None
+            return {
+                "kp": kp_value,
+                "state": _kp_state(kp_value),
+                "ts": ts_iso or "",
+                "age_min": age,
+                "src": url,
+            }
+        except Exception as e:
+            logging.warning("Kp parse error %s: %s", url, e)
+
+    cached_kp, ts = _load_kp_cache()
+    if cached_kp is not None:
+        return {
+            "kp": cached_kp,
+            "state": _kp_state(cached_kp),
+            "ts": "",
+            "age_min": None,
+            "src": "cache",
+        }
+    return {"kp": None, "state": "н/д", "ts": "", "age_min": None, "src": ""}
 
 def get_kp() -> Tuple[Optional[float], str]:
-    """
-    Обратная совместимость для внешнего кода: (kp, state) из стабильного 3-часового Kp.
-    """
+    """Совместимая обёртка для старого кода."""
     g = get_geomag()
     return g.get("kp"), g.get("state", "н/д")
+
+# ───────────────────────── Солнечный ветер (DSCOVR) ────────────────
+
+def _parse_sw_table(url: str, want: Dict[str, str], window: int = 5) -> Dict[str, Any]:
+    """
+    Парсим SWPC 'json table' (первый ряд — заголовки).
+    want: {'value_name':'column_key'} — пример: {'bz':'bz_gsm','bt':'bt'}
+    Возвращает {'ts':ts_iso, <keys>:median, 'count':N}.
+    """
+    data = _fetch_json(url)
+    if not isinstance(data, list) or len(data) < 2 or not isinstance(data[0], list):
+        return {}
+    header = [str(x).strip().lower() for x in data[0]]
+    col = {h: i for i, h in enumerate(header)}
+
+    def get_idx(key: str) -> Optional[int]:
+        key = key.lower()
+        return col.get(key)
+
+    res_vals: Dict[str, List[float]] = {k: [] for k in want.keys()}
+    ts_iso = None
+    cnt = 0
+    # берём последние window строк
+    for row in reversed(data[1:1 + window]):
+        if not isinstance(row, list):
+            continue
+        ts_iso = ts_iso or (str(row[get_idx("time_tag")]) if get_idx("time_tag") is not None else None)
+        good = False
+        for out_key, col_key in want.items():
+            idx = get_idx(col_key)
+            if idx is None or idx >= len(row):
+                continue
+            raw = row[idx]
+            try:
+                val = float(raw)
+                # фильтр по "сентинелам"
+                if not math.isfinite(val):
+                    continue
+                if abs(val) > 9e6:
+                    continue
+                res_vals[out_key].append(val)
+                good = True
+            except Exception:
+                pass
+        if good:
+            cnt += 1
+
+    result: Dict[str, Any] = {"ts": ts_iso or "", "count": cnt}
+    for k, arr in res_vals.items():
+        result[k] = _median(arr) if arr else None
+    return result
+
+def _classify_wind(bz: Optional[float], bt: Optional[float], v: Optional[float], n: Optional[float]) -> str:
+    """Грубая эвристика состояния ветра."""
+    if bz is None and bt is None and v is None and n is None:
+        return "н/д"
+    # Спокойно, если слабое поле и умеренная скорость/плотность
+    if (bz is not None and bz > -2.0) and (bt is not None and bt < 10.0) \
+       and (v is not None and v < 500.0) and (n is not None and n < 10.0):
+        return "спокойно"
+    # Возмущенно, если что-то из этого усилилось
+    if (bz is not None and bz <= -5.0) or (bt is not None and bt >= 12.0) \
+       or (v is not None and v >= 550.0) or (n is not None and n >= 15.0):
+        return "возмущенно"
+    return "неспокойно"
+
+def get_solar_wind(window: int = 5, stale_minutes: int = 20) -> Optional[Dict[str, Any]]:
+    """Возвращает усреднённый за ~последние window минут солнечный ветер (DSCOVR)."""
+    # MAG: берем Bz, Bt
+    mag = _parse_sw_table(SW_MAG, want={"bz": "bz_gsm", "bt": "bt"}, window=window)
+    # PLASMA: берем скорость и плотность
+    pla = _parse_sw_table(SW_PLA, want={"speed": "speed", "density": "density"}, window=window)
+
+    # Вычислим «возраст» по последней доступной метке времени
+    ts_iso = mag.get("ts") or pla.get("ts") or ""
+    age = _minutes_ago(ts_iso) if ts_iso else None
+    if age is None or age > stale_minutes:
+        # данные неактуальны — не показываем строку
+        return None
+
+    bz = mag.get("bz"); bt = mag.get("bt")
+    v  = pla.get("speed"); n = pla.get("density")
+    state = _classify_wind(bz, bt, v, n)
+
+    return {
+        "bz": bz,            # нТ
+        "bt": bt,            # нТ
+        "speed": v,          # км/с
+        "density": n,        # см^-3
+        "state": state,
+        "ts": ts_iso,
+        "age_min": age,
+        "src": "DSCOVR SWPC (mag/plasma 1-day)",
+        "window": f"{window}m-median",
+    }
 
 # ───────────────────────── CLI ─────────────────────────────────────
 
@@ -328,7 +457,7 @@ if __name__ == "__main__":
     pprint(get_air(54.710426, 20.452214))
     print("\n=== Пример get_sst (Калининград) ===")
     print(get_sst(54.710426, 20.452214))
-    print("\n=== Пример get_geomag (Kp 3h) ===")
+    print("\n=== Пример get_geomag ===")
     pprint(get_geomag())
-    print("\n=== Пример get_kp (compat) ===")
-    print(get_kp())
+    print("\n=== Пример get_solar_wind ===")
+    pprint(get_solar_wind())
