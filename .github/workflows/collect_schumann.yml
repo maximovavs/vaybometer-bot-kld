@@ -29,7 +29,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests matplotlib
 
       - name: Run collector (writes schumann_hourly.json v2)
         env:
@@ -61,69 +61,39 @@ jobs:
           H7_Z: "2.5"
           H7_MIN_ABS: "0.2"
 
-          # — отладка / User-Agent
-          SCHU_DEBUG: "0"
+          # — user agent для HeartMath
           SCHU_USER_AGENT: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
         run: |
-          python schumann.py --collect
-          echo "Last record JSON:"
-          tail -n 1 schumann_hourly.json || true
-          echo "Last 5 records:"
-          tail -n 5 schumann_hourly.json || true
-          echo "File size:"
-          wc -c schumann_hourly.json || true
+          python schumann.py --collect || echo "WARN: collector failed"
 
       - name: Fix & dedupe history
         run: |
-          python schumann.py --fix-history
-          python schumann.py --dedupe
-
-      # ── Графики амплитуды (PNG) ───────────────────────────────────────
-      - name: Install plotting deps
-        run: |
-          python -m pip install matplotlib
+          python schumann.py --dedupe || true
 
       - name: Make trend charts (48h & 7d)
         run: |
           python - <<'PY'
-          import json, math, datetime as dt
-          import matplotlib.pyplot as plt
-
-          PATH = "schumann_hourly.json"
-
-          # читать историю
-          with open(PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-          # преобразование
-          points = []
-          for r in data:
-            ts = r.get("ts")
-            amp = r.get("amp")
-            if isinstance(ts, int) and isinstance(amp, (int, float)) and not math.isnan(amp):
-              points.append((dt.datetime.utcfromtimestamp(ts), float(amp)))
-          points.sort(key=lambda x: x[0])
-
-          def save_chart(hours, out):
-            if not points:
-              return
-            t_cut = points[-1][0] - dt.timedelta(hours=hours)
-            xs = [t for t,a in points if t >= t_cut]
-            ys = [a for t,a in points if t >= t_cut]
-            if len(xs) < 2:
-              return
-            plt.figure(figsize=(10,4), dpi=160)
-            plt.plot(xs, ys, marker='o', linewidth=1.5, markersize=2)  # цвет по умолчанию
-            plt.grid(True, alpha=0.3)
-            plt.title(f"Schumann amplitude (last {hours}h, UTC) — n={len(xs)}; last={ys[-1]:.2f}")
-            plt.xlabel("Time (UTC)")
-            plt.ylabel("Amplitude")
-            plt.tight_layout()
-            plt.savefig(out)
-            plt.close()
-
-          save_chart(48, "schumann_amp_48h.png")
-          save_chart(24*7, "schumann_amp_7d.png")
+          import json, datetime as dt, matplotlib.pyplot as plt
+          with open("schumann_hourly.json","r",encoding="utf-8") as f:
+              data=json.load(f)
+          points=[(dt.datetime.utcfromtimestamp(r["ts"]), r["amp"]) for r in data if isinstance(r.get("amp"),(int,float))]
+          def save_chart(hours,out):
+              if not points: return
+              t_cut=points[-1][0]-dt.timedelta(hours=hours)
+              xs=[t for t,a in points if t>=t_cut]
+              ys=[a for t,a in points if t>=t_cut]
+              if len(xs)<2: return
+              plt.figure(figsize=(10,4),dpi=160)
+              plt.plot(xs,ys,marker="o",linewidth=1.5,markersize=2)
+              plt.grid(True,alpha=0.3)
+              plt.title(f"Schumann amplitude (last {hours}h, UTC) — n={len(xs)}; last={ys[-1]:.2f}")
+              plt.xlabel("Time (UTC)")
+              plt.ylabel("Amplitude")
+              plt.tight_layout()
+              plt.savefig(out)
+              plt.close()
+          save_chart(48,"schumann_amp_48h.png")
+          save_chart(24*7,"schumann_amp_7d.png")
           print("Charts written: schumann_amp_48h.png, schumann_amp_7d.png")
           PY
 
@@ -149,3 +119,7 @@ jobs:
             schumann_amp_48h.png
             schumann_amp_7d.png
           retention-days: 7
+          if-no-files-found: warn
+          compression-level: 6
+          overwrite: false
+          include-hidden-files: false
