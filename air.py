@@ -8,18 +8,17 @@ air.py
   1) IQAir / nearest_city  (API key: AIRVISUAL_KEY)
   2) Open-Meteo Air-Quality (без ключа)
 
+• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Mетео
 • get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
 • get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
+• get_geomag()           — стабильный 3-часовой индекс Kp (+ метаданные, кэш)
+• get_kp()               — обратная совместимость: (kp, state) из get_geomag()
 
-• Геомагнитка:
-  - get_kp()             — (kp, state)  — стабильный 3-часовой Kp (SWPC), кэш 3 ч (обратная совместимость)
-  - get_geomag()         — детально: {'kp','state','ts','age_min','src','window'} — удобно для «5 мин назад»
-  - get_solar_wind()     — {'bz','bt','v','n','ts','age_min','src'}  — реальный солнечный ветер (DSCOVR), кэш 10 мин
-
-Замечания:
-- Для Kp по умолчанию используем 3-часовой продукт SWPC (устойчивее и меньше «скачет»).
-- «Nowcast» (1-минутный) используется только как резерв при недоступности 3-часового.
-- Телеметрия солнечного ветра фильтруется: отбрасываем невалидные значения (|Bt|/|Bz|>100 нТл, v вне [200, 1000], n вне [0, 50]).
+Особенности:
+- Open-Meteо: берём значения по ближайшему прошедшему часу (UTC).
+- SST: то же правило ближайшего часа.
+- Геомагнитка: используем ТОЛЬКО 3-часовой продукт SWPC (noaa-planetary-k-index.json),
+  без 1-минутного nowcast, чтобы исключить «скачки».
 """
 
 from __future__ import annotations
@@ -33,13 +32,7 @@ from typing import Any, Dict, Optional, Tuple, Union, List
 
 from utils import _get  # HTTP-обёртка (_get_retry внутри)
 
-__all__ = (
-    "get_air",
-    "get_sst",
-    "get_kp",
-    "get_geomag",
-    "get_solar_wind",
-)
+__all__ = ("get_air", "get_sst", "get_geomag", "get_kp")
 
 # ───────────────────────── Константы / кеш ─────────────────────────
 
@@ -48,17 +41,8 @@ AIR_KEY = os.getenv("AIRVISUAL_KEY")
 CACHE_DIR = Path.home() / ".cache" / "vaybometer"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-KP_CACHE          = CACHE_DIR / "kp.json"           # стабильный 3-часовой
-KP_NOWCAST_CACHE  = CACHE_DIR / "kp_nowcast.json"   # 1-минутный (резерв)
-SW_CACHE          = CACHE_DIR / "solarwind.json"    # солнечный ветер
-
-# SWPC продукты
-KP_3H_URL     = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-KP_1M_URL     = "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json"
-
-# DSCOVR: магнитометр и плазма (1-сутки, ~1 мин дискрет)
-SW_MAG_URL    = "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json"
-SW_PLASMA_URL = "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json"
+KP_CACHE = CACHE_DIR / "kp.json"  # кэш со структурой get_geomag()
+KP_3H_URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
 
 SRC_EMOJI = {"iqair": "📡", "openmeteo": "🛰", "n/d": "⚪"}
 SRC_ICON  = {"iqair": "📡 IQAir", "openmeteo": "🛰 OM", "n/d": "⚪ н/д"}
@@ -84,6 +68,7 @@ def _kp_state(kp: float) -> str:
     return "буря"
 
 def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[float]:
+    """Берём значение по ближайшему прошедшему часу (UTC)."""
     if not arr_time or not arr_val or len(arr_time) != len(arr_val):
         return None
     try:
@@ -98,17 +83,18 @@ def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[floa
     except Exception:
         return None
 
-def _load_json(path: Path) -> Optional[Dict[str, Any]]:
+def _minutes_ago(ts_iso: str) -> Optional[int]:
+    """Сколько минут назад от текущего UTC был ts_iso (YYYY-MM-DDTHH:MM:SSZ / ...)."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        # Нормализуем «YYYY-MM-DDTHH:MM:SSZ» → без 'Z'
+        ts_iso = str(ts_iso).rstrip("Z")
+        # Оставляем только до минут (чтобы не споткнуться о разные форматы)
+        base = ts_iso[:16]  # YYYY-MM-DDTHH:MM
+        tm = time.strptime(base, "%Y-%m-%dT%H:%M")
+        ts = int(time.mktime(tm))  # локаль -> но мы сравниваем разницу, погрешность некритична
+        return max(0, int(time.time()) - ts) // 60
     except Exception:
         return None
-
-def _save_json(path: Path, data: Dict[str, Any]) -> None:
-    try:
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        logging.warning("Cache write error to %s: %s", path, e)
 
 # ───────────────────────── Источники AQI ───────────────────────────
 
@@ -246,65 +232,54 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
         logging.warning("Marine SST parse error: %s", e)
         return None
 
-# ───────────────────────── Kp: стабильный + nowcast (кэш) ──────────
+# ───────────────────────── Кэш JSON ────────────────────────────────
+
+def _load_json(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def _save_json(path: Path, data: Dict[str, Any]) -> None:
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logging.warning("Cache write error %s: %s", path, e)
+
+# ───────────────────────── Kp: ТОЛЬКО стабильный 3h ────────────────
 
 def _parse_kp_from_table(data: Any) -> Optional[Tuple[float, str]]:
     """
-    JSON-таблица: первая строка — заголовки; последние значения — самые свежие.
-    Возвращаем (kp, ts_iso).
+    Разбираем таблицу из noaa-planetary-k-index.json:
+      [ [header...],
+        ["2025-08-30 09:00:00", "0.3"],
+        ... ]
+    Возвращаем (kp_float, ts_iso) по последней строке.
     """
-    if not isinstance(data, list) or len(data) < 2 or not isinstance(data[0], list):
+    if not isinstance(data, list) or len(data) < 2:
         return None
+    # Идём с конца, ищем первую пригодную строку
     for row in reversed(data[1:]):
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        ts = str(row[0]).strip().replace(" ", "T")  # → YYYY-MM-DDTHH:MM:SS
+        raw = row[-1]
         try:
-            # Формат: ["YYYY-mm-dd HH:MM:SS", ..., kp]
-            ts = str(row[0])
-            kp_val = float(str(row[-1]).replace(",", "."))
+            kp_val = float(str(raw).replace(",", "."))
             if math.isfinite(kp_val):
                 return kp_val, ts
         except Exception:
             continue
     return None
 
-def _parse_kp_from_dicts(data: Any) -> Optional[Tuple[float, str]]:
-    """
-    Список словарей 1-минутного nowcast.
-    Берём последнее валидное значение.
-    """
-    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-        return None
-    for item in reversed(data):
-        raw = item.get("kp_index") or item.get("estimated_kp") or item.get("kp")
-        ts  = item.get("time_tag") or item.get("time") or item.get("date")
-        if raw is None:
-            continue
-        try:
-            kp_val = float(str(raw).replace(",", "."))
-            if math.isfinite(kp_val):
-                return kp_val, str(ts) if ts else ""
-        except Exception:
-            continue
-    return None
-
-def _minutes_ago(ts_iso: str) -> Optional[int]:
-    try:
-        # Универсально: парсим первые 16 символов до минут
-        # "YYYY-mm-dd HH:MM" или "YYYY-mm-ddTHH:MM"
-        ts_iso = ts_iso.replace("T", " ")
-        base = ts_iso[:16]
-        t_struct = time.strptime(base, "%Y-%m-%d %H:%M")
-        ts = int(time.mktime(t_struct))
-        return max(0, int(time.time()) - ts) // 60
-    except Exception:
-        return None
-
 def get_geomag() -> Dict[str, Any]:
     """
-    Детальная геомагнитка.
-    Пытаемся получить стабильный 3-часовой Kp; при неудаче — 1-мин nowcast.
-    Кэши: 3h Kp — 3 часа, nowcast — 15 минут.
+    Детальная геомагнитка из стабильного 3-часового продукта SWPC.
+    Без nowcast. Если сети нет — используем кэш (до 6 часов).
+    Возвращает:
+      {'kp','state','ts','age_min','src':'swpc_3h','window':'3h'}
     """
-    # 1) стабильный 3h
+    # Онлайн попытка
     try:
         data = _get(KP_3H_URL)
         if isinstance(data, list):
@@ -324,137 +299,26 @@ def get_geomag() -> Dict[str, Any]:
     except Exception as e:
         logging.warning("Kp 3h request/parse error: %s", e)
 
-    # 2) fallback: кэш 3h
+    # Фоллбэк — кэш (до 6 часов считаем приемлемым)
     cached = _load_json(KP_CACHE)
     if isinstance(cached, dict) and "kp" in cached:
         age = cached.get("age_min")
-        # если кэш не старше 3 часов — годится
-        if isinstance(age, int) and age <= 180:
+        # если age не сохранён, пересчитаем от ts
+        if age is None and isinstance(cached.get("ts"), str):
+            cached["age_min"] = _minutes_ago(cached["ts"])
+            age = cached["age_min"]
+        if isinstance(age, int) and age <= 360:
             return cached
 
-    # 3) nowcast 1-мин
-    try:
-        data = _get(KP_1M_URL)
-        if isinstance(data, list):
-            parsed = _parse_kp_from_dicts(data)
-            if parsed:
-                kp_val, ts = parsed
-                res = {
-                    "kp": kp_val,
-                    "state": _kp_state(kp_val),
-                    "ts": ts,
-                    "age_min": _minutes_ago(ts),
-                    "src": "swpc_1m",
-                    "window": "1m",
-                }
-                _save_json(KP_NOWCAST_CACHE, res)
-                return res
-    except Exception as e:
-        logging.warning("Kp 1m request/parse error: %s", e)
-
-    # 4) fallback: кэш nowcast (до 15 минут)
-    cached = _load_json(KP_NOWCAST_CACHE)
-    if isinstance(cached, dict) and "kp" in cached:
-        age = cached.get("age_min")
-        if isinstance(age, int) and age <= 15:
-            return cached
-
-    # ничего
-    return {"kp": None, "state": "н/д", "ts": "", "age_min": None, "src": "n/d", "window": ""}
+    # Совсем нет данных
+    return {"kp": None, "state": "н/д", "ts": "", "age_min": None, "src": "swpc_3h", "window": "3h"}
 
 def get_kp() -> Tuple[Optional[float], str]:
     """
-    Обратная совместимость: вернуть только (kp, state) — из get_geomag().
+    Обратная совместимость для внешнего кода: (kp, state) из стабильного 3-часового Kp.
     """
     g = get_geomag()
     return g.get("kp"), g.get("state", "н/д")
-
-# ───────────────────────── Солнечный ветер (DSCOVR) ────────────────
-
-def _sanitize_sw_value(name: str, val: Any) -> Optional[float]:
-    try:
-        v = float(val)
-    except Exception:
-        return None
-    if not math.isfinite(v):
-        return None
-    # отбрасываем мусор/заглушки
-    if name in ("bt", "bz"):
-        if abs(v) > 100:  # нТл
-            return None
-    elif name == "v":
-        if v < 200 or v > 1000:  # км/с
-            return None
-    elif name == "n":
-        if v < 0 or v > 50:  # см^-3
-            return None
-    return v
-
-def get_solar_wind() -> Optional[Dict[str, Any]]:
-    """
-    Возвращает словарь {'bz','bt','v','n','ts','age_min','src'} или None.
-    Кэш: 10 минут. Берём последнюю валидную минуту из обоих файлов.
-    """
-    # 1) кэш
-    cached = _load_json(SW_CACHE)
-    if isinstance(cached, dict):
-        age = cached.get("age_min")
-        if isinstance(age, int) and age <= 10:
-            return cached
-
-    # 2) сетевые данные
-    try:
-        mag = _get(SW_MAG_URL)
-        plasma = _get(SW_PLASMA_URL)
-        # оба — JSON-таблицы, первая строка — заголовки
-        def last_valid_row(arr: Any) -> Optional[List[Any]]:
-            if not isinstance(arr, list) or len(arr) < 2 or not isinstance(arr[0], list):
-                return None
-            for row in reversed(arr[1:]):
-                if any(x in (None, "null", "") for x in row):
-                    continue
-                return row
-            return None
-
-        r_mag = last_valid_row(mag)
-        r_pl  = last_valid_row(plasma)
-        if not r_mag or not r_pl:
-            raise ValueError("no valid rows")
-
-        ts_mag = str(r_mag[0])
-        ts_pl  = str(r_pl[0])
-        ts = ts_mag or ts_pl
-
-        # По документации SWPC (mag: [time, bt, bx, by, bz, ...], plasma: [time, speed, density, ...])
-        bt = _sanitize_sw_value("bt", r_mag[1])
-        bz = _sanitize_sw_value("bz", r_mag[4])
-        v  = _sanitize_sw_value("v",  r_pl[1])
-        n  = _sanitize_sw_value("n",  r_pl[2])
-
-        if all(x is None for x in (bt, bz, v, n)):
-            raise ValueError("all sanitized to None")
-
-        res = {
-            "bt": bt,
-            "bz": bz,
-            "v":  v,
-            "n":  n,
-            "ts": ts,
-            "age_min": _minutes_ago(ts),
-            "src": "swpc_dscovr",
-        }
-        _save_json(SW_CACHE, res)
-        return res
-    except Exception as e:
-        logging.warning("Solar wind fetch/parse error: %s", e)
-
-    # 3) fallback: даже просроченный кэш (до часа), лучше чем ничего
-    if isinstance(cached, dict):
-        age = cached.get("age_min")
-        if isinstance(age, int) and age <= 60:
-            return cached
-
-    return None
 
 # ───────────────────────── CLI ─────────────────────────────────────
 
@@ -464,8 +328,7 @@ if __name__ == "__main__":
     pprint(get_air(54.710426, 20.452214))
     print("\n=== Пример get_sst (Калининград) ===")
     print(get_sst(54.710426, 20.452214))
-    print("\n=== Пример get_kp / get_geomag ===")
-    print(get_kp())
+    print("\n=== Пример get_geomag (Kp 3h) ===")
     pprint(get_geomag())
-    print("\n=== Пример get_solar_wind ===")
-    pprint(get_solar_wind())
+    print("\n=== Пример get_kp (compat) ===")
+    print(get_kp())
