@@ -148,3 +148,39 @@ jobs:
           curl -s -F chat_id="$CHAT_ID" -F caption="$CAPTION (7d)" -F parse_mode="HTML" \
                -F photo="@schumann_amp_7d.png" \
                "https://api.telegram.org/bot$BOT_TOKEN/sendPhoto"
+
+          # Текст: статус (🟢/🟡/🔴), тренд («растёт/снижается/стабильно»), H7, мягкая интерпретация
+          MSG="$(python - <<'PY'
+import json
+def cls(f):
+    if not isinstance(f,(int,float)): return "🟡 колебания","yellow"
+    if 7.4 <= f <= 8.4:
+        if 7.7 <= f <= 8.1: return "🟢 в норме","green"
+        return "🟡 колебания","yellow"
+    return "🔴 сильное отклонение","red"
+try:
+    d=json.load(open('schumann_hourly.json',encoding='utf-8'))[-1]
+except Exception:
+    d={}
+status,code=cls(d.get('freq'))
+trend={"↑":"растёт","↓":"снижается","→":"стабильно"}.get(d.get("trend","→"),"стабильно")
+h7=d.get("h7_amp"); h7s="· H7: — нет данных"
+if isinstance(h7,(int,float)):
+    h7s=f"· H7: {h7:.1f} (⚡ всплеск)" if d.get("h7_spike") else f"· H7: {h7:.1f} — спокойно"
+amp=d.get("amp"); amp=(f"{amp:.2f}" if isinstance(amp,(int,float)) else "—")
+freq=d.get("freq"); freq=(f"{freq:.2f}" if isinstance(freq,(int,float)) else "—")
+interp=("Волны Шумана близки к норме — организм реагирует как на обычный день."
+        if code=="green" else
+        "Заметны колебания — возможна лёгкая чувствительность к погоде и настроению."
+        if code=="yellow" else
+        "Сильные отклонения — прислушивайтесь к самочувствию и снижайте перегрузки.")
+print(f"{status} • тренд: {trend}\n"
+      f"f={freq} Гц, amp={amp}\n"
+      f"{h7s}\n"
+      f"{interp}")
+PY
+)"
+          curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+               -d chat_id="$CHAT_ID" \
+               -d parse_mode="HTML" \
+               --data-urlencode "text=${MSG}"
