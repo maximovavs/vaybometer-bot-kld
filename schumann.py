@@ -1,49 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-schumann.py — сбор и выдача данных для «Шумана» (v2.2, debug-friendly)
+schumann.py — сбор и выдача данных для «Шумана» (v2)
 
-Основное:
-• Сбор точки раз в запуск (часовой грид по UTC), апсерт по ts.
+Возможности:
+• Сбор ежечасной точки с безопасным кеш-фоллбэком (не плодит null).
 • Источники:
-  1) CUSTOM JSON (SCHU_CUSTOM_URL) — freq/amp из любого совместимого JSON.
-  2) HeartMath GCI (страница -> iframe -> JSON), перебор станций:
-     GCI001,GCI003,GCI006,GCI004,GCI005 (настраивается).
-     Можно маппить GCI "power" → amp (SCHU_MAP_GCI_POWER_TO_AMP=1).
-• Безопасный fallback:
-  - freq → 7.83, amp → последний известный (если разрешено ALLOW_CACHE).
-• Санитация:
-  - amp всегда неотрицательный (abs), во избежание «-1.14».
-• Подробная отладка:
-  - SCHU_DEBUG=1 — печатает путь извлечения данных, урлы, состояние парсинга.
-  - Явно пишет, если ушли в cache и почему.
-
-CLI:
-  --collect   собрать точку и записать в историю (апсерт, дедуп)
-  --last      показать последнюю запись
-  --dedupe    удалить дубли по ts и перезаписать файл
-
-Переменные окружения (важное):
-  SCHU_FILE="schumann_hourly.json"
-  SCHU_MAX_LEN="5000"
-  SCHU_ALLOW_CACHE_ON_FAIL="1"
-  SCHU_AMP_SCALE="1"
-  SCHU_TREND_WINDOW="24"
-  SCHU_TREND_DELTA="0.1"
-  SCHU_DEBUG="0|1"
-
-HeartMath / GCI:
-  SCHU_GCI_ENABLE="1"
-  SCHU_GCI_STATIONS="GCI001,GCI003,GCI006,GCI004,GCI005"
-  SCHU_GCI_URL="https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
-  SCHU_GCI_IFRAME="https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
-  SCHU_HEARTMATH_HTML="data/gcms_magnetometer_heartmath.html"
-  SCHU_MAP_GCI_POWER_TO_AMP="1"
-
-Custom JSON:
-  SCHU_CUSTOM_URL=""   # если указан — сначала пробуем его
-
-H7 — зарезервировано.
+  - CUSTOM JSON (SCHU_CUSTOM_URL) — любой JSON, где удаётся найти freq/amp.
+  - HeartMath GCI (страница + iframe + JSON), перебор станций GCI001..006:
+      * онлайн-страница (SCHU_GCI_URL)
+      * прямой iframe (SCHU_GCI_IFRAME)
+      * сохранённый HTML (SCHU_HEARTMATH_HTML)
+    Можно маппить GCI power → amp (SCHU_MAP_GCI_POWER_TO_AMP=1)
+• Запись в файл истории (SCHU_FILE, по умолчанию schumann_hourly.json) с апсертом.
+• Forward-fill амплитуды при src=='cache', чтобы не было amp:null.
+• H7: поля h7_amp/h7_spike оставлены под будущее (если появится спектр).
+• Функция get_schumann() для поста: вернёт freq/amp/trend/cached.
+• CLI:
+    --collect      собрать очередную точку (для GitHub Actions)
+    --last         вывести последнюю точку
+    --dedupe       очистить дубли (перезаписать историю)
+    --fix-history  привести историю к v2: дедуп, abs(amp), заполнить поля
 """
 
 from __future__ import annotations
@@ -56,65 +33,62 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
 except Exception:
-    requests = None
+    requests = None  # В GH Actions ставится в шаге "Install deps"
 
-# ───────────────────────── Конфиг ─────────────────────────
+# ────────────────────────── Константы/дефолты ──────────────────────────
 
-DEF_FILE = os.getenv("SCHU_FILE", "schumann_hourly.json")
-DEF_MAX_LEN = int(os.getenv("SCHU_MAX_LEN", "5000"))
-ALLOW_CACHE = os.getenv("SCHU_ALLOW_CACHE_ON_FAIL", "1") == "1"
+DEF_FILE      = os.getenv("SCHU_FILE", "schumann_hourly.json")
+DEF_MAX_LEN   = int(os.getenv("SCHU_MAX_LEN", "5000"))
+ALLOW_CACHE   = os.getenv("SCHU_ALLOW_CACHE_ON_FAIL", "1") == "1"
 
-AMP_SCALE = float(os.getenv("SCHU_AMP_SCALE", "1"))
-TREND_WINDOW = int(os.getenv("SCHU_TREND_WINDOW", "24"))
-TREND_DELTA = float(os.getenv("SCHU_TREND_DELTA", "0.1"))
+AMP_SCALE     = float(os.getenv("SCHU_AMP_SCALE", "1"))
+TREND_WINDOW  = int(os.getenv("SCHU_TREND_WINDOW", "24"))
+TREND_DELTA   = float(os.getenv("SCHU_TREND_DELTA", "0.1"))
 
-GCI_ENABLE = os.getenv("SCHU_GCI_ENABLE", "0") == "1"
-GCI_STATIONS = [s.strip() for s in os.getenv("SCHU_GCI_STATIONS", "GCI003").split(",") if s.strip()]
-GCI_PAGE_URL = os.getenv("SCHU_GCI_URL", "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/")
-GCI_IFRAME_URL = os.getenv("SCHU_GCI_IFRAME", "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html")
-GCI_SAVED_HTML = os.getenv("SCHU_HEARTMATH_HTML", "")
-MAP_GCI_POWER_TO_AMP = os.getenv("SCHU_MAP_GCI_POWER_TO_AMP", "0") == "1"
+# HeartMath / GCI
+GCI_ENABLE       = os.getenv("SCHU_GCI_ENABLE", "0") == "1"
+GCI_STATIONS     = [s.strip() for s in os.getenv("SCHU_GCI_STATIONS", "GCI003").split(",") if s.strip()]
+GCI_PAGE_URL     = os.getenv("SCHU_GCI_URL", "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/")
+GCI_IFRAME_URL   = os.getenv("SCHU_GCI_IFRAME", "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html")
+GCI_SAVED_HTML   = os.getenv("SCHU_HEARTMATH_HTML", "")
+MAP_GCI_TO_AMP   = os.getenv("SCHU_MAP_GCI_POWER_TO_AMP", "0") == "1"
 
-CUSTOM_URL = os.getenv("SCHU_CUSTOM_URL", "").strip()
+# Optional custom JSON endpoint
+CUSTOM_URL       = os.getenv("SCHU_CUSTOM_URL", "").strip()
 
-DEBUG = os.getenv("SCHU_DEBUG", "0") == "1"
+# H7 placeholders (на будущее)
+H7_URL           = os.getenv("H7_URL", "").strip()
+H7_TARGET_HZ     = float(os.getenv("H7_TARGET_HZ", "54.81"))
+H7_WINDOW_H      = int(os.getenv("H7_WINDOW_H", "48"))
+H7_Z             = float(os.getenv("H7_Z", "2.5"))
+H7_MIN_ABS       = float(os.getenv("H7_MIN_ABS", "0.2"))
 
-# ───────────────────────── Реги/утилиты ─────────────────────────
-
-IFRAME_SRC_RE = re.compile(r'<iframe[^>]+src=["\']([^"\']*power_levels\.html[^"\']*)["\']', re.I)
-
-# Ловим крупные JSON-блоки в iframe:
-#  1) window.postMessage(<JSON>, ...)
-#  2) var something = <JSON>;
-JSON_BLOCK_RE = re.compile(
-    r'(?:postMessage\s*\(\s*(\{.*?\}|\[.*?\])\s*,)|(?:var\s+\w+\s*=\s*(\{.*?\}|\[.*?\]);)',
-    re.I | re.S
+DEBUG            = os.getenv("SCHU_DEBUG", "0") == "1"
+USER_AGENT       = os.getenv(
+    "SCHU_USER_AGENT",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-def log(*a):
-    if DEBUG:
-        print("DEBUG:", *a)
+# ────────────────────────── Регэкспы для HeartMath ─────────────────────
 
-def _get(url: str, **params) -> Optional[requests.Response]:
-    if requests is None:
-        return None
-    try:
-        r = requests.get(url, params=params, timeout=20)
-        return r
-    except Exception as e:
-        log("HTTP error:", e)
-        return None
+IFRAME_SRC_RE = re.compile(
+    r'<iframe[^>]+src=["\']([^"\']*power_levels\.html[^"\']*)["\']',
+    re.IGNORECASE
+)
 
-def _read_file_text(path: str) -> Optional[str]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        log("read file error", path, e)
-        return None
+JSON_IN_IFRAME_RE = re.compile(
+    r'(?:postMessage\s*\(\s*(\{.*?\})\s*,|\bvar\s+\w+\s*=\s*(\{.*?\}|\[.*?\]))',
+    re.IGNORECASE | re.DOTALL
+)
+
+# ────────────────────────── Утилиты I/O, JSON ──────────────────────────
 
 def _now_hour_ts_utc() -> int:
+    # метка времени на начало текущего часа (UTC)
     t = time.gmtime()
     return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, 0, 0, 0, 0, 0)))
 
@@ -133,6 +107,7 @@ def _write_history(path: str, items: List[Dict[str, Any]]) -> None:
     os.replace(tmp, path)
 
 def upsert_record(path: str, rec: Dict[str, Any], max_len: int | None = None) -> None:
+    """Вставляет/обновляет запись по ключу ts без дублей."""
     hist = _load_history(path)
     ts = rec.get("ts")
     hist = [r for r in hist if r.get("ts") != ts]
@@ -143,98 +118,86 @@ def upsert_record(path: str, rec: Dict[str, Any], max_len: int | None = None) ->
     _write_history(path, hist)
 
 def last_known_amp(path: str) -> Optional[float]:
-    for r in reversed(_load_history(path)):
+    hist = _load_history(path)
+    for r in reversed(hist):
         v = r.get("amp")
         if isinstance(v, (int, float)):
             return float(v)
     return None
 
-# ───────────── JSON извлечение из iframe ─────────────
+# ────────────────────────── HTTP: Session с ретраями ───────────────────
+
+_SESSION: Optional[requests.Session] = None
+
+def _session() -> Optional[requests.Session]:
+    if requests is None:
+        return None
+    global _SESSION
+    if _SESSION is not None:
+        return _SESSION
+    s = requests.Session()
+    # Ретраи только на сетевые/5xx, не на 404 и т.п.
+    try:
+        retries = Retry(
+            total=2,
+            connect=2,
+            read=2,
+            backoff_factor=0.6,
+            status_forcelist=(500, 502, 503, 504),
+            allowed_methods=frozenset(["GET"])
+        )
+        s.mount("https://", HTTPAdapter(max_retries=retries))
+        s.mount("http://",  HTTPAdapter(max_retries=retries))
+    except Exception:
+        pass
+    s.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/json;q=0.9,*/*;q=0.8"})
+    _SESSION = s
+    return s
+
+def _get(url: str, **params) -> Optional[requests.Response]:
+    s = _session()
+    if s is None:
+        return None
+    try:
+        return s.get(url, params=params, timeout=15, allow_redirects=True)
+    except Exception:
+        return None
+
+# ────────────────────────── HTML/JSON helpers ──────────────────────────
+
+def _read_file_text(path: str) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return None
 
 def extract_iframe_src(html: str) -> Optional[str]:
     m = IFRAME_SRC_RE.search(html or "")
-    if m:
-        return m.group(1)
-    return None
-
-def _balanced_json_slice(text: str, start_idx: int) -> Optional[str]:
-    """
-    Возвращает «сбалансированный» фрагмент JSON, начиная с { или [.
-    Учитывает кавычки и экранирование.
-    """
-    if start_idx < 0 or start_idx >= len(text):
-        return None
-    open_char = text[start_idx]
-    close_char = "}" if open_char == "{" else "]"
-    depth = 0
-    i = start_idx
-    in_str = False
-    esc = False
-    while i < len(text):
-        ch = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == open_char:
-                depth += 1
-            elif ch == close_char:
-                depth -= 1
-                if depth == 0:
-                    return text[start_idx:i+1]
-        i += 1
-    return None
+    return m.group(1) if m else None
 
 def extract_json_from_iframe(html: str) -> Optional[Any]:
+    """Возвращает распарсенный JSON-объект (dict/list), если найдёт крупный JSON блок."""
     if not html:
         return None
-
-    # Сначала — быстрые попадания по JSON_BLOCK_RE
-    for m in JSON_BLOCK_RE.finditer(html):
-        blob = m.group(1) or m.group(2)
-        if not blob:
+    for m in JSON_IN_IFRAME_RE.finditer(html):
+        block = m.group(1) or m.group(2)
+        if not block:
             continue
-        # Попробуем распарсить напрямую
-        try:
-            return json.loads(blob)
-        except Exception:
-            # Если не вышло — пробуем через «сбалансированный» срез от первой { или [
-            first = blob.find("{")
-            if first < 0:
-                first = blob.find("[")
-            if first >= 0:
-                sl = _balanced_json_slice(blob, first)
-                if sl:
-                    try:
-                        return json.loads(sl)
-                    except Exception:
-                        pass
-
-    # Бэкап: найдём первый крупный блок, начинающийся с { или [
-    for marker in ("{", "["):
-        pos = html.find(marker)
-        while pos != -1:
-            sl = _balanced_json_slice(html, pos)
-            if sl and len(sl) > 1000:  # игнорируем мелочь
-                try:
-                    return json.loads(sl)
-                except Exception:
-                    pass
-            pos = html.find(marker, pos + 1)
+        text = block.strip()
+        # Пытаемся аккуратно «обрезать» хвосты до валидного JSON.
+        for length in range(len(text), max(len(text) - 2000, 0), -1):
+            try:
+                return json.loads(text[:length])
+            except Exception:
+                continue
     return None
-
-# ───────────── Поиск чисел в сложных структурах ─────────────
 
 def deep_find_number(obj: Any, *keys: str) -> Optional[float]:
     """
-    Пытаемся найти число по цепочке ключей/имен станций (case-insensitive).
-    В списке берём последний валидный; в dict — по ключам и по названиям станций.
+    Пытается найти число по цепочке ключей/имен станций (case-insensitive).
+    Работает «широко»: если список — берём последний числовой элемент.
+    Если dict — пробуем ключи и коды станций GCI00x.
     """
     if obj is None:
         return None
@@ -247,21 +210,21 @@ def deep_find_number(obj: Any, *keys: str) -> Optional[float]:
         return None
 
     if isinstance(obj, dict):
-        # Прямой доступ по ключам
+        # прямые ключи
         for k in keys:
             for kk, vv in obj.items():
                 if isinstance(kk, str) and kk.lower() == k.lower():
                     v = deep_find_number(vv, *keys)
                     if isinstance(v, (int, float)):
                         return float(v)
-        # Попытка по кодам станций
+        # станции
         for station in GCI_STATIONS:
             for kk, vv in obj.items():
                 if isinstance(kk, str) and kk.lower() == station.lower():
                     v = deep_find_number(vv, *keys)
                     if isinstance(v, (int, float)):
                         return float(v)
-        # Глубокий проход
+        # обход значений
         for vv in obj.values():
             v = deep_find_number(vv, *keys)
             if isinstance(v, (int, float)):
@@ -279,151 +242,145 @@ def deep_find_number(obj: Any, *keys: str) -> Optional[float]:
 
     return None
 
-# ───────────── Источники ─────────────
+# ────────────────────────── Источники данных ───────────────────────────
 
-def get_from_custom() -> Tuple[Optional[float], Optional[float], str, str]:
-    """
-    Возвращает (freq, amp, src, note)
-    """
+def get_from_custom() -> Tuple[Optional[float], Optional[float], str]:
+    """Пробуем взять freq/amp из SCHU_CUSTOM_URL. Возвращает (freq, amp, src)."""
     if not CUSTOM_URL or requests is None:
-        return None, None, "none", "custom: disabled"
+        return None, None, "none"
     try:
         r = _get(CUSTOM_URL)
         if not r or r.status_code != 200:
-            return None, None, "custom_fail", f"http {getattr(r,'status_code',None)}"
+            return None, None, "custom_fail"
         data = r.json()
-    except Exception as e:
-        return None, None, "custom_fail", f"json error {e}"
+    except Exception:
+        return None, None, "custom_fail"
 
     freq = deep_find_number(data, "freq", "frequency", "f0")
     amp  = deep_find_number(data, "amp", "amplitude", "power", "pwr")
-    return freq, amp, "custom", "parsed"
+    return freq, amp, "custom"
 
-def get_gci_power() -> Tuple[Optional[float], str, str]:
+def get_gci_power() -> Tuple[Optional[float], str]:
     """
-    Возвращает (power, src, note)
-    src: gci_saved|gci_live|gci_iframe|gci_fail|gci_disabled
+    Пытаемся достать power (hourly) для одной из станций из HeartMath.
+    Приоритет:
+      1) сохранённая страница (SCHU_HEARTMATH_HTML) -> iframe
+      2) онлайн-страница (GCI_PAGE_URL) -> iframe
+      3) прямой iframe (GCI_IFRAME_URL)
+    Возвращает (power, src_label)
     """
     if not GCI_ENABLE or requests is None:
-        return None, "gci_disabled", "disabled or no requests"
+        return None, "gci_disabled"
 
-    # 1) Сохранённая HTML-страница
+    # 1) сохранённая страница
     if GCI_SAVED_HTML:
         html = _read_file_text(GCI_SAVED_HTML)
         if html:
             iframe_url = extract_iframe_src(html) or GCI_IFRAME_URL
-            log("saved HTML -> iframe:", iframe_url)
+            if DEBUG:
+                print("DEBUG: saved HTML -> iframe:", iframe_url)
             iframe_html = None
             if iframe_url and iframe_url.startswith("http"):
                 r = _get(iframe_url)
                 iframe_html = r.text if r and r.status_code == 200 else None
             if not iframe_html:
-                iframe_html = html
+                iframe_html = html  # fallback: искать JSON прямо в сохранённом файле
             data = extract_json_from_iframe(iframe_html or "")
+            if DEBUG:
+                print("DEBUG: iframe JSON present:", isinstance(data, (dict, list)))
             power = deep_find_number(data, "power", "value", "amp", "amplitude")
             if isinstance(power, (int, float)):
-                return float(power), "gci_saved", "iframe json ok"
+                return float(power), "gci_saved"
 
-    # 2) Живая страница -> iframe
+    # 2) онлайн страница -> iframe
     if GCI_PAGE_URL:
         r = _get(GCI_PAGE_URL)
         if r and r.status_code == 200 and r.text:
             iframe_url = extract_iframe_src(r.text) or GCI_IFRAME_URL
-            log("live PAGE -> iframe:", iframe_url)
+            if DEBUG:
+                print("DEBUG: live PAGE -> iframe:", iframe_url)
             if iframe_url:
                 rr = _get(iframe_url)
                 if rr and rr.status_code == 200 and rr.text:
                     data = extract_json_from_iframe(rr.text)
                     power = deep_find_number(data, "power", "value", "amp", "amplitude")
                     if isinstance(power, (int, float)):
-                        return float(power), "gci_live", "iframe json ok"
+                        return float(power), "gci_live"
 
-    # 3) Прямой iframe
+    # 3) прямой iframe
     if GCI_IFRAME_URL:
         rr = _get(GCI_IFRAME_URL)
         if rr and rr.status_code == 200 and rr.text:
             data = extract_json_from_iframe(rr.text)
             power = deep_find_number(data, "power", "value", "amp", "amplitude")
             if isinstance(power, (int, float)):
-                return float(power), "gci_iframe", "iframe json ok"
+                return float(power), "gci_iframe"
 
-    return None, "gci_fail", "no json/power found"
+    return None, "gci_fail"
 
-# ───────────── Сбор точки ─────────────
-
-def _sanitize_amp(v: Optional[float]) -> Optional[float]:
-    if isinstance(v, (int, float)):
-        vv = float(v) * AMP_SCALE
-        # амплитуда по смыслу не отрицательная
-        return abs(vv)
-    return None
+# ────────────────────────── Бизнес-логика сбора ─────────────────────────
 
 def collect_once() -> Dict[str, Any]:
+    """
+    Собирает одну часовую точку.
+      1) CUSTOM_URL — freq/amp из твоего JSON (если есть).
+      2) HeartMath GCI power (map->amp при включённом флаге).
+      3) Если не получилось и ALLOW_CACHE — берём freq=7.83, amp=last_known_amp().
+    """
     ts = _now_hour_ts_utc()
     out_path = DEF_FILE
     freq_val: Optional[float] = None
     amp_val: Optional[float] = None
+    h7_amp: Optional[float] = None
+    h7_spike: Optional[bool] = None
     src_label = "none"
-    note = ""
-
-    log("collect ts:", ts)
 
     # 1) Custom JSON
     if CUSTOM_URL:
-        f, a, s, n = get_from_custom()
-        log("custom:", f, a, s, n)
+        f, a, src = get_from_custom()
         if f is not None:
             freq_val = float(f)
         if a is not None:
-            amp_val = _sanitize_amp(a)
-        src_label = s
-        note = n
+            amp_val = float(a) * AMP_SCALE
+        src_label = src
+        if DEBUG:
+            print("DEBUG: custom:", f, a, src)
 
-    # 2) HeartMath GCI → power → amp
+    # 2) HeartMath GCI (если amp ещё нет)
     if amp_val is None and GCI_ENABLE:
-        power, s, n = get_gci_power()
-        log("gci:", power, s, n)
-        if isinstance(power, (int, float)) and MAP_GCI_POWER_TO_AMP:
-            amp_val = _sanitize_amp(power)
-            src_label = s
-            note = n + " (mapped power->amp)"
+        gci_power, gsrc = get_gci_power()
+        if DEBUG:
+            print("DEBUG: gci_power:", gci_power, gsrc)
+        if isinstance(gci_power, (int, float)) and MAP_GCI_TO_AMP:
+            amp_val = float(gci_power) * AMP_SCALE
+            src_label = gsrc
 
     # freq по умолчанию
     if freq_val is None:
         freq_val = 7.83
 
-    # 3) fallback cache
-    used_cache = False
+    # 3) Фоллбэк из кеша (forward-fill amp)
     if amp_val is None and ALLOW_CACHE:
+        src_label = "cache"
         amp_prev = last_known_amp(out_path)
         if amp_prev is not None:
-            amp_val = _sanitize_amp(amp_prev)
-            src_label = "cache"
-            used_cache = True
-            note = "used last_known_amp"
-        else:
-            src_label = "cache"
-            used_cache = True
-            note = "no previous amp; amp stays null"
-
-    if used_cache:
-        log("FALLBACK to cache:", note)
+            amp_val = amp_prev
 
     rec = {
-        "ts": ts,
-        "freq": float(freq_val),
-        "amp": (float(amp_val) if isinstance(amp_val, (int, float)) else None),
-        "h7_amp": None,
-        "h7_spike": None,
+        "ts": int(ts),
+        "freq": float(freq_val) if isinstance(freq_val, (int, float)) else 7.83,
+        "amp": float(amp_val) if isinstance(amp_val, (int, float)) else None,
+        "h7_amp": h7_amp,
+        "h7_spike": h7_spike,
         "ver": 2,
         "src": src_label,
-        "comment": note if DEBUG else None,
     }
     return rec
 
-# ───────────── Выдача для поста ─────────────
+# ────────────────────────── Публичная выдача (для поста) ───────────────
 
 def _trend_arrow(values: List[float], delta: float = TREND_DELTA) -> str:
+    """Сравниваем последний со средним предыдущих: ↑ / ↓ / →."""
     if len(values) < 2:
         return "→"
     last = values[-1]
@@ -432,15 +389,23 @@ def _trend_arrow(values: List[float], delta: float = TREND_DELTA) -> str:
         return "→"
     avg = sum(prev) / len(prev)
     d = last - avg
-    if d >= delta: return "↑"
-    if d <= -delta: return "↓"
+    if d >= delta:
+        return "↑"
+    if d <= -delta:
+        return "↓"
     return "→"
 
 def get_schumann() -> Dict[str, Any]:
+    """
+    Возвращает текущие данные (последняя точка) + тренд по частоте.
+    Формат:
+      {"freq": float|None, "amp": float|None, "trend": "↑/↓/→", "cached": bool}
+    """
     hist = _load_history(DEF_FILE)
     if not hist:
         return {"freq": None, "amp": None, "trend": "→", "cached": True}
 
+    # Берём последние N для тренда по freq
     freq_series = [r.get("freq") for r in hist if isinstance(r.get("freq"), (int, float))]
     freq_series = freq_series[-max(TREND_WINDOW, 2):] if freq_series else []
     trend = _trend_arrow([float(x) for x in freq_series]) if freq_series else "→"
@@ -456,23 +421,80 @@ def get_schumann() -> Dict[str, Any]:
         "h7_spike": last.get("h7_spike"),
     }
 
-# ───────────── CLI ─────────────
+# ────────────────────────── Ремонт истории ─────────────────────────────
+
+def fix_history(path: str) -> Tuple[int, int]:
+    """
+    Приводит историю к формату v2:
+      • дедуп по ts (последний побеждает);
+      • отрицательные amp → abs(amp);
+      • freq → float, дефолт 7.83;
+      • src/ver присутствуют; h7_* присутствуют.
+    Возвращает (старый размер, новый размер).
+    """
+    hist = _load_history(path)
+    old_len = len(hist)
+    if not hist:
+        _write_history(path, [])
+        return (0, 0)
+
+    by_ts: Dict[int, Dict[str, Any]] = {}
+    for r in hist:
+        ts = r.get("ts")
+        if not isinstance(ts, int):
+            # округлённый int, если вдруг float/str
+            try:
+                ts = int(float(ts))
+            except Exception:
+                continue
+        rr: Dict[str, Any] = dict(r)
+        # freq
+        f = rr.get("freq")
+        try:
+            f = float(f) if f is not None else 7.83
+        except Exception:
+            f = 7.83
+        rr["freq"] = f
+        # amp (abs)
+        a = rr.get("amp")
+        if isinstance(a, (int, float)):
+            rr["amp"] = float(abs(a))
+        else:
+            rr["amp"] = None if a is None else None  # всё некорректное в None
+        # h7
+        if "h7_amp" not in rr:
+            rr["h7_amp"] = None
+        if "h7_spike" not in rr:
+            rr["h7_spike"] = None
+        # служебные
+        rr["ver"] = 2
+        rr["src"] = rr.get("src") or "cache"
+        # опциональные мусорные ключи убираем
+        rr.pop("comment", None)
+        rr["ts"] = ts
+        by_ts[ts] = rr  # последний побеждает
+
+    cleaned = list(by_ts.values())
+    cleaned.sort(key=lambda r: r.get("ts", 0))
+    _write_history(path, cleaned)
+    return (old_len, len(cleaned))
+
+# ────────────────────────── CLI ─────────────────────────────────────────
 
 def cmd_collect() -> int:
     rec = collect_once()
     upsert_record(DEF_FILE, rec, max_len=DEF_MAX_LEN)
     print(
         f"collect: ts={rec['ts']} src={rec['src']} "
-        f"freq={rec['freq']:.2f} amp={rec['amp']} -> {os.path.abspath(DEF_FILE)}"
+        f"freq={rec['freq']} amp={rec['amp']} -> {os.path.abspath(DEF_FILE)}"
     )
-    if DEBUG and rec.get("comment"):
-        print("collect-note:", rec["comment"])
-    # показать последнюю запись
+    # В отладке покажем предупреждение, если ушли в cache
+    if rec.get("src") == "cache":
+        print("WARN: fell back to cache (no live data). "
+              "Check SCHU_CUSTOM_URL / HeartMath access.")
+    # показать последнюю запись компактно
     last = _load_history(DEF_FILE)[-1]
     print("Last record JSON:", json.dumps(last, ensure_ascii=False))
-    # предупреждение, если снова кэш
-    if rec["src"] == "cache":
-        print("WARN: fell back to cache (no live data). Check SCHU_CUSTOM_URL / HeartMath access.")
     return 0
 
 def cmd_last() -> int:
@@ -489,22 +511,39 @@ def cmd_dedupe() -> int:
     seen: Dict[int, Dict[str, Any]] = {}
     for r in hist:
         ts = r.get("ts")
-        if isinstance(ts, int):
-            seen[ts] = r
+        try:
+            ts = int(float(ts))
+        except Exception:
+            continue
+        seen[ts] = r  # последний побеждает
     cleaned = list(seen.values())
     cleaned.sort(key=lambda r: r.get("ts", 0))
     _write_history(DEF_FILE, cleaned)
     print(f"dedupe: {len(hist)} -> {len(cleaned)}")
     return 0
 
+def cmd_fix_history() -> int:
+    old, new = fix_history(DEF_FILE)
+    print(f"fix-history: size {old} -> {new}; file: {os.path.abspath(DEF_FILE)}")
+    # покажем последнюю точку
+    hist = _load_history(DEF_FILE)
+    if hist:
+        print("Last record JSON:", json.dumps(hist[-1], ensure_ascii=False, indent=2))
+    return 0
+
 def main(argv: List[str]) -> int:
     if len(argv) <= 1:
-        print("Usage: schumann.py --collect | --last | --dedupe")
+        print("Usage: schumann.py --collect | --last | --dedupe | --fix-history")
         return 1
     cmd = argv[1]
-    if cmd == "--collect": return cmd_collect()
-    if cmd == "--last":    return cmd_last()
-    if cmd == "--dedupe":  return cmd_dedupe()
+    if cmd == "--collect":
+        return cmd_collect()
+    if cmd == "--last":
+        return cmd_last()
+    if cmd == "--dedupe":
+        return cmd_dedupe()
+    if cmd == "--fix-history":
+        return cmd_fix_history()
     print("Unknown command:", cmd)
     return 1
 
