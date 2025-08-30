@@ -2,7 +2,7 @@ name: Collect Schumann
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # каждые 30 минут
+    - cron: "*/30 * * * *"     # каждые 30 минут
   workflow_dispatch:
 
 permissions:
@@ -54,7 +54,7 @@ jobs:
           # — опциональный свой JSON-эндпоинт
           SCHU_CUSTOM_URL: ""
 
-          # — 7-я гармоника (при наличии спектра)
+          # — 7-я гармоника (зарезервировано)
           H7_URL: ""
           H7_TARGET_HZ: "54.81"
           H7_WINDOW_H: "48"
@@ -67,15 +67,47 @@ jobs:
           echo "File size:"
           wc -c schumann_hourly.json || true
 
-      - name: Commit & push if changed
+      - name: Commit & push if changed (stash-safe rebase)
+        shell: bash
         run: |
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- schumann_hourly.json; then
-            git add schumann_hourly.json
-            git commit -m "schumann: update (v2, live GCI power, cache-safe, H7-ready)"
-            git push
-          else
+
+          # Изменился ли файл?
+          if git diff --quiet -- schumann_hourly.json; then
             echo "No changes in schumann_hourly.json"
+            exit 0
           fi
+
+          # Сохраняем локальные правки, подтягиваем upstream и возвращаем их обратно
+          STASHED=0
+          git stash push -u -m "schu-auto" || true
+          if git stash list | grep -q "schu-auto"; then
+            STASHED=1
+          fi
+
+          git pull --rebase || true
+
+          if [ "$STASHED" -eq 1 ]; then
+            # Попробуем применить; если конфликтов нет — продолжим.
+            git stash pop || true
+          fi
+
+          # Финальный статус файла
+          if git diff --quiet -- schumann_hourly.json; then
+            echo "After rebase, nothing to commit."
+            exit 0
+          fi
+
+          git add schumann_hourly.json
+          git commit -m "schumann: update (v2, live GCI power, cache-safe, H7-ready)"
+          git push
+
+      - name: Upload artifact (schumann_hourly.json)
+        uses: actions/upload-artifact@v4
+        with:
+          name: schumann-json
+          path: schumann_hourly.json
+          if-no-files-found: warn
+          retention-days: 7
