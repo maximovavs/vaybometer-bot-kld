@@ -60,7 +60,7 @@ jobs:
     - name: 🌙 Generate lunar_calendar.json
       if: env.RUN_CALENDAR == 'yes'
       env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} # here
         WORK_DATE:      ${{ env.WORK_DATE }}
       run: |
         # Если WORK_DATE задана → «переопределяем» pendulum.today()
