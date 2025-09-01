@@ -24,7 +24,7 @@ TZ = pendulum.timezone("Asia/Nicosia")
 # ───── GPT (по возможности) ────────────────────────────────────────────────
 try:
     from openai import OpenAI
-    GPT = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    GPT = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) #здесь исправить? 
 except Exception:
     GPT = None
 # ───────────────────────────────────────────────────────────────────────────
