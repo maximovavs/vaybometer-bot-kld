@@ -105,21 +105,28 @@ async def ai_get_advice(date_str: str, phase_name: str) -> List[str]:
             "🪄 Пять минут тишины и дыхания."]
 
 async def ai_get_phase_long(phase_name: str, month_ru: str) -> str:
-    """Короткое (1–2 предложения) описание для фазы в текущем месяце."""
+    """Короткое (1–2 предложения) описание для фазы в текущем месяце (с подстраховкой длины)."""
     if GM is None:
         return FALLBACK_LONG.get(phase_name, "")
     try:
         prompt = (
             f"Месяц: {month_ru}. Фаза Луны: {phase_name}. "
-            "Дай 1–2 предложения, позитивно и спокойно, без эзотерических терминов."
+            "Дай 1–2 предложения, позитивно и спокойно, без эзотерики. "
+            "Без медицинских/финансовых советов."
         )
         r = await asyncio.to_thread(GM.generate_content, prompt)
         txt = (getattr(r, "text", "") or "").strip()
-        if txt:
-            return txt
+        # если ответ слишком короткий — аккуратно дополним фоллбэком
+        if not txt or len(txt) < 80:
+            fb = FALLBACK_LONG.get(phase_name, "")
+            if txt:
+                sep = "" if txt.endswith(("!", "?", ".")) else ". "
+                txt = txt + sep + fb
+            else:
+                txt = fb
+        return txt
     except Exception:
-        pass
-    return FALLBACK_LONG.get(phase_name, "")
+        return FALLBACK_LONG.get(phase_name, "")
 
 # ─────────────────────────── Астрономия ──────────────────────────────────
 PLANETS = [swe.SUN, swe.MERCURY, swe.VENUS, swe.MARS, swe.JUPITER, swe.SATURN,
@@ -174,23 +181,17 @@ def _next_sign_ingress(jd_start: float) -> float:
     # грубый шаг вперёд — 1 час
     step = 1.0 / 24.0
     t0 = jd_start
-    for _ in range(200):  # максимум ~8 суток; обычно найдём за < 60 шагов
+    for _ in range(200):
         lon = _moon_lon(t0)
-        # расстояние вперёд в градусах
         ahead = (target - lon) % 360.0
         if ahead < 1.0:
             break
         t0 += step
 
     # бинарное уточнение до ~минуты
-    t1 = t0 + step
-    a = jd_start
-    b = t1
-    # гарантируем, что на [a,b] произошёл переход целевой долготы
-    # подберём окно вокруг t0
     a = t0 - 2 * step
     b = t0 + 2 * step
-    for _ in range(40):  # ~40 итераций хватит
+    for _ in range(40):
         mid = 0.5 * (a + b)
         lon_mid = _moon_lon(mid)
         if (target - lon_mid) % 360.0 < 0.5:
@@ -206,27 +207,6 @@ def _aspect_function(jd_ut: float, body: int, aspect: float) -> float:
     p = _body_lon(jd_ut, body)
     return _ang_diff((m - p), aspect)
 
-def _find_aspects_in_interval(jd_a: float, jd_b: float) -> List[float]:
-    """Возвращает JD точных аспектов Луны к планетам в интервале [jd_a, jd_b]."""
-    roots: List[float] = []
-    step = 1.0 / 24.0  # 1 час
-    t = jd_a
-    while t < jd_b:
-        t_next = min(t + step, jd_b)
-        for body in PLANETS:
-            for asp in ASPECTS:
-                f1 = _aspect_function(t, body, asp)
-                f2 = _aspect_function(t_next, body, asp)
-                # если в окне есть корень (смена знака или малое значение)
-                if abs(f1) < ASPECT_TOL:
-                    roots.append(_refine_root(t - step, t + step, body, asp))
-                elif f1 * f2 < 0.0:
-                    roots.append(_refine_root(t, t_next, body, asp))
-        t = t_next
-    # Убираем дубликаты (иногда разные аспекты попадают почти в одно время)
-    roots = sorted(set(round(r, 6) for r in roots))
-    return roots
-
 def _refine_root(a: float, b: float, body: int, asp: float) -> float:
     """Бисекция до точности ~1 мин."""
     for _ in range(40):
@@ -241,6 +221,25 @@ def _refine_root(a: float, b: float, body: int, asp: float) -> float:
             a = m
     return 0.5 * (a + b)
 
+def _find_aspects_in_interval(jd_a: float, jd_b: float) -> List[float]:
+    """Возвращает JD точных аспектов Луны к планетам в интервале [jd_a, jd_b]."""
+    roots: List[float] = []
+    step = 1.0 / 24.0  # 1 час
+    t = jd_a
+    while t < jd_b:
+        t_next = min(t + step, jd_b)
+        for body in PLANETS:
+            for asp in ASPECTS:
+                f1 = _aspect_function(t, body, asp)
+                f2 = _aspect_function(t_next, body, asp)
+                if abs(f1) < ASPECT_TOL:
+                    roots.append(_refine_root(t - step, t + step, body, asp))
+                elif f1 * f2 < 0.0:
+                    roots.append(_refine_root(t, t_next, body, asp))
+        t = t_next
+    roots = sorted(set(round(r, 6) for r in roots))
+    return roots
+
 def compute_voc_window(jd_day_start: float) -> Optional[Tuple[float, float]]:
     """
     Возвращает (jd_start, jd_end) периода VoC, который ПЕРЕСЕКАЕТ сутки,
@@ -249,23 +248,19 @@ def compute_voc_window(jd_day_start: float) -> Optional[Tuple[float, float]]:
     до него в окне [ingress-3 суток; ingress].
     """
     jd_ing = _next_sign_ingress(jd_day_start + 1.0/24.0)  # после начала суток
-    # окно для поиска аспектов
-    jd_a = jd_ing - 3.0    # 3 суток назад
+    jd_a = jd_ing - 3.0
     jd_b = jd_ing
     roots = _find_aspects_in_interval(jd_a, jd_b)
     last_aspect = max([r for r in roots if r < jd_ing], default=None)
     if last_aspect is None:
-        return None  # не нашли аспектов (очень редко) — считаем без VoC
+        return None  # не нашли аспектов — считаем без VoC
 
-    # VoC идёт с последнего аспекта и до ингрeсса
     voc_start = last_aspect
     voc_end   = jd_ing
 
-    # Интересует пересечение с нашими сутками [jd_day_start, jd_day_start+1)
     jd_day_end = jd_day_start + 1.0
     if voc_end <= jd_day_start or voc_start >= jd_day_end:
         return None
-    # обрезаем до границ суток (для отображения в конкретном дне)
     return (max(voc_start, jd_day_start), min(voc_end, jd_day_end))
 
 # ─────────────────────────── Основная генерация ──────────────────────────
