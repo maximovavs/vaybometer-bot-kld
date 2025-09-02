@@ -1,39 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gen_lunar_calendar.py
-──────────────────────────────────────────────────────────────────────────────
-Формирует файл lunar_calendar.json со всеми полями, нужными и для ежедневных
-постов (короткие советы) и для месячного (длинные описания фаз + VoC).
+gen_lunar_calendar.py — генерация lunar_calendar.json (Gemini + корректный VoC)
 
-• phase, percent, sign, phase_time
-• advice      – 3 строки «💼 …», «⛔ …», «🪄 …»
-• long_desc   – 1-2 предложения на фазу (разово на месяц)
-• void_of_course: {start, end}  (UTC → Asia/Nicosia в JSON)
-• favorable_days / unfavorable_days – словари CATS
+- для каждого дня считает фазу Луны, освещённость и знак;
+- добавляет короткие советы (3 строки) и длинное описание фазы через Gemini;
+- рассчитывает Void-of-Course: от последнего точного мажорного аспекта к планетам
+  (0/60/90/120/180) до входа Луны в следующий знак;
+- пишет результат в lunar_calendar.json.
+
+Зависимости: pendulum, pyswisseph, google-generativeai (опционально).
 """
 
-import os, json, math, asyncio, random
+from __future__ import annotations
+import os, json, math, asyncio
 from pathlib import Path
-from typing  import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
-import pendulum, swisseph as swe
+import pendulum
+import swisseph as swe
 
-TZ = pendulum.timezone("Asia/Nicosia")
+# Таймзона показа
+TZ = pendulum.timezone(os.getenv("LUNAR_TZ", "Asia/Nicosia"))
 
-# ───── GPT (по возможности) ────────────────────────────────────────────────
-try:
-    from openai import OpenAI
-    #GPT = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) #здесь исправить?
-    GPT = OpenAI(api_key=os.getenv("GEMINI_API_KEY"))
-except Exception:
-    GPT = None
-# ───────────────────────────────────────────────────────────────────────────
-
+# ─────────────────────────── Имена и эмодзи ──────────────────────────────
 EMO = {
     "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓","Растущая Луна":"🌔",
     "Полнолуние":"🌕","Убывающая Луна":"🌖","Последняя четверть":"🌗","Убывающий серп":"🌘",
 }
+SIGNS = ["Овен","Телец","Близнецы","Рак","Лев","Дева","Весы","Скорпион","Стрелец","Козерог","Водолей","Рыбы"]
 
 FALLBACK_LONG: Dict[str,str] = {
     "Новолуние"        :"Нулевая точка цикла — закладывайте мечты и намерения.",
@@ -46,7 +41,7 @@ FALLBACK_LONG: Dict[str,str] = {
     "Убывающий серп"   :"Отдых, ретриты, подготовка к новому циклу.",
 }
 
-# «карманные» даты (пример — замените на реальные свои таблицы)
+# Категории «благоприятных» — как в прежних версиях
 CATS = {
     "general" :{"favorable":[2,3,9,27],   "unfavorable":[13,14,24]},
     "haircut" :{"favorable":[2,3,9],      "unfavorable":[]},
@@ -55,184 +50,294 @@ CATS = {
     "health"  :{"favorable":[20,21,27],   "unfavorable":[]},
 }
 
-# ───── helpers ─────────────────────────────────────────────────────────────
-def jd2dt(jd: float) -> pendulum.DateTime:
-    """JD → pendulum UTC"""
-    return pendulum.from_timestamp((jd - 2440587.5) * 86400, tz="UTC")
+# ─────────────────────────── Gemini client ────────────────────────────────
+_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-def phase_name(angle: float) -> str:
-    idx = int(((angle + 22.5) % 360) // 45)
-    return [
-        "Новолуние","Растущий серп","Первая четверть","Растущая Луна",
-        "Полнолуние","Убывающая Луна","Последняя четверть","Убывающий серп"
-    ][idx]
+def _get_gemini_model():
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel(
+            model_name=_GEMINI_MODEL,
+            system_instruction=(
+                "Ты — астролог со спокойным, поддерживающим стилем; пишешь по-русски, "
+                "кратко и без пугающих формулировок. Без медицинских/финансовых советов."
+            ),
+            generation_config={"temperature":0.65, "top_p":0.9, "top_k":40, "max_output_tokens":400},
+        )
+    except Exception:
+        return None
 
-def compute_phase(jd: float) -> Tuple[str,int,str]:
-    lon_s = swe.calc_ut(jd, swe.SUN)[0][0]
-    lon_m = swe.calc_ut(jd, swe.MOON)[0][0]
-    ang   = (lon_m - lon_s) % 360
-    illum = int(round((1 - math.cos(math.radians(ang))) / 2 * 100))
-    name  = phase_name(ang)
-    sign  = ["Овен","Телец","Близнецы","Рак","Лев","Дева",
-             "Весы","Скорпион","Стрелец","Козерог","Водолей","Рыбы"][int(lon_m // 30) % 12]
-    return name, illum, sign
+GM = _get_gemini_model()
 
-# ───── Void-of-Course (приближённый расчёт) ───────────────────────────────
-ASPECTS = {0,60,90,120,180}          # основные мажоры
-ORBIS   = 1.5                        # ±градусы для аспекта
-PLANETS = [swe.SUN,swe.MERCURY,swe.VENUS,swe.MARS,
-           swe.JUPITER,swe.SATURN,swe.URANUS,swe.NEPTUNE,swe.PLUTO]
+def _split_lines(text: str) -> List[str]:
+    out=[]
+    for raw in (text or "").splitlines():
+        s = raw.strip().lstrip("-•—*0123456789. ").strip()
+        if s:
+            out.append(s)
+    return out
 
-def _has_major_lunar_aspect(jd: float) -> bool:
-    """Есть ли точный лунный мажорный аспект к планете в данный момент?"""
-    lon_m = swe.calc_ut(jd, swe.MOON)[0][0]
-    for p in PLANETS:
-        lon_p = swe.calc_ut(jd, p)[0][0]
-        a = abs((lon_m - lon_p + 180) % 360 - 180)
-        for asp in ASPECTS:
-            if abs(a - asp) <= ORBIS:
-                return True
-    return False
+async def ai_get_advice(date_str: str, phase_name: str) -> List[str]:
+    """3 коротких строки-совета. Фоллбэк — статичные фразы."""
+    if GM is None:
+        return ["💼 Сфокусируйтесь на главном.",
+                "⛔ Отложите крупные решения.",
+                "🪄 Пять минут тишины и дыхания."]
+    try:
+        prompt = (
+            f"Дата: {date_str}. Фаза Луны: {phase_name}. "
+            "Дай 3 очень коротких совета (по одной строке) с эмодзи: "
+            "1) 💼 про дела; 2) ⛔ что лучше отложить; 3) 🪄 самоподдержка."
+        )
+        r = await asyncio.to_thread(GM.generate_content, prompt)
+        text = (getattr(r, "text", "") or "").strip()
+        lines = _split_lines(text)[:3]
+        if len(lines) == 3:
+            return lines
+    except Exception:
+        pass
+    return ["💼 Сфокусируйтесь на главном.",
+            "⛔ Отложите крупные решения.",
+            "🪄 Пять минут тишины и дыхания."]
 
-def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
-    """
-    Находит интервал Void-of-Course внутри суток jd_start (00:00 UT).
-    Алгоритм:
-      1) ищем ближайший переход Луны в следующий знак (sign_change_jd);
-      2) от него «идём назад» с шагом 10 мин, пока снова встречаем аспект —
-         это конец последнего аспекта → начало VoC.
-    Если начало/конец лежат не в текущих календарных сутках, возвращаем None.
-    """
-    # 1) ближайший переход знака
-    sign0 = int(swe.calc_ut(jd_start, swe.MOON)[0][0] // 30)
-    jd = jd_start
-    step = 1/24  # час
-    while True:
-        jd += step
-        if int(swe.calc_ut(jd, swe.MOON)[0][0] // 30) != sign0:
-            sign_change = jd
+async def ai_get_phase_long(phase_name: str, month_ru: str) -> str:
+    """Короткое (1–2 предложения) описание для фазы в текущем месяце."""
+    if GM is None:
+        return FALLBACK_LONG.get(phase_name, "")
+    try:
+        prompt = (
+            f"Месяц: {month_ru}. Фаза Луны: {phase_name}. "
+            "Дай 1–2 предложения, позитивно и спокойно, без эзотерических терминов."
+        )
+        r = await asyncio.to_thread(GM.generate_content, prompt)
+        txt = (getattr(r, "text", "") or "").strip()
+        if txt:
+            return txt
+    except Exception:
+        pass
+    return FALLBACK_LONG.get(phase_name, "")
+
+# ─────────────────────────── Астрономия ──────────────────────────────────
+PLANETS = [swe.SUN, swe.MERCURY, swe.VENUS, swe.MARS, swe.JUPITER, swe.SATURN,
+           swe.URANUS, swe.NEPTUNE, swe.PLUTO]
+ASPECTS = [0.0, 60.0, 90.0, 120.0, 180.0]
+ASPECT_TOL = 0.3   # градусы — точность для поиска «точного» аспекта
+
+def _moon_lon(jd_ut: float) -> float:
+    return swe.calc_ut(jd_ut, swe.MOON)[0][0] % 360.0
+
+def _body_lon(jd_ut: float, body: int) -> float:
+    return swe.calc_ut(jd_ut, body)[0][0] % 360.0
+
+def _ang_diff(a: float, b: float) -> float:
+    """Подписанная угловая разность a-b в интервале [-180; 180]."""
+    d = (a - b + 180.0) % 360.0 - 180.0
+    return d
+
+def _phase_angle(jd_ut: float) -> float:
+    m = _moon_lon(jd_ut)
+    s = _body_lon(jd_ut, swe.SUN)
+    return (m - s) % 360.0
+
+def phase_name_from_angle(angle: float) -> str:
+    idx = int(((angle + 22.5) % 360.0) // 45.0)
+    return ["Новолуние","Растущий серп","Первая четверть","Растущая Луна",
+            "Полнолуние","Убывающая Луна","Последняя четверть","Убывающий серп"][idx]
+
+def illumination(angle: float) -> int:
+    return int(round(50.0 * (1.0 - math.cos(math.radians(angle)))))
+
+def zodiac_sign(jd_ut: float) -> str:
+    lon = _moon_lon(jd_ut)
+    return SIGNS[int(lon // 30)]
+
+def _jd_to_pendulum(jd_ut: float) -> pendulum.DateTime:
+    y, m, d, h = swe.revjul(jd_ut, swe.GREG_CAL)
+    hour = float(h)
+    hh = int(hour)
+    mm = int((hour - hh) * 60.0)
+    ss = int(((hour - hh) * 60.0 - mm) * 60.0)
+    return pendulum.datetime(y, m, d, hh, mm, ss, tz="UTC")
+
+# ───── Вспомогательное: поиск ингрeсса Луны в следующий знак ─────
+def _next_sign_ingress(jd_start: float) -> float:
+    """Возвращает JD UTC ближайшего входа Луны в следующий знак от jd_start."""
+    lon0 = _moon_lon(jd_start)
+    target = (math.floor(lon0 / 30.0) + 1) * 30.0 % 360.0
+    if target <= lon0:  # на границе
+        target = (target + 30.0) % 360.0
+
+    # грубый шаг вперёд — 1 час
+    step = 1.0 / 24.0
+    t0 = jd_start
+    for _ in range(200):  # максимум ~8 суток; обычно найдём за < 60 шагов
+        lon = _moon_lon(t0)
+        # расстояние вперёд в градусах
+        ahead = (target - lon) % 360.0
+        if ahead < 1.0:
             break
+        t0 += step
 
-    # 2) идём назад до последнего аспекта
-    jd_back = sign_change
-    step_b  = 10 / 1440   # 10 минут
-    while jd_back > jd_start and not _has_major_lunar_aspect(jd_back):
-        jd_back -= step_b
-    voc_start = jd_back
-    voc_end   = sign_change
+    # бинарное уточнение до ~минуты
+    t1 = t0 + step
+    a = jd_start
+    b = t1
+    # гарантируем, что на [a,b] произошёл переход целевой долготы
+    # подберём окно вокруг t0
+    a = t0 - 2 * step
+    b = t0 + 2 * step
+    for _ in range(40):  # ~40 итераций хватит
+        mid = 0.5 * (a + b)
+        lon_mid = _moon_lon(mid)
+        if (target - lon_mid) % 360.0 < 0.5:
+            b = mid
+        else:
+            a = mid
+    return 0.5 * (a + b)
 
-    start_dt = jd2dt(voc_start).in_tz(TZ)
-    end_dt   = jd2dt(voc_end).in_tz(TZ)
+# ───── Поиск точного мажорного аспекта Луны к планетам ─────
+def _aspect_function(jd_ut: float, body: int, aspect: float) -> float:
+    """f(t) = signed( (λ_Moon - λ_body) - aspect ), сводим в [-180;180]."""
+    m = _moon_lon(jd_ut)
+    p = _body_lon(jd_ut, body)
+    return _ang_diff((m - p), aspect)
 
-    cur_day = jd2dt(jd_start).in_tz(TZ).date()
-    if start_dt.date() != cur_day and end_dt.date() != cur_day:
-        return {"start": None, "end": None}
+def _find_aspects_in_interval(jd_a: float, jd_b: float) -> List[float]:
+    """Возвращает JD точных аспектов Луны к планетам в интервале [jd_a, jd_b]."""
+    roots: List[float] = []
+    step = 1.0 / 24.0  # 1 час
+    t = jd_a
+    while t < jd_b:
+        t_next = min(t + step, jd_b)
+        for body in PLANETS:
+            for asp in ASPECTS:
+                f1 = _aspect_function(t, body, asp)
+                f2 = _aspect_function(t_next, body, asp)
+                # если в окне есть корень (смена знака или малое значение)
+                if abs(f1) < ASPECT_TOL:
+                    roots.append(_refine_root(t - step, t + step, body, asp))
+                elif f1 * f2 < 0.0:
+                    roots.append(_refine_root(t, t_next, body, asp))
+        t = t_next
+    # Убираем дубликаты (иногда разные аспекты попадают почти в одно время)
+    roots = sorted(set(round(r, 6) for r in roots))
+    return roots
 
-    return {
-        "start": start_dt.format("DD.MM HH:mm"),
-        "end"  : end_dt.format("DD.MM HH:mm")
-    }
+def _refine_root(a: float, b: float, body: int, asp: float) -> float:
+    """Бисекция до точности ~1 мин."""
+    for _ in range(40):
+        m = 0.5 * (a + b)
+        fm = _aspect_function(m, body, asp)
+        if abs(fm) < 1e-4:
+            return m
+        fa = _aspect_function(a, body, asp)
+        if fa * fm <= 0.0:
+            b = m
+        else:
+            a = m
+    return 0.5 * (a + b)
 
-# ───── GPT-helpers ─────────────────────────────────────────────────────────
-async def gpt_short(date: str, phase: str) -> List[str]:
-    """3 одно-строчных совета с emoji или fallback"""
-    if GPT:
-        prompt = (
-            f"Дата {date}, фаза {phase}. Действуй как профессиональный астролог, который хорошо знает как звезды и луна влияют на человека, ты очень хочешь помогать людям делать их жизнь лучше, но при этом ты ценишь каждое слово, ты краток будто каждое слово дорого стоит."
-            " Дай 3 лаконичных совета, каждый в одной строке, с emoji: 💼 (работа), ⛔ (отложить), 🪄 (ритуал)."
-        )
-        try:
-            r = GPT.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role":"user","content":prompt}],
-                    temperature=0.65)
-            return [l.strip() for l in r.choices[0].message.content.splitlines() if l.strip()][:3]
-        except Exception:
-            pass
-    # fallback
-    return ["💼 Сфокусируйся на главном.",
-            "⛔ Отложи крупные решения.",
-            "🪄 5-минутная медитация."]
+def compute_voc_window(jd_day_start: float) -> Optional[Tuple[float, float]]:
+    """
+    Возвращает (jd_start, jd_end) периода VoC, который ПЕРЕСЕКАЕТ сутки,
+    начинающиеся в jd_day_start (UTC). Если VoC не пересекает сутки — None.
+    Логика: берём ближайший ингрeсс после полуночи и ищем последний точный аспект
+    до него в окне [ingress-3 суток; ingress].
+    """
+    jd_ing = _next_sign_ingress(jd_day_start + 1.0/24.0)  # после начала суток
+    # окно для поиска аспектов
+    jd_a = jd_ing - 3.0    # 3 суток назад
+    jd_b = jd_ing
+    roots = _find_aspects_in_interval(jd_a, jd_b)
+    last_aspect = max([r for r in roots if r < jd_ing], default=None)
+    if last_aspect is None:
+        return None  # не нашли аспектов (очень редко) — считаем без VoC
 
-async def gpt_long(name: str, month: str) -> str:
-    """Общее описание периода (1-2 предложения)"""
-    if GPT:
-        prompt = (
-            f"Месяц {month}. Фаза {name}. Действуй как профессиональный астролог, который хорошо знает как звезды и луна влияют на человека, ты очень хочешь помогать людям делать их жизнь лучше, но при этом ты ценишь каждое слово, ты краток будто каждое слово дорого стоит."
-            " Дай 2 коротких предложения, описывающих энергетику периода. Тон экспертный, вдохновляющий."
-        )
-        try:
-            r = GPT.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role":"user","content":prompt}],
-                    temperature=0.7)
-            return r.choices[0].message.content.strip()
-        except Exception:
-            pass
-    return FALLBACK_LONG[name]
+    # VoC идёт с последнего аспекта и до ингрeсса
+    voc_start = last_aspect
+    voc_end   = jd_ing
 
-# ───── основной генератор ─────────────────────────────────────────────────
-async def generate(year: int, month: int) -> Dict[str,Any]:
-    swe.set_ephe_path(".")                      # где лежат efemeris
-    first = pendulum.date(year, month, 1)
-    last  = first.end_of('month')
+    # Интересует пересечение с нашими сутками [jd_day_start, jd_day_start+1)
+    jd_day_end = jd_day_start + 1.0
+    if voc_end <= jd_day_start or voc_start >= jd_day_end:
+        return None
+    # обрезаем до границ суток (для отображения в конкретном дне)
+    return (max(voc_start, jd_day_start), min(voc_end, jd_day_end))
 
-    cal: Dict[str,Any] = {}
-    long_tasks, short_tasks = {}, []
+# ─────────────────────────── Основная генерация ──────────────────────────
+async def generate(year: int, month: int) -> Dict[str, Any]:
+    start = pendulum.datetime(year, month, 1, tz="UTC")
+    days = start.days_in_month
 
-    d = first
-    while d <= last:
-        jd = swe.julday(d.year, d.month, d.day, 0.0)
+    cal: Dict[str, Any] = {}
+    long_tasks: Dict[str, "asyncio.Task[str]"] = {}
+    short_tasks: List["asyncio.Task[List[str]]"] = []
 
-        # лунные данные
-        name, illum, sign = compute_phase(jd)
-        emoji       = EMO[name]
-        phase_time  = jd2dt(jd).in_tz(TZ).to_iso8601_string()
+    for dnum in range(1, days+1):
+        d = pendulum.datetime(year, month, dnum, tz="UTC")
+        jd_mid = swe.julday(d.year, d.month, d.day, 12.0)
+        ang = _phase_angle(jd_mid)
+        ph_name = phase_name_from_angle(ang)
+        illum = illumination(ang)
+        sign = zodiac_sign(jd_mid)
+        emoji = EMO[ph_name]
+        phase_time = d.in_timezone(TZ).to_datetime_string()
 
-        # GPT async-задачи
-        short_tasks.append(asyncio.create_task(gpt_short(d.to_date_string(), name)))
-        if name not in long_tasks:
-            long_tasks[name] = asyncio.create_task(gpt_long(name, d.format('MMMM')))
+        # VoC
+        jd0 = swe.julday(d.year, d.month, d.day, 0.0)
+        voc_jd = compute_voc_window(jd0)
+        voc_ru = None
+        if voc_jd:
+            st_utc = _jd_to_pendulum(voc_jd[0]).in_timezone(TZ).to_datetime_string()
+            en_utc = _jd_to_pendulum(voc_jd[1]).in_timezone(TZ).to_datetime_string()
+            voc_ru = {"start": st_utc, "end": en_utc}
 
-        # Void-of-Course (приближённо, внутри даты d)
-        voc = compute_voc_for_day(jd)
-
-        cal[d.to_date_string()] = {
-            "phase_name"     : name,
-            "phase"          : f"{emoji} {name} , {sign}", #"phase"          : f"{emoji} {name} в {sign} ({illum}% освещ.)",
+        key = d.to_date_string()
+        cal[key] = {
+            "phase_name"     : ph_name,
+            "phase"          : f"{emoji} {ph_name}, {sign}",
             "percent"        : illum,
             "sign"           : sign,
             "phase_time"     : phase_time,
-            "advice"         : [],          # позже
-            "long_desc"      : "",          # позже
-            "void_of_course" : voc,
+            "advice"         : [],
+            "long_desc"      : "",
+            "void_of_course" : voc_ru,
             "favorable_days" : CATS,
             "unfavorable_days": CATS,
         }
-        d = d.add(days=1)
 
-    # ждём GPT
+        # Советы для дня
+        short_tasks.append(asyncio.create_task(ai_get_advice(key, ph_name)))
+        # Длинный текст на фазу — один раз на имя фазы
+        if ph_name not in long_tasks:
+            long_tasks[ph_name] = asyncio.create_task(ai_get_phase_long(ph_name, d.format("MMMM")))
+
+    # ждём Gemini
     short_ready = await asyncio.gather(*short_tasks)
-    for idx, day in enumerate(sorted(cal)):
+    for idx, day in enumerate(sorted(cal.keys())):
         cal[day]["advice"] = short_ready[idx]
 
-    for ph_name, tsk in long_tasks.items():
+    for ph_name, task in long_tasks.items():
         try:
-            long_txt = await tsk
+            long_txt = await task
         except Exception:
-            long_txt = FALLBACK_LONG[ph_name]
+            long_txt = FALLBACK_LONG.get(ph_name, "")
         for rec in cal.values():
             if rec["phase_name"] == ph_name:
                 rec["long_desc"] = long_txt
 
     return cal
 
-# ───── entry-point ────────────────────────────────────────────────────────
+# ─────────────────────────── entry-point ─────────────────────────────────
 async def _main():
+    # WORK_DATE из env может переопределять «сегодня» (как в workflow)
     today = pendulum.today()
-    data  = await generate(today.year, today.month)
-    Path("lunar_calendar.json").write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), 'utf-8')
+    data = await generate(today.year, today.month)
+    Path("lunar_calendar.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
     print("✅ lunar_calendar.json сформирован")
 
 if __name__ == "__main__":
