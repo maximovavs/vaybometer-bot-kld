@@ -67,7 +67,7 @@ ZODIAC_ORDER = [
 LUNAR_EMOJIS = set("🌑🌒🌓🌔🌕🌖🌗🌘")
 
 # считаем «слишком короткой» описательную фразу от модели
-MIN_DESC_LEN = 60
+MIN_DESC_LEN = 50  # было 60; ослабили, чтобы пропускать нормальные абзацы Gemini
 
 # шаблоны «слишком общих» месячных формулировок
 GENERIC_PATTERNS = [
@@ -77,9 +77,8 @@ GENERIC_PATTERNS = [
     r"\bна\s+протяжении\s+месяца\b",
     r"\bс\s*1\s*по\s*3?0\b",     # с 1 по 30
     r"\b1\s*[–-]\s*3?0\b",      # 1–30
-    r"\bсентябр",               # «в сентябре ...» как единственная мысль
+    # ВАЖНО: не фильтруем просто «сентябр», иначе срежем нормальные тексты
 ]
-
 GENERIC_RE = re.compile("|".join(GENERIC_PATTERNS), re.IGNORECASE)
 
 
@@ -245,7 +244,7 @@ def _is_generic_monthwide(s: str) -> bool:
 def build_phase_blocks(data: Dict[str, Any]) -> str:
     """
     Группирует подряд идущие дни одной фазы и формирует блок HTML-строк:
-    <b>🌒 1–3 сент.</b> <i>(Лев, Дева)</i>\n<i>Описание периода…</i>\n
+    <b>🌒 1–3 сент.</b> <i> (Лев, Дева) </i>\n<i>Описание периода…</i>\n
     """
     days = sorted(data.keys())
     lines: List[str] = []
@@ -390,6 +389,8 @@ def _aggregate_favorable(rec_map: Dict[str, Any]) -> Dict[str, Any]:
     for _, rec in rec_map.items():
         fav = rec.get("favorable_days")
         if not isinstance(fav, dict):
+            fav = rec.get("fav")  # поддержка альтернативного ключа
+        if not isinstance(fav, dict):
             continue
         any_data = True
         gen = fav.get("general") or {}
@@ -464,7 +465,10 @@ def build_voc_list(data: Dict[str, Any], year: int) -> str:
     """
     items: List[str] = []
     for d in sorted(data):
-        voc = data[d].get("void_of_course")
+        rec = data[d] or {}
+        voc = rec.get("void_of_course")
+        if not isinstance(voc, dict):
+            voc = rec.get("voc")  # поддержка альтернативного имени
         if not isinstance(voc, dict):
             continue
         start_s = voc.get("start")
