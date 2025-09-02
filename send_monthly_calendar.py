@@ -133,27 +133,54 @@ def build_fav_blocks(rec: Dict[str, Any]) -> str:
 
 def build_voc_list(data: Dict[str, Any], year: int) -> str:
     """
-    Собирает все VoC длительностью ≥ MIN_VOC_MINUTES:
-    02.06 14:30 → 02.06 15:10
+    Собирает все VoC длительностью ≥ MIN_VOC_MINUTES.
+    Терпимо относится к void_of_course=None и убирает дубли (когда
+    один и тот же интервал попал в два соседних дня).
+    Возвращает готовый HTML-блок или пустую строку.
     """
-    items: List[str] = []
-    for d in sorted(data):
-        voc = data[d].get("void_of_course", {})
-        start_s = voc.get("start")
-        end_s = voc.get("end")
-        if not start_s or not end_s:
+    intervals: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
+
+    # собрать интервалы со всех дней
+    for day_key in sorted(data):
+        rec = data[day_key] or {}
+        voc = rec.get("void_of_course")
+        if not voc or not isinstance(voc, dict):
             continue
+        start_s = voc.get("start")
+        end_s   = voc.get("end")
+        if not (isinstance(start_s, str) and isinstance(end_s, str)):
+            continue
+
         t1 = _parse_dt(start_s, year)
         t2 = _parse_dt(end_s, year)
         if not t1 or not t2:
             continue
+        # фильтр по минимальной длительности
         if (t2 - t1).in_minutes() < MIN_VOC_MINUTES:
             continue
-        items.append(f"{t1.format('DD.MM HH:mm')}  →  {t2.format('DD.MM HH:mm')}")
+        # sanity
+        if t2 <= t1:
+            continue
 
-    if not items:
+        intervals.append((t1, t2))
+
+    if not intervals:
         return ""
-    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(items)
+
+    # удалить дубли (по ISO-парам) и отсортировать
+    seen = set()
+    uniq: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
+    for t1, t2 in sorted(intervals, key=lambda x: (x[0], x[1])):
+        key = (t1.to_iso8601_string(), t2.to_iso8601_string())
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append((t1, t2))
+
+    lines = [f"{t1.format('DD.MM HH:mm')}  →  {t2.format('DD.MM HH:mm')}" for t1, t2 in uniq]
+    if not lines:
+        return ""
+    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(lines)
 
 
 def build_message(data: Dict[str, Any]) -> str:
