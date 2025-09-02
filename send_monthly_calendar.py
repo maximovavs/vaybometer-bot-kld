@@ -10,10 +10,12 @@ send_monthly_calendar.py
 • фильтрует Void-of-Course короче MIN_VOC_MINUTES
 """
 
+from __future__ import annotations
 import os
 import json
 import asyncio
 import html
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -59,10 +61,40 @@ def _parse_dt(s: str, year: int) -> Optional[pendulum.DateTime]:
             return None
 
 
+def _derive_phase_name_and_sign(rec: Dict[str, Any]) -> tuple[str, Optional[str]]:
+    """
+    Безопасно достаём название фазы и знак.
+    • Если phase_name отсутствует — берём из 'phase' (убираем эмодзи и хвост после запятой).
+    • Если sign отсутствует — пробуем вытащить из 'phase' (часть после запятой).
+    """
+    # 1) Фаза
+    name = (rec.get("phase_name") or "").strip()
+    if not name:
+        phase_text = (rec.get("phase") or "").strip()
+        # убираем ведущие эмодзи/символы и берём часть до запятой
+        # пример: "🌓 Первая четверть , Дева" → "Первая четверть"
+        tmp = re.sub(r"^\W+", "", phase_text)  # срезаем эмодзи и префикс
+        name = tmp.split(",")[0].strip() if tmp else ""
+
+    # 2) Знак
+    sign = rec.get("sign")
+    if not sign:
+        phase_text = (rec.get("phase") or "")
+        if "," in phase_text:
+            sign = phase_text.split(",")[-1].strip() or None
+
+    return name or "", sign
+
+
 def build_phase_blocks(data: Dict[str, Any]) -> str:
     """
     Группирует подряд идущие дни одной фазы и формирует блок HTML-строк:
     <b>🌒 1–3</b> <i>(Лев, Дева)</i>\n<i>Описание периода…</i>\n
+
+    Теперь устойчиво работает даже если в JSON нет phase_name/sign:
+    • фаза и знак будут восстановлены из поля 'phase';
+    • при отсутствии знаков скобки не выводятся;
+    • при полном отсутствии имени фазы группировка распадается на отдельные дни.
     """
     zodiac_order = [
         "Овен","Телец","Близнецы","Рак","Лев","Дева",
@@ -75,30 +107,56 @@ def build_phase_blocks(data: Dict[str, Any]) -> str:
     while i < len(days):
         start = days[i]
         rec = data[start]
-        name = rec.get("phase_name", "")
-        # "phase" хранит строку вида "🌒 Первая четверть , Дева"
-        emoji = rec.get("phase", "").split()[0]
-        signs = {rec.get("sign", "")}
 
-        # ищем, пока фаза остаётся той же
+        # Эмодзи пытаемся взять из 'phase' (первое «слово»)
+        emoji = (rec.get("phase") or "").strip().split(" ")[0] or "🌙"
+
+        # Нормализуем имя фазы и знак
+        name, sign_first = _derive_phase_name_and_sign(rec)
+        if not name:
+            # нет имени фазы вообще — чтобы не «склеивать» в один блок, используем уникальное имя
+            name = f"__day_{start}__"
+
+        signs = set()
+        if sign_first:
+            signs.add(sign_first)
+
+        # Продлеваем диапазон, пока имя фазы одинаковое
         j = i
-        while j + 1 < len(days) and data[days[j + 1]].get("phase_name") == name:
+        while j + 1 < len(days):
+            next_rec = data[days[j + 1]]
+            next_name, next_sign = _derive_phase_name_and_sign(next_rec)
+            if not next_name:
+                next_name = f"__day_{days[j+1]}__"
+            if next_name != name:
+                break
+            if next_sign:
+                signs.add(next_sign)
             j += 1
-            signs.add(data[days[j]].get("sign", ""))
 
-        # форматируем диапазон дат
+        # Диапазон дат
         d1 = pendulum.parse(start).format("D")
         d2 = pendulum.parse(days[j]).format("D MMM", locale="ru")
         span = f"{d1}–{d2}" if i != j else d2
 
-        # список знаков в нужном порядке
-        sorted_signs = sorted(signs, key=lambda x: zodiac_order.index(x) if x in zodiac_order else 0)
+        # Сортируем знаки в зодиакальном порядке и убираем пустые
+        sorted_signs = [s for s in sorted(signs, key=lambda x: zodiac_order.index(x) if x in zodiac_order else 99) if s]
         signs_str = ", ".join(sorted_signs)
 
-        # длинное описание (long_desc) может содержать HTML
-        desc = html.escape(rec.get("long_desc", "").strip())
+        # Длинное описание (long_desc) может содержать HTML — экранируем для безопасности
+        desc = html.escape((rec.get("long_desc") or "").strip())
 
-        lines.append(f"<b>{emoji} {span}</b> <i>({signs_str})</i>\n<i>{desc}</i>\n")
+        # Если имя фазы было подставлено «техническим» (__day_*__), оно нам не нужно в тексте
+        # Заголовок блока строим только из эмодзи и дат + (знаки если есть)
+        header = f"<b>{emoji} {span}</b>"
+        if signs_str:
+            header += f" <i>({signs_str})</i>"
+
+        if desc:
+            lines.append(f"{header}\n<i>{desc}</i>\n")
+        else:
+            lines.append(f"{header}\n")
+
         i = j + 1
 
     return "\n".join(lines)
@@ -114,15 +172,20 @@ def build_fav_blocks(rec: Dict[str, Any]) -> str:
     🛍️ Покупки: 1, 2, 7
     ❤️ Здоровье: 20, 21, 27
     """
-    fav = rec.get("favorable_days", {})
-    general = fav.get("general", {})
+    fav = rec.get("favorable_days", {}) or {}
+    general = fav.get("general", {}) or {}
+
     def fmt_list(key: str) -> str:
-        lst = fav.get(key, {}).get("favorable", [])
+        lst = (fav.get(key, {}) or {}).get("favorable", []) or []
+        return ", ".join(map(str, lst)) if lst else "—"
+
+    def fmt_main(key: str) -> str:
+        lst = (general.get(key, []) or [])
         return ", ".join(map(str, lst)) if lst else "—"
 
     parts = [
-        f"✅ <b>Благоприятные:</b> {', '.join(map(str, general.get('favorable', [])) or ['—'])}",
-        f"❌ <b>Неблагоприятные:</b> {', '.join(map(str, general.get('unfavorable', [])) or ['—'])}",
+        f"✅ <b>Благоприятные:</b> {fmt_main('favorable')}",
+        f"❌ <b>Неблагоприятные:</b> {fmt_main('unfavorable')}",
         f"✂️ <b>Стрижка:</b> {fmt_list('haircut')}",
         f"✈️ <b>Путешествия:</b> {fmt_list('travel')}",
         f"🛍️ <b>Покупки:</b> {fmt_list('shopping')}",
@@ -133,61 +196,27 @@ def build_fav_blocks(rec: Dict[str, Any]) -> str:
 
 def build_voc_list(data: Dict[str, Any], year: int) -> str:
     """
-    Собирает все VoC длительностью ≥ MIN_VOC_MINUTES.
-    Терпимо относится к void_of_course=None, убирает дубли,
-    и СКЛЕИВАЕТ соприкасающиеся интервалы (разрыв ≤ 1 мин).
-    Возвращает готовый HTML-блок или пустую строку.
+    Собирает все VoC длительностью ≥ MIN_VOC_MINUTES:
+    02.06 14:30 → 02.06 15:10
     """
-    intervals: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
-
-    # собрать интервалы со всех дней
-    for day_key in sorted(data):
-        rec = data[day_key] or {}
-        voc = rec.get("void_of_course")
-        if not voc or not isinstance(voc, dict):
+    items: List[str] = []
+    for d in sorted(data):
+        voc = data[d].get("void_of_course") or {}
+        start_s = voc.get("start")
+        end_s = voc.get("end")
+        if not start_s or not end_s:
             continue
-        start_s = voc.get("start"); end_s = voc.get("end")
-        if not (isinstance(start_s, str) and isinstance(end_s, str)):
-            continue
-
         t1 = _parse_dt(start_s, year)
         t2 = _parse_dt(end_s, year)
-        if not t1 or not t2 or t2 <= t1:
+        if not t1 or not t2:
             continue
         if (t2 - t1).in_minutes() < MIN_VOC_MINUTES:
             continue
+        items.append(f"{t1.format('DD.MM HH:mm')}  →  {t2.format('DD.MM HH:mm')}")
 
-        intervals.append((t1, t2))
-
-    if not intervals:
+    if not items:
         return ""
-
-    # удалить дубли и отсортировать
-    seen = set()
-    uniq: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
-    for t1, t2 in sorted(intervals, key=lambda x: (x[0], x[1])):
-        key = (t1.to_iso8601_string(), t2.to_iso8601_string())
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append((t1, t2))
-
-    # склейка «контакта» (разрыв ≤ 1 мин)
-    merged: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
-    for t1, t2 in uniq:
-        if not merged:
-            merged.append((t1, t2))
-            continue
-        p1, p2 = merged[-1]
-        gap_min = (t1 - p2).in_minutes()
-        if gap_min is not None and -1 <= gap_min <= 1:
-            # соприкасаются/перекрываются — расширяем прошлый
-            merged[-1] = (p1, max(p2, t2))
-        else:
-            merged.append((t1, t2))
-
-    lines = [f"{a.format('DD.MM HH:mm')}  →  {b.format('DD.MM HH:mm')}" for a, b in merged]
-    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(lines) if lines else ""
+    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(items)
 
 
 def build_message(data: Dict[str, Any]) -> str:
@@ -199,6 +228,9 @@ def build_message(data: Dict[str, Any]) -> str:
     4) Блок VoC (если есть)
     5) Пояснение про VoC
     """
+    if not data:
+        raise RuntimeError("lunar_calendar.json пуст")
+
     # первая дата в словаре, используется для заголовка
     first_key = sorted(data.keys())[0]
     first_day = pendulum.parse(first_key)
@@ -206,7 +238,7 @@ def build_message(data: Dict[str, Any]) -> str:
 
     phases_block = build_phase_blocks(data)
 
-    # берем первый элемент словаря, чтобы получить список favorable_days
+    # берём первый элемент словаря, чтобы получить список favorable_days
     example_rec = next(iter(data.values()), {})
     fav_block = build_fav_blocks(example_rec)
 
