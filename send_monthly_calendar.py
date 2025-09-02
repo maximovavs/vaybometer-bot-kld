@@ -134,8 +134,8 @@ def build_fav_blocks(rec: Dict[str, Any]) -> str:
 def build_voc_list(data: Dict[str, Any], year: int) -> str:
     """
     Собирает все VoC длительностью ≥ MIN_VOC_MINUTES.
-    Терпимо относится к void_of_course=None и убирает дубли (когда
-    один и тот же интервал попал в два соседних дня).
+    Терпимо относится к void_of_course=None, убирает дубли,
+    и СКЛЕИВАЕТ соприкасающиеся интервалы (разрыв ≤ 1 мин).
     Возвращает готовый HTML-блок или пустую строку.
     """
     intervals: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
@@ -146,20 +146,15 @@ def build_voc_list(data: Dict[str, Any], year: int) -> str:
         voc = rec.get("void_of_course")
         if not voc or not isinstance(voc, dict):
             continue
-        start_s = voc.get("start")
-        end_s   = voc.get("end")
+        start_s = voc.get("start"); end_s = voc.get("end")
         if not (isinstance(start_s, str) and isinstance(end_s, str)):
             continue
 
         t1 = _parse_dt(start_s, year)
         t2 = _parse_dt(end_s, year)
-        if not t1 or not t2:
+        if not t1 or not t2 or t2 <= t1:
             continue
-        # фильтр по минимальной длительности
         if (t2 - t1).in_minutes() < MIN_VOC_MINUTES:
-            continue
-        # sanity
-        if t2 <= t1:
             continue
 
         intervals.append((t1, t2))
@@ -167,7 +162,7 @@ def build_voc_list(data: Dict[str, Any], year: int) -> str:
     if not intervals:
         return ""
 
-    # удалить дубли (по ISO-парам) и отсортировать
+    # удалить дубли и отсортировать
     seen = set()
     uniq: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
     for t1, t2 in sorted(intervals, key=lambda x: (x[0], x[1])):
@@ -177,10 +172,22 @@ def build_voc_list(data: Dict[str, Any], year: int) -> str:
         seen.add(key)
         uniq.append((t1, t2))
 
-    lines = [f"{t1.format('DD.MM HH:mm')}  →  {t2.format('DD.MM HH:mm')}" for t1, t2 in uniq]
-    if not lines:
-        return ""
-    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(lines)
+    # склейка «контакта» (разрыв ≤ 1 мин)
+    merged: List[tuple[pendulum.DateTime, pendulum.DateTime]] = []
+    for t1, t2 in uniq:
+        if not merged:
+            merged.append((t1, t2))
+            continue
+        p1, p2 = merged[-1]
+        gap_min = (t1 - p2).in_minutes()
+        if gap_min is not None and -1 <= gap_min <= 1:
+            # соприкасаются/перекрываются — расширяем прошлый
+            merged[-1] = (p1, max(p2, t2))
+        else:
+            merged.append((t1, t2))
+
+    lines = [f"{a.format('DD.MM HH:mm')}  →  {b.format('DD.MM HH:mm')}" for a, b in merged]
+    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(lines) if lines else ""
 
 
 def build_message(data: Dict[str, Any]) -> str:
