@@ -1,3121 +1,751 @@
 {
   "2025-09-01": {
-    "phase_name": "Первая четверть",
-    "phase": "🌓 Первая четверть, Стрелец",
-    "percent": 62,
-    "sign": "Стрелец",
-    "phase_time": "2025-09-01 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-02 02:36:43",
-      "end": "2025-09-02 03:00:00"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-02": {
-    "phase_name": "Растущая Луна",
-    "phase": "🌔 Растущая Луна, Козерог",
-    "percent": 71,
-    "sign": "Козерог",
-    "phase_time": "2025-09-02 03:00:00",
-    "advice": [
-      "💼 Начните новый проект, но не переусердствуйте.",
-      "⛔  Отложите важные решения до следующей недели.",
-      "🪄 Побалуйте себя чем-то приятным сегодня вечером."
-    ],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-02 03:00:00",
-      "end": "2025-09-02 03:46:09"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-03": {
-    "phase_name": "Растущая Луна",
-    "phase": "🌔 Растущая Луна, Козерог",
-    "percent": 80,
-    "sign": "Козерог",
-    "phase_time": "2025-09-03 03:00:00",
-    "advice": [
-      "💼 Начните новый проект или задачу.",
-      "⛔ Отложите важные решения на пару дней.",
-      "🪄 Побалуйте себя чем-то приятным."
-    ],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-03 15:50:21",
-      "end": "2025-09-04 03:00:00"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-04": {
-    "phase_name": "Растущая Луна",
-    "phase": "🌔 Растущая Луна, Водолей",
-    "percent": 87,
-    "sign": "Водолей",
-    "phase_time": "2025-09-04 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-04 03:00:00",
-      "end": "2025-09-04 12:36:53"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-05": {
-    "phase_name": "Растущая Луна",
-    "phase": "🌔 Растущая Луна, Водолей",
-    "percent": 94,
-    "sign": "Водолей",
-    "phase_time": "2025-09-05 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-05 23:51:26",
-      "end": "2025-09-06 03:00:00"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-06": {
-    "phase_name": "Полнолуние",
-    "phase": "🌕 Полнолуние, Водолей",
-    "percent": 98,
-    "sign": "Водолей",
-    "phase_time": "2025-09-06 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-06 03:00:00",
-      "end": "2025-09-06 19:59:59"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-07": {
-    "phase_name": "Полнолуние",
-    "phase": "🌕 Полнолуние, Рыбы",
-    "percent": 100,
-    "sign": "Рыбы",
-    "phase_time": "2025-09-07 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-08": {
-    "phase_name": "Полнолуние",
-    "phase": "🌕 Полнолуние, Рыбы",
-    "percent": 99,
-    "sign": "Рыбы",
-    "phase_time": "2025-09-08 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-09": {
-    "phase_name": "Убывающая Луна",
-    "phase": "🌖 Убывающая Луна, Овен",
-    "percent": 96,
-    "sign": "Овен",
-    "phase_time": "2025-09-09 03:00:00",
-    "advice": [
-      "💼 Завершайте начатые проекты.",
-      "⛔  Отложите важные решения.",
-      "🪄  Побалуйте себя чем-то приятным."
-    ],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-10": {
-    "phase_name": "Убывающая Луна",
-    "phase": "🌖 Убывающая Луна, Овен",
-    "percent": 90,
-    "sign": "Овен",
-    "phase_time": "2025-09-10 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-10 09:53:38",
-      "end": "2025-09-10 22:14:04"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-11": {
-    "phase_name": "Убывающая Луна",
-    "phase": "🌖 Убывающая Луна, Телец",
-    "percent": 82,
-    "sign": "Телец",
-    "phase_time": "2025-09-11 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-12": {
-    "phase_name": "Убывающая Луна",
-    "phase": "🌖 Убывающая Луна, Телец",
-    "percent": 72,
-    "sign": "Телец",
-    "phase_time": "2025-09-12 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-12 23:13:59",
-      "end": "2025-09-12 23:48:18"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-13": {
-    "phase_name": "Последняя четверть",
-    "phase": "🌗 Последняя четверть, Близнецы",
-    "percent": 61,
-    "sign": "Близнецы",
-    "phase_time": "2025-09-13 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-14": {
-    "phase_name": "Последняя четверть",
-    "phase": "🌗 Последняя четверть, Близнецы",
-    "percent": 49,
-    "sign": "Близнецы",
-    "phase_time": "2025-09-14 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-15 01:46:22",
-      "end": "2025-09-15 02:38:28"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-15": {
-    "phase_name": "Последняя четверть",
-    "phase": "🌗 Последняя четверть, Рак",
-    "percent": 38,
-    "sign": "Рак",
-    "phase_time": "2025-09-15 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-16": {
-    "phase_name": "Убывающий серп",
-    "phase": "🌘 Убывающий серп, Рак",
-    "percent": 28,
-    "sign": "Рак",
-    "phase_time": "2025-09-16 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-17": {
-    "phase_name": "Убывающий серп",
-    "phase": "🌘 Убывающий серп, Лев",
-    "percent": 19,
-    "sign": "Лев",
-    "phase_time": "2025-09-17 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-17 06:13:35",
-      "end": "2025-09-17 07:25:58"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-18": {
-    "phase_name": "Убывающий серп",
-    "phase": "🌘 Убывающий серп, Лев",
-    "percent": 11,
-    "sign": "Лев",
-    "phase_time": "2025-09-18 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-19": {
-    "phase_name": "Убывающий серп",
-    "phase": "🌘 Убывающий серп, Лев",
-    "percent": 5,
-    "sign": "Лев",
-    "phase_time": "2025-09-19 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-19 11:39:51",
-      "end": "2025-09-19 14:26:58"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-20": {
-    "phase_name": "Новолуние",
-    "phase": "🌑 Новолуние, Дева",
-    "percent": 2,
-    "sign": "Дева",
-    "phase_time": "2025-09-20 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-21": {
-    "phase_name": "Новолуние",
-    "phase": "🌑 Новолуние, Дева",
-    "percent": 0,
-    "sign": "Дева",
-    "phase_time": "2025-09-21 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-21 22:54:09",
-      "end": "2025-09-21 23:42:27"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-22": {
-    "phase_name": "Новолуние",
-    "phase": "🌑 Новолуние, Весы",
-    "percent": 0,
-    "sign": "Весы",
-    "phase_time": "2025-09-22 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-23": {
-    "phase_name": "Новолуние",
-    "phase": "🌑 Новолуние, Весы",
-    "percent": 3,
-    "sign": "Весы",
-    "phase_time": "2025-09-23 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-23 19:01:59",
-      "end": "2025-09-24 03:00:00"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-24": {
-    "phase_name": "Растущий серп",
-    "phase": "🌒 Растущий серп, Скорпион",
-    "percent": 7,
-    "sign": "Скорпион",
-    "phase_time": "2025-09-24 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-24 03:00:00",
-      "end": "2025-09-24 11:00:12"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-25": {
-    "phase_name": "Растущий серп",
-    "phase": "🌒 Растущий серп, Скорпион",
-    "percent": 12,
-    "sign": "Скорпион",
-    "phase_time": "2025-09-25 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-26": {
-    "phase_name": "Растущий серп",
-    "phase": "🌒 Растущий серп, Скорпион",
-    "percent": 19,
-    "sign": "Скорпион",
-    "phase_time": "2025-09-26 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-26 20:44:03",
-      "end": "2025-09-26 23:36:17"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-27": {
-    "phase_name": "Растущий серп",
-    "phase": "🌒 Растущий серп, Стрелец",
-    "percent": 27,
-    "sign": "Стрелец",
-    "phase_time": "2025-09-27 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-28": {
-    "phase_name": "Первая четверть",
-    "phase": "🌓 Первая четверть, Стрелец",
-    "percent": 36,
-    "sign": "Стрелец",
-    "phase_time": "2025-09-28 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-29": {
-    "phase_name": "Первая четверть",
-    "phase": "🌓 Первая четверть, Козерог",
-    "percent": 45,
-    "sign": "Козерог",
-    "phase_time": "2025-09-29 03:00:00",
-    "advice": [],
-    "long_desc": "",
-    "void_of_course": {
-      "start": "2025-09-29 08:43:59",
-      "end": "2025-09-29 11:55:30"
-    },
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
+    "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   },
   "2025-09-30": {
-    "phase_name": "Первая четверть",
-    "phase": "🌓 Первая четверть, Козерог",
-    "percent": 55,
-    "sign": "Козерог",
-    "phase_time": "2025-09-30 03:00:00",
-    "advice": [],
-    "long_desc": "",
+    "phase_name": "Фаза Луны",
+    "phase": "🌙 Фаза Луны",
+    "sign": "",
+    "long_desc": "Энергии сентябре поддерживают неспешный, осознанный прогресс. Доверяйте циклам и выстраивайте планы с оглядкой на внутренний ритм.",
     "void_of_course": null,
     "favorable_days": {
       "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
+        "favorable": [],
+        "unfavorable": []
       },
       "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
+        "favorable": []
       },
       "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
-      }
-    },
-    "unfavorable_days": {
-      "general": {
-        "favorable": [
-          2,
-          3,
-          9,
-          27
-        ],
-        "unfavorable": [
-          13,
-          14,
-          24
-        ]
-      },
-      "haircut": {
-        "favorable": [
-          2,
-          3,
-          9
-        ],
-        "unfavorable": []
-      },
-      "travel": {
-        "favorable": [
-          4,
-          5
-        ],
-        "unfavorable": []
-      },
-      "shopping": {
-        "favorable": [
-          1,
-          2,
-          7
-        ],
-        "unfavorable": []
-      },
-      "health": {
-        "favorable": [
-          20,
-          21,
-          27
-        ],
-        "unfavorable": []
+        "favorable": []
       }
     }
   }
