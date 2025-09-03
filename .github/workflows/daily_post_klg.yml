@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: 📥 Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 🔍 Проверка сети Schumann и Open-Meteo
         run: |
@@ -44,7 +44,9 @@ jobs:
 
       - name: 🚀 Run VayбоМетр poster
         env:
-          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
           TELEGRAM_TOKEN_KLG:  ${{ secrets.TELEGRAM_TOKEN_KLG }}
           CHANNEL_ID_KLG:      ${{ secrets.CHANNEL_ID_KLG }}
           OWM_KEY:         ${{ secrets.OWM_KEY }}
