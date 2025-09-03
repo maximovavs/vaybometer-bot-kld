@@ -11,9 +11,6 @@ gen_lunar_calendar.py
 • long_desc   – 1-2 предложения на фазу (разово на месяц)
 • void_of_course: {start, end}  (UTC → Asia/Nicosia в JSON)
 • favorable_days / unfavorable_days – словари CATS
-
-ENV:
-  GEN_SKIP_SHORT = "1"  → пропускать генерацию ежедневных коротких советов (для месячного прогона)
 """
 
 import os, json, math, asyncio, random, re
@@ -24,7 +21,7 @@ import pendulum, swisseph as swe
 from gpt import gpt_complete  # используем общую обёртку
 
 TZ = pendulum.timezone("Asia/Nicosia")
-SKIP_SHORT = os.getenv("GEN_SKIP_SHORT", "0") == "1"
+SKIP_SHORT = os.getenv("GEN_SKIP_SHORT", "").strip().lower() in ("1", "true", "yes", "on")
 
 EMO = {
     "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓","Растущая Луна":"🌔",
@@ -41,6 +38,12 @@ FALLBACK_LONG: Dict[str,str] = {
     "Последняя четверть":"Аналитика, ретроспектива и пересмотр стратегии.",
     "Убывающий серп"   :"Отдых, ретриты, подготовка к новому циклу.",
 }
+
+FALLBACK_SHORT = [
+    "💼 Сфокусируйся на главном.",
+    "⛔ Отложи крупные решения.",
+    "🪄 5-минутная медитация.",
+]
 
 # «карманные» даты (пример — замените на реальные свои таблицы)
 CATS = {
@@ -92,55 +95,60 @@ def _has_major_lunar_aspect(jd: float) -> bool:
 
 def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
     """
-    Находит интервал Void-of-Course внутри суток jd_start (00:00 UT).
+    Находит интервал Void-of-Course, пересекающий сутки jd_start (00:00 UT).
     Алгоритм:
-      1) ищем ближайший переход Луны в следующий знак (sign_change_jd) вплоть до нескольких суток вперёд,
-         с более частым шагом и уточняем границу бинарным поиском;
-      2) от него идём назад с шагом 10 мин, пока снова встречаем аспект —
-         это конец последнего аспекта → начало VoC.
-    Если оба края интервала не попадают в текущие календарные сутки (локальные), возвращаем start/end = None.
+      1) ищем ближайший переход Луны в следующий знак (sign_change_jd), двигаясь вперёд;
+      2) от него «идём назад» шагом 10 мин, пока снова встретим аспект —
+         это конец последнего аспекта → начало VoC;
+      3) возвращаем пересечение [VoC_start, sign_change] с календарными сутками.
     """
-    # 1) ближайший переход знака (скан вперёд до 3 суток, шаг 5 минут)
+    # 0) защитный лимит, чтобы не уйти далеко
+    MAX_HOURS_LOOKAHEAD = 72
+
+    # 1) ближайший переход знака
     sign0 = int(swe.calc_ut(jd_start, swe.MOON)[0][0] // 30)
-    step = 5 / 1440.0          # 5 минут в днях
-    max_ahead_days = 3.0       # защитный предел
     jd = jd_start
-    sign_change = None
-    while True:
+    step = 1/24  # 1 час
+    hours = 0.0
+    while hours <= MAX_HOURS_LOOKAHEAD:
         jd += step
-        if jd - jd_start > max_ahead_days:
-            return {"start": None, "end": None}
+        hours += 1.0
         if int(swe.calc_ut(jd, swe.MOON)[0][0] // 30) != sign0:
-            # уточняем границу смены знака бинарным поиском до ~1 минуты
-            lo, hi = jd - step, jd
-            for _ in range(10):
-                mid = (lo + hi) / 2
-                if int(swe.calc_ut(mid, swe.MOON)[0][0] // 30) != sign0:
-                    hi = mid
-                else:
-                    lo = mid
-            sign_change = hi
+            sign_change = jd
             break
+    else:
+        # не нашли переход знака в разумных пределах
+        return {"start": None, "end": None}
 
     # 2) идём назад до последнего аспекта
     jd_back = sign_change
-    step_b  = 10 / 1440.0      # 10 минут
-    limit_back = sign_change - 1.5  # не дальше 1.5 суток назад
-    while jd_back > max(jd_start, limit_back) and not _has_major_lunar_aspect(jd_back):
+    step_b  = 10 / 1440   # 10 минут
+    while jd_back > jd_start and not _has_major_lunar_aspect(jd_back):
         jd_back -= step_b
     voc_start = jd_back
     voc_end   = sign_change
 
+    # 3) пересечение с календарными сутками (локальная TZ)
     start_dt = jd2dt(voc_start).in_tz(TZ)
     end_dt   = jd2dt(voc_end).in_tz(TZ)
 
-    cur_day = jd2dt(jd_start).in_tz(TZ).date()
-    if start_dt.date() != cur_day and end_dt.date() != cur_day:
+    day_start = jd2dt(jd_start).in_tz(TZ).start_of("day")
+    day_end   = day_start.add(days=1)
+
+    # если интервал не пересекается с сутками — нет VoC для этого дня
+    if not (start_dt < day_end and end_dt > day_start):
+        return {"start": None, "end": None}
+
+    # обрезаем по границам суток
+    s = max(start_dt, day_start)
+    e = min(end_dt,   day_end)
+
+    if e <= s:
         return {"start": None, "end": None}
 
     return {
-        "start": start_dt.format("DD.MM HH:mm"),
-        "end"  : end_dt.format("DD.MM HH:mm")
+        "start": s.format("DD.MM HH:mm"),
+        "end"  : e.format("DD.MM HH:mm")
     }
 
 # ───── санитизация текста ─────────────────────────────────────────────────
@@ -172,12 +180,7 @@ async def gpt_short(date: str, phase: str) -> List[str]:
             return lines[:3]
     except Exception:
         pass
-    # fallback
-    return [
-        "💼 Сфокусируйся на главном.",
-        "⛔ Отложи крупные решения.",
-        "🪄 5-минутная медитация.",
-    ]
+    return FALLBACK_SHORT[:]
 
 async def gpt_long(name: str, month: str) -> str:
     """Общее описание периода (1-2 предложения)"""
@@ -217,14 +220,18 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
         emoji       = EMO[name]
         phase_time  = jd2dt(jd).in_tz(TZ).to_iso8601_string()
 
-        # GPT async-задачи
-        if not SKIP_SHORT:
+        # короткие советы
+        if SKIP_SHORT:
+            short = FALLBACK_SHORT[:]
+        else:
+            short = []
             short_tasks.append(asyncio.create_task(gpt_short(d.to_date_string(), name)))
+
+        # длинные (один раз на фазу)
         if name not in long_tasks:
-            # месяц в подсказку больше не передаём (чтобы не вызывал англицизмы)
             long_tasks[name] = asyncio.create_task(gpt_long(name, ""))
 
-        # Void-of-Course (приближённо, внутри даты d)
+        # Void-of-Course (пересечение с сутками)
         voc = compute_voc_for_day(jd)
 
         cal[d.to_date_string()] = {
@@ -233,7 +240,7 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
             "percent"        : illum,
             "sign"           : sign,
             "phase_time"     : phase_time,
-            "advice"         : [],          # позже (или пусто при SKIP_SHORT)
+            "advice"         : short,       # либо LLM позже, либо сразу фолбэк
             "long_desc"      : "",          # позже
             "void_of_course" : voc,
             "favorable_days" : CATS,
@@ -241,13 +248,13 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
         }
         d = d.add(days=1)
 
-    # ждём GPT (короткие советы) — только если не отключали
+    # дожидаемся коротких советов, если не пропущены
     if not SKIP_SHORT and short_tasks:
         short_ready = await asyncio.gather(*short_tasks)
         for idx, day in enumerate(sorted(cal)):
             cal[day]["advice"] = short_ready[idx]
 
-    # длинные описания по одной задаче на фазу
+    # подтягиваем длинные описания на каждую дату своей фазы
     for ph_name, tsk in long_tasks.items():
         try:
             long_txt = await tsk
