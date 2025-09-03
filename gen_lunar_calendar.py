@@ -144,8 +144,10 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
 
     if found_aspect:
         voc_start = jd_back + step_b  # старт VoC — сразу после последнего аспекта
-        _dlog("• последний аспект:", jd2dt(jd_back).in_tz(TZ).format("DD.MM HH:mm"),
-              "→ старт VoC", jd2dt(voc_start).in_tz(TZ).format("DD.MM HH:mm"))
+        _dlog("• последний аспект:",
+              jd2dt(jd_back).in_tz(TZ).format("DD.MM HH:mm"),
+              "→ старт VoC",
+              jd2dt(voc_start).in_tz(TZ).format("DD.MM HH:mm"))
     else:
         voc_start = jd_start           # аспект до начала суток — VoC уже шёл с полуночи
         _dlog("• аспект не найден в этих сутках — VoC с полуночи")
@@ -300,4 +302,3 @@ async def _main():
 
 if __name__ == "__main__":
     asyncio.run(_main())
-```0
