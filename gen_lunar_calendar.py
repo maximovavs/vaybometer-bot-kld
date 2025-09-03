@@ -98,35 +98,45 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
     Находит интервал Void-of-Course, пересекающий сутки jd_start (00:00 UT).
     Алгоритм:
       1) ищем ближайший переход Луны в следующий знак (sign_change_jd), двигаясь вперёд;
-      2) от него «идём назад» шагом 10 мин, пока снова встретим аспект —
-         это конец последнего аспекта → начало VoC;
-      3) возвращаем пересечение [VoC_start, sign_change] с календарными сутками.
+      2) от него идём назад шагом 10 мин, пока НЕ встретим аспект — это зона VoC;
+         последняя точка, где аспект ЕСТЬ, +10 мин → старт VoC;
+      3) возвращаем пересечение [VoC_start, sign_change] с локальными сутками.
     """
-    # 0) защитный лимит, чтобы не уйти далеко
     MAX_HOURS_LOOKAHEAD = 72
 
-    # 1) ближайший переход знака
+    # 1) ближайший переход знака (полчасовой шаг точнее и надёжнее)
     sign0 = int(swe.calc_ut(jd_start, swe.MOON)[0][0] // 30)
     jd = jd_start
-    step = 1/24  # 1 час
+    step_forward = 1/48  # 30 минут
     hours = 0.0
+    sign_change = None
     while hours <= MAX_HOURS_LOOKAHEAD:
-        jd += step
-        hours += 1.0
+        jd += step_forward
+        hours += 0.5
         if int(swe.calc_ut(jd, swe.MOON)[0][0] // 30) != sign0:
             sign_change = jd
             break
-    else:
-        # не нашли переход знака в разумных пределах
+    if sign_change is None:
         return {"start": None, "end": None}
 
-    # 2) идём назад до последнего аспекта
-    jd_back = sign_change
+    # 2) идём назад от момента смены знака и ищем последний аспект
     step_b  = 10 / 1440   # 10 минут
-    while jd_back > jd_start and not _has_major_lunar_aspect(jd_back):
+    jd_back = sign_change - step_b  # начнём немного раньше, чем сам переход
+    found_aspect = False
+    while jd_back > jd_start:
+        if _has_major_lunar_aspect(jd_back):
+            found_aspect = True
+            break
         jd_back -= step_b
-    voc_start = jd_back
-    voc_end   = sign_change
+
+    if found_aspect:
+        # старт VoC — сразу после последнего аспекта
+        voc_start = jd_back + step_b
+    else:
+        # аспект до начала суток — VoC уже шёл с полуночи
+        voc_start = jd_start
+
+    voc_end = sign_change
 
     # 3) пересечение с календарными сутками (локальная TZ)
     start_dt = jd2dt(voc_start).in_tz(TZ)
@@ -135,14 +145,11 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
     day_start = jd2dt(jd_start).in_tz(TZ).start_of("day")
     day_end   = day_start.add(days=1)
 
-    # если интервал не пересекается с сутками — нет VoC для этого дня
     if not (start_dt < day_end and end_dt > day_start):
         return {"start": None, "end": None}
 
-    # обрезаем по границам суток
     s = max(start_dt, day_start)
     e = min(end_dt,   day_end)
-
     if e <= s:
         return {"start": None, "end": None}
 
