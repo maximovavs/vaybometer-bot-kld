@@ -45,38 +45,23 @@ jobs:
         echo "WORK_DATE=${work_date:-}" >> $GITHUB_ENV
 
     # 3. Python
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v4
       with:
         python-version: '3.11'
-        cache: 'pip'
 
     # 4. Deps
     - name: 📦 Install dependencies
       if: env.RUN_CALENDAR == 'yes'
-      shell: bash
       run: |
         python -m pip install --upgrade pip
-        # Если есть requirements.txt — поставим из него
-        if [[ -f requirements.txt ]]; then
-          pip install -r requirements.txt
-        fi
-        # Гарантируем ключевые пакеты для генерации календаря
-        pip install --upgrade google-generativeai pyswisseph pendulum
+        pip install -r requirements.txt
 
     # 5. Генерация календаря
     - name: 🌙 Generate lunar_calendar.json
       if: env.RUN_CALENDAR == 'yes'
       env:
-        GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
-        WORK_DATE:          ${{ env.WORK_DATE }}
-        # Ниже — управляемые параметры Gemini (можно править в Variables или тут):
-        GEMINI_STRICT:      ${{ vars.GEMINI_STRICT || '1' }}      # "1" — только Gemini; "0" — мягкий фоллбэк
-        GEMINI_CONCURRENCY: ${{ vars.GEMINI_CONCURRENCY || '3' }} # параллельных запросов
-        GEMINI_MAX_ROUNDS:  ${{ vars.GEMINI_MAX_ROUNDS  || '4' }} # максимум «волн»
-        GEMINI_RETRY_ATTEMPTS: ${{ vars.GEMINI_RETRY_ATTEMPTS || '2' }} # ретраев внутри запроса
-        GEMINI_ROUND_PAUSE: ${{ vars.GEMINI_ROUND_PAUSE || '1.0' }}     # пауза между волнами (сек)
-        # Необязательно: TZ вывода
-        LUNAR_TZ:           ${{ vars.LUNAR_TZ || 'Asia/Nicosia' }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        WORK_DATE:      ${{ env.WORK_DATE }}
       run: |
         # Если WORK_DATE задана → «переопределяем» pendulum.today()
         python <<'PY'
