@@ -269,4 +269,3 @@ async def _main():
 
 if __name__ == "__main__":
     asyncio.run(_main())
-```0
