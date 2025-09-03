@@ -22,6 +22,11 @@ from gpt import gpt_complete  # используем общую обёртку
 
 TZ = pendulum.timezone("Asia/Nicosia")
 SKIP_SHORT = os.getenv("GEN_SKIP_SHORT", "").strip().lower() in ("1", "true", "yes", "on")
+DEBUG_VOC  = os.getenv("DEBUG_VOC", "").strip().lower() in ("1", "true", "yes", "on")
+
+def _dlog(*args):
+    if DEBUG_VOC:
+        print("[VoC]", *args)
 
 EMO = {
     "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓","Растущая Луна":"🌔",
@@ -98,13 +103,15 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
     Находит интервал Void-of-Course, пересекающий сутки jd_start (00:00 UT).
     Алгоритм:
       1) ищем ближайший переход Луны в следующий знак (sign_change_jd), двигаясь вперёд;
-      2) от него идём назад шагом 10 мин, пока НЕ встретим аспект — это зона VoC;
-         последняя точка, где аспект ЕСТЬ, +10 мин → старт VoC;
+      2) от него идём назад шагом 5–10 мин, пока НЕ встретим аспект — это зона VoC;
+         последняя точка, где аспект ЕСТЬ, + шаг → старт VoC;
       3) возвращаем пересечение [VoC_start, sign_change] с локальными сутками.
     """
     MAX_HOURS_LOOKAHEAD = 96
+    day_local = jd2dt(jd_start).in_tz(TZ).format("DD.MM.YYYY")
+    _dlog("▶ день", day_local, "UTC_start", jd2dt(jd_start).to_datetime_string())
 
-    # 1) ближайший переход знака (полчасовой шаг точнее и надёжнее)
+    # 1) ближайший переход знака (полчасовой шаг — компромисс точность/скорость)
     sign0 = int(swe.calc_ut(jd_start, swe.MOON)[0][0] // 30)
     jd = jd_start
     step_forward = 1/48  # 30 минут
@@ -117,24 +124,31 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
             sign_change = jd
             break
     if sign_change is None:
+        _dlog("✖ не найден переход знака в ближайшие", MAX_HOURS_LOOKAHEAD, "ч")
         return {"start": None, "end": None}
+    _dlog("• переход знака", jd2dt(sign_change).in_tz(TZ).format("DD.MM HH:mm"))
 
     # 2) идём назад от момента смены знака и ищем последний аспект
     step_b  = 5 / 1440   # 5 минут
     jd_back = sign_change - step_b  # начнём немного раньше, чем сам переход
     found_aspect = False
+    steps = 0
     while jd_back > jd_start:
         if _has_major_lunar_aspect(jd_back):
             found_aspect = True
             break
         jd_back -= step_b
+        steps += 1
+        if steps % 30 == 0:
+            _dlog("  ↩︎ назад", steps * 5, "мин…")
 
     if found_aspect:
-        # старт VoC — сразу после последнего аспекта
-        voc_start = jd_back + step_b
+        voc_start = jd_back + step_b  # старт VoC — сразу после последнего аспекта
+        _dlog("• последний аспект:", jd2dt(jd_back).in_tz(TZ).format("DD.MM HH:mm"),
+              "→ старт VoC", jd2dt(voc_start).in_tz(TZ).format("DD.MM HH:mm"))
     else:
-        # аспект до начала суток — VoC уже шёл с полуночи
-        voc_start = jd_start
+        voc_start = jd_start           # аспект до начала суток — VoC уже шёл с полуночи
+        _dlog("• аспект не найден в этих сутках — VoC с полуночи")
 
     voc_end = sign_change
 
@@ -146,13 +160,16 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
     day_end   = day_start.add(days=1)
 
     if not (start_dt < day_end and end_dt > day_start):
+        _dlog("✖ интервал VoC не пересекает локальные сутки")
         return {"start": None, "end": None}
 
     s = max(start_dt, day_start)
     e = min(end_dt,   day_end)
     if e <= s:
+        _dlog("✖ пустое пересечение VoC с сутками")
         return {"start": None, "end": None}
 
+    _dlog("✓ VoC для дня:", s.format("DD.MM HH:mm"), "→", e.format("DD.MM HH:mm"))
     return {
         "start": s.format("DD.MM HH:mm"),
         "end"  : e.format("DD.MM HH:mm")
@@ -283,3 +300,4 @@ async def _main():
 
 if __name__ == "__main__":
     asyncio.run(_main())
+```0
