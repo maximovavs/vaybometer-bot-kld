@@ -10,3 +10,4 @@ pyswisseph>=2.10       # эфемериды Луны/планет
 python-telegram-bot>=20,<21
 openai>=1.6           # для GPT-советчиков
 google-generativeai>=0.7.2
+groq>=0.9.0
