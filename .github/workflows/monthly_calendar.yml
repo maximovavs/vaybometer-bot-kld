@@ -63,7 +63,7 @@ jobs:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
-        GEN_SKIP_SHORT: "1"
+        GEN_SKIP_SHORT: "1" 
 DEBUG_VOC:      "1"
         WORK_DATE:      ${{ env.WORK_DATE }}
       run: |
