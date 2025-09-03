@@ -43,12 +43,12 @@ GROQ_KEY   = os.getenv("GROQ_API_KEY") or ""
 PROVIDER_ORDER = [p for p in ("openai", "gemini", "groq")]
 
 # актуальные модели Groq, пробуем по порядку (первая доступная сработает)
+
+# (любой из списка, по порядку)
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b",
-    "llama3-70b-8192",
-    "mixtral-8x7b-32768",
-    "gemma-7b-it",
+    "llama-3.1-70b-instant",   # основной крупный
+    "mixtral-8x7b-32768",      # хороший запасной
+    "llama-3.1-8b-instant",    # быстрый дешёвый fallback
 ]
 
 # ── клиенты ────────────────────────────────────────────────────────────────
