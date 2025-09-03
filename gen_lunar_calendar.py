@@ -102,7 +102,7 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
          последняя точка, где аспект ЕСТЬ, +10 мин → старт VoC;
       3) возвращаем пересечение [VoC_start, sign_change] с локальными сутками.
     """
-    MAX_HOURS_LOOKAHEAD = 72
+    MAX_HOURS_LOOKAHEAD = 96
 
     # 1) ближайший переход знака (полчасовой шаг точнее и надёжнее)
     sign0 = int(swe.calc_ut(jd_start, swe.MOON)[0][0] // 30)
@@ -120,7 +120,7 @@ def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
         return {"start": None, "end": None}
 
     # 2) идём назад от момента смены знака и ищем последний аспект
-    step_b  = 10 / 1440   # 10 минут
+    step_b  = 5 / 1440   # 5 минут
     jd_back = sign_change - step_b  # начнём немного раньше, чем сам переход
     found_aspect = False
     while jd_back > jd_start:
