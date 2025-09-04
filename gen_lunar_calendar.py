@@ -152,8 +152,11 @@ def find_voc_intervals_for_month(first_day: pendulum.DateTime, last_day: pendulu
     """
     # берём запас по 2 суток до/после, чтобы захватить переходы вокруг границ
     # стало (Date.at -> DateTime с нужным временем и TZ)
-    start_utc = first_day.subtract(days=2).at(0, 0, 0, tz="UTC")
-    end_utc   = last_day.add(days=2).at(23, 59, 59, tz="UTC")
+    fd = first_day.subtract(days=2)
+    ld = last_day.add(days=2)
+    start_utc = pendulum.datetime(fd.year, fd.month, fd.day, 0, 0, 0, tz="UTC")
+    end_utc   = pendulum.datetime(ld.year, ld.month, ld.day, 23, 59, 59, tz="UTC")
+
 
     jd = dt2jd(start_utc)
     out: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
