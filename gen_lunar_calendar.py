@@ -10,23 +10,19 @@ gen_lunar_calendar.py
 • advice      – 3 строки «💼 …», «⛔ …», «🪄 …»
 • long_desc   – 1-2 предложения на фазу (разово на месяц)
 • void_of_course: {start, end}  (UTC → Asia/Nicosia в JSON)
-• favorable_days / unfavorable_days – словари CATS
+• favorable_days / unfavorable_days – словари CATS (рассчитываются)
 """
 
-import os, json, math, asyncio, random, re
+import os, json, math, asyncio, re
 from pathlib import Path
 from typing  import Dict, Any, List, Tuple
 
 import pendulum, swisseph as swe
-from gpt import gpt_complete  # используем общую обёртку
+from gpt import gpt_complete  # общая обёртка для LLM
 
 TZ = pendulum.timezone("Asia/Nicosia")
-SKIP_SHORT = os.getenv("GEN_SKIP_SHORT", "").strip().lower() in ("1", "true", "yes", "on")
-DEBUG_VOC  = os.getenv("DEBUG_VOC", "").strip().lower() in ("1", "true", "yes", "on")
-
-def _dlog(*args):
-    if DEBUG_VOC:
-        print("[VoC]", *args)
+SKIP_SHORT = os.getenv("GEN_SKIP_SHORT", "").strip().lower() in ("1","true","yes","on")
+DEBUG_VOC  = os.getenv("DEBUG_VOC", "").strip().lower() in ("1","true","yes","on")
 
 EMO = {
     "Новолуние":"🌑","Растущий серп":"🌒","Первая четверть":"🌓","Растущая Луна":"🌔",
@@ -49,15 +45,6 @@ FALLBACK_SHORT = [
     "⛔ Отложи крупные решения.",
     "🪄 5-минутная медитация.",
 ]
-
-# «карманные» даты (пример — замените на реальные свои таблицы)
-CATS = {
-    "general" :{"favorable":[2,3,9,27],   "unfavorable":[13,14,24]},
-    "haircut" :{"favorable":[2,3,9],      "unfavorable":[]},
-    "travel"  :{"favorable":[4,5],        "unfavorable":[]},
-    "shopping":{"favorable":[1,2,7],      "unfavorable":[]},
-    "health"  :{"favorable":[20,21,27],   "unfavorable":[]},
-}
 
 # ───── helpers ─────────────────────────────────────────────────────────────
 def jd2dt(jd: float) -> pendulum.DateTime:
@@ -100,87 +87,69 @@ def _has_major_lunar_aspect(jd: float) -> bool:
 
 def compute_voc_for_day(jd_start: float) -> Dict[str,str]:
     """
-    Находит интервал Void-of-Course, пересекающий сутки jd_start (00:00 UT).
-    Алгоритм:
-      1) ищем ближайший переход Луны в следующий знак (sign_change_jd), двигаясь вперёд;
-      2) от него идём назад шагом 5–10 мин, пока НЕ встретим аспект — это зона VoC;
-         последняя точка, где аспект ЕСТЬ, + шаг → старт VoC;
-      3) возвращаем пересечение [VoC_start, sign_change] с локальными сутками.
+    Находит интервал VoC, который пересекает локальные сутки jd_start (00:00 UTC).
+    1) Идём вперёд до смены знака Луны (получаем voc_end).
+    2) От этой точки идём назад шагом 5 минут, пока НЕ встретим мажорный аспект.
+       Первая «без аспектов» точка после последнего аспекта — старт VoC.
+    3) Возвращаем пересечение [voc_start, voc_end] с локальными сутками.
     """
     MAX_HOURS_LOOKAHEAD = 96
-    day_local = jd2dt(jd_start).in_tz(TZ).format("DD.MM.YYYY")
-    _dlog("▶ день", day_local, "UTC_start", jd2dt(jd_start).to_datetime_string())
 
-    # 1) ближайший переход знака (полчасовой шаг — компромисс точность/скорость)
+    # 1) поиск перехода знака
     sign0 = int(swe.calc_ut(jd_start, swe.MOON)[0][0] // 30)
     jd = jd_start
-    step_forward = 1/48  # 30 минут
+    step_f = 1/48  # 30 минут
     hours = 0.0
     sign_change = None
     while hours <= MAX_HOURS_LOOKAHEAD:
-        jd += step_forward
+        jd += step_f
         hours += 0.5
         if int(swe.calc_ut(jd, swe.MOON)[0][0] // 30) != sign0:
             sign_change = jd
             break
     if sign_change is None:
-        _dlog("✖ не найден переход знака в ближайшие", MAX_HOURS_LOOKAHEAD, "ч")
+        if DEBUG_VOC:
+            print("[VoC] ✖ переход знака не найден в окне 96 ч")
         return {"start": None, "end": None}
-    _dlog("• переход знака", jd2dt(sign_change).in_tz(TZ).format("DD.MM HH:mm"))
 
-    # 2) идём назад от момента смены знака и ищем последний аспект
-    step_b  = 5 / 1440   # 5 минут
-    jd_back = sign_change - step_b  # начнём немного раньше, чем сам переход
+    # 2) шаг назад от смены знака
+    step_b  = 5 / 1440
+    jd_back = sign_change - step_b
     found_aspect = False
-    steps = 0
     while jd_back > jd_start:
         if _has_major_lunar_aspect(jd_back):
             found_aspect = True
             break
         jd_back -= step_b
-        steps += 1
-        if steps % 30 == 0:
-            _dlog("  ↩︎ назад", steps * 5, "мин…")
 
-    if found_aspect:
-        voc_start = jd_back + step_b  # старт VoC — сразу после последнего аспекта
-        _dlog("• последний аспект:",
-              jd2dt(jd_back).in_tz(TZ).format("DD.MM HH:mm"),
-              "→ старт VoC",
-              jd2dt(voc_start).in_tz(TZ).format("DD.MM HH:mm"))
-    else:
-        voc_start = jd_start           # аспект до начала суток — VoC уже шёл с полуночи
-        _dlog("• аспект не найден в этих сутках — VoC с полуночи")
+    voc_start = jd_back + step_b if found_aspect else jd_start
+    voc_end   = sign_change
 
-    voc_end = sign_change
-
-    # 3) пересечение с календарными сутками (локальная TZ)
+    # 3) пересечение с локальными сутками
     start_dt = jd2dt(voc_start).in_tz(TZ)
     end_dt   = jd2dt(voc_end).in_tz(TZ)
-
     day_start = jd2dt(jd_start).in_tz(TZ).start_of("day")
     day_end   = day_start.add(days=1)
 
     if not (start_dt < day_end and end_dt > day_start):
-        _dlog("✖ интервал VoC не пересекает локальные сутки")
+        if DEBUG_VOC:
+            print(f"[VoC] ✗ интервал VoC не пересекает локальные сутки: {day_start.to_datetime_string()}")
         return {"start": None, "end": None}
 
     s = max(start_dt, day_start)
     e = min(end_dt,   day_end)
     if e <= s:
-        _dlog("✖ пустое пересечение VoC с сутками")
+        if DEBUG_VOC:
+            print(f"[VoC] ✗ пустое пересечение VoC с сутками")
         return {"start": None, "end": None}
 
-    _dlog("✓ VoC для дня:", s.format("DD.MM HH:mm"), "→", e.format("DD.MM HH:mm"))
-    return {
-        "start": s.format("DD.MM HH:mm"),
-        "end"  : e.format("DD.MM HH:mm")
-    }
+    if DEBUG_VOC:
+        print(f"[VoC] ▶ {day_start.format('DD.MM.YYYY')}  start {s.format('DD.MM HH:mm')}  →  end {e.format('DD.MM HH:mm')}")
+    return {"start": s.format("DD.MM HH:mm"), "end": e.format("DD.MM HH:mm")}
 
 # ───── санитизация текста ─────────────────────────────────────────────────
 _LATIN = re.compile(r"[A-Za-z]+")
 def _sanitize_ru(s: str) -> str:
-    # вычищаем латиницу и лишние пробелы
     s = _LATIN.sub("", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -201,7 +170,7 @@ async def gpt_short(date: str, phase: str) -> List[str]:
     )
     try:
         txt = gpt_complete(prompt=prompt, system=system, temperature=0.65, max_tokens=300)
-        lines = [ _sanitize_ru(l).strip() for l in (txt or "").splitlines() if _sanitize_ru(l).strip() ]
+        lines = [_sanitize_ru(l).strip() for l in (txt or "").splitlines() if _sanitize_ru(l).strip()]
         if len(lines) >= 2:
             return lines[:3]
     except Exception:
@@ -209,16 +178,16 @@ async def gpt_short(date: str, phase: str) -> List[str]:
     return FALLBACK_SHORT[:]
 
 async def gpt_long(name: str, month: str) -> str:
-    """Общее описание периода (1-2 предложения)"""
+    """Общее описание периода (1–2 предложения)"""
     system = (
         "Ты пишешь краткие (1–2 предложения) пояснения на русском. "
-        "Без англицизмов, без общих фраз типа «энергия Вселенной». "
+        "Без англицизмов и клише. "
         "Не упоминай название месяца; говори нейтрально: «в этот период», «эта фаза»."
     )
     prompt = (
         f"Фаза: {name}. "
         "Дай 1–2 коротких предложения, описывающих энергетику периода. "
-        "Тон спокойный, уверенный, конкретный. Без клише, всё по-русски."
+        "Тон спокойный, уверенный, конкретный."
     )
     try:
         txt = gpt_complete(prompt=prompt, system=system, temperature=0.7, max_tokens=400)
@@ -227,6 +196,80 @@ async def gpt_long(name: str, month: str) -> str:
     except Exception:
         pass
     return FALLBACK_LONG[name]
+
+# ───── «дни особых категорий» (простейшие правила) ────────────────────────
+GROWTH_PHASES = {"Растущий серп","Первая четверть","Растущая Луна"}
+WANING_PHASES = {"Убывающая Луна","Последняя четверть","Убывающий серп"}
+
+SIGN_GROUPS = {
+    "earth": {"Телец","Дева","Козерог"},
+    "air":   {"Близнецы","Весы","Водолей"},
+    "fire":  {"Овен","Лев","Стрелец"},
+    "water": {"Рак","Скорпион","Рыбы"},
+}
+
+def _voc_minutes(voc: Dict[str,str]) -> int:
+    try:
+        if not voc or not voc.get("start") or not voc.get("end"):
+            return 0
+        s = pendulum.from_format(voc["start"]+" +0200", "DD.MM HH:mm Z")  # смещение не важно, берём локально
+        e = pendulum.from_format(voc["end"]  +" +0200", "DD.MM HH:mm Z")
+        return max(0, int((e - s).total_minutes()))
+    except Exception:
+        return 0
+
+def calc_month_categories(cal: Dict[str,Any]) -> Dict[str, Dict[str, List[int]]]:
+    """Возвращает словарь категорий с днями месяца (простые эвристики)."""
+    cat: Dict[str, Dict[str, List[int]]] = {
+        "general":  {"favorable": [], "unfavorable": []},
+        "haircut":  {"favorable": [], "unfavorable": []},
+        "travel":   {"favorable": [], "unfavorable": []},
+        "shopping": {"favorable": [], "unfavorable": []},
+        "health":   {"favorable": [], "unfavorable": []},
+    }
+
+    for day_str in sorted(cal):
+        rec = cal[day_str]
+        dnum = int(day_str[-2:])
+        sign = rec.get("sign")
+        phase = rec.get("phase_name")
+        vocm = _voc_minutes(rec.get("void_of_course") or {})
+
+        # general
+        if phase in GROWTH_PHASES and (sign in SIGN_GROUPS["earth"] | SIGN_GROUPS["air"] | SIGN_GROUPS["fire"]):
+            cat["general"]["favorable"].append(dnum)
+        if phase in WANING_PHASES and vocm >= 60:
+            cat["general"]["unfavorable"].append(dnum)
+
+        # haircut
+        if sign in {"Телец","Лев","Дева"} and ("Полнолуние" not in phase):
+            cat["haircut"]["favorable"].append(dnum)
+        if sign in {"Рак","Рыбы","Водолей"} or phase == "Полнолуние":
+            cat["haircut"]["unfavorable"].append(dnum)
+
+        # travel
+        if sign in {"Стрелец","Близнецы"} and vocm < 120:
+            cat["travel"]["favorable"].append(dnum)
+        if sign in {"Скорпион","Телец"} or vocm >= 180:
+            cat["travel"]["unfavorable"].append(dnum)
+
+        # shopping
+        if sign in {"Весы","Телец"} and vocm < 120:
+            cat["shopping"]["favorable"].append(dnum)
+        if sign in {"Овен","Скорпион"} or vocm >= 180:
+            cat["shopping"]["unfavorable"].append(dnum)
+
+        # health
+        if sign in {"Дева","Козерог"} and phase in GROWTH_PHASES:
+            cat["health"]["favorable"].append(dnum)
+        if sign in {"Рыбы"} and phase in WANING_PHASES:
+            cat["health"]["unfavorable"].append(dnum)
+
+    # сортировка и удаление дублей
+    for k in cat:
+        cat[k]["favorable"]   = sorted(sorted(set(cat[k]["favorable"])))
+        cat[k]["unfavorable"] = sorted(sorted(set(cat[k]["unfavorable"])))
+    return cat
 
 # ───── основной генератор ─────────────────────────────────────────────────
 async def generate(year: int, month: int) -> Dict[str,Any]:
@@ -253,34 +296,35 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
             short = []
             short_tasks.append(asyncio.create_task(gpt_short(d.to_date_string(), name)))
 
-        # длинные (один раз на фазу)
+        # длинные (по одной на фазу)
         if name not in long_tasks:
             long_tasks[name] = asyncio.create_task(gpt_long(name, ""))
 
-        # Void-of-Course (пересечение с сутками)
+        # VoC
         voc = compute_voc_for_day(jd)
 
         cal[d.to_date_string()] = {
             "phase_name"     : name,
-            "phase"          : f"{emoji} {name} , {sign}",  # прежний формат
+            "phase"          : f"{emoji} {name} , {sign}",
             "percent"        : illum,
             "sign"           : sign,
             "phase_time"     : phase_time,
-            "advice"         : short,       # либо LLM позже, либо сразу фолбэк
+            "advice"         : short,       # позже подменится LLM-ом, если не SKIP_SHORT
             "long_desc"      : "",          # позже
             "void_of_course" : voc,
-            "favorable_days" : CATS,
-            "unfavorable_days": CATS,
+            # заглушка; позже перезапишем рассчитанными словами
+            "favorable_days" : {},
+            "unfavorable_days": {},
         }
         d = d.add(days=1)
 
-    # дожидаемся коротких советов, если не пропущены
+    # дожидаемся коротких советов
     if not SKIP_SHORT and short_tasks:
         short_ready = await asyncio.gather(*short_tasks)
         for idx, day in enumerate(sorted(cal)):
             cal[day]["advice"] = short_ready[idx]
 
-    # подтягиваем длинные описания на каждую дату своей фазы
+    # тянем длинные тексты в каждую дату своей фазы
     for ph_name, tsk in long_tasks.items():
         try:
             long_txt = await tsk
@@ -290,11 +334,19 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
             if rec["phase_name"] == ph_name:
                 rec["long_desc"] = long_txt
 
+    # считаем категории по месяцу и кладём одинаково во все записи
+    month_cats = calc_month_categories(cal)
+    for rec in cal.values():
+        rec["favorable_days"]   = month_cats
+        rec["unfavorable_days"] = month_cats
+
     return cal
 
 # ───── entry-point ────────────────────────────────────────────────────────
 async def _main():
     today = pendulum.today()
+    if DEBUG_VOC:
+        print(f"Run ▸ В env WORK_DATE задан → «переопределяем» pendulum.today()")
     data  = await generate(today.year, today.month)
     Path("lunar_calendar.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), 'utf-8')
