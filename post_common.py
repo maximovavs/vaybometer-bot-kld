@@ -550,3 +550,64 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
     await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
+                          # ==== lunar helpers for daily posts =========================================
+
+def load_calendar(path: str = "lunar_calendar.json") -> dict:
+    """Безопасно читает lunar_calendar.json. Возвращает {} при ошибке/пустоте."""
+    try:
+        txt = Path(path).read_text("utf-8")
+        data = json.loads(txt)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
+    """Поддерживает ISO и формат 'DD.MM HH:mm'."""
+    if not s:
+        return None
+    try:
+        return pendulum.parse(s).in_tz(tz)
+    except Exception:
+        pass
+    try:
+        dmy, hm = s.split()
+        d, m = map(int, dmy.split("."))
+        hh, mm = map(int, hm.split(":"))
+        year = pendulum.today(tz).year
+        return pendulum.datetime(year, m, d, hh, mm, tz=tz)
+    except Exception:
+        return None
+
+def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
+    """
+    Возвращает (start_dt, end_dt) для VoC из записи дня или None.
+    В JSON VoC хранится как строки "DD.MM HH:mm" (локальная TZ) или ISO.
+    """
+    if not isinstance(rec, dict):
+        return None
+    voc = rec.get("void_of_course") or {}
+    s, e = voc.get("start"), voc.get("end")
+    if not s or not e:
+        return None
+    tz = pendulum.timezone(tz_local)
+    t1 = _parse_voc_dt(s, tz)
+    t2 = _parse_voc_dt(e, tz)
+    if not t1 or not t2:
+        return None
+    return (t1, t2)
+
+def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
+    """Формат: '⚫️ VoC сегодня 09:10–13:25.'"""
+    if not start or not end:
+        return ""
+    return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
+
+def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
+    """
+    Достаёт советы из календаря на указанную дату.
+    date_obj: pendulum.Date/DateTime или строка 'YYYY-MM-DD'.
+    """
+    key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
+    rec = (cal or {}).get(key, {}) or {}
+    adv = rec.get("advice")
+    return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
