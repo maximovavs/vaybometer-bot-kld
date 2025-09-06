@@ -37,10 +37,13 @@ jobs:
     env:
       TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
       CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
+      OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
       # короткие советы из LLM для ежедневки ВКЛ
       GEN_SKIP_SHORT: "1"
       DISABLE_LLM_DAILY: "0"
-      # для корректного локального времени в Python
+      # локальная зона для Python
       TZ: Europe/Kaliningrad
       # можно переопределить дату при ручном запуске
       WORK_DATE: ${{ github.event.inputs.work_date }}
@@ -54,7 +57,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r data/requirements.txt
+          pip install -r requirements.txt
 
       - name: Post morning (for tomorrow)
         shell: bash
@@ -66,8 +69,8 @@ jobs:
           if wd:
               pendulum.today = lambda tz=None: pendulum.parse(wd)
           # Ежедневный пост на завтра
-          sys.argv = ["data/post_kld.py", "--for-tomorrow"]
-          runpy.run_path("data/post_kld.py", run_name="__main__")
+          sys.argv = ["post_kld.py", "--for-tomorrow"]
+          runpy.run_path("post_kld.py", run_name="__main__")
           PY
 
   noon_fx:
@@ -79,7 +82,9 @@ jobs:
     env:
       TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
       CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
-      # ежедневный мини-LLM нам тут не нужен, но пусть будет одинаково
+      OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
       GEN_SKIP_SHORT: "1"
       DISABLE_LLM_DAILY: "0"
       TZ: Europe/Kaliningrad
@@ -94,7 +99,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r data/requirements.txt
+          pip install -r requirements.txt
 
       - name: Post FX only (12:00 MSK)
         shell: bash
@@ -105,6 +110,6 @@ jobs:
           if wd:
               pendulum.today = lambda tz=None: pendulum.parse(wd)
           # Пост только с курсами валют
-          sys.argv = ["data/post_kld.py", "--fx-only"]
-          runpy.run_path("data/post_kld.py", run_name="__main__")
+          sys.argv = ["post_kld.py", "--fx-only"]
+          runpy.run_path("post_kld.py", run_name="__main__")
           PY
