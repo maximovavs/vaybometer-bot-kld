@@ -27,32 +27,36 @@ concurrency:
   group: daily-post-klg
   cancel-in-progress: false
 
+# общие переменные окружения для всех джоб
+env:
+  TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
+  CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
+  OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
+  # короткие советы из LLM для ежедневки — включены
+  GEN_SKIP_SHORT: "1"
+  DISABLE_LLM_DAILY: "0"
+  # локальная зона для Python
+  TZ: Europe/Kaliningrad
+  # можно переопределить дату при ручном запуске
+  WORK_DATE: ${{ github.event.inputs.work_date }}
+
 jobs:
   morning:
     name: Morning post (08:00 MSK)
     runs-on: ubuntu-latest
-    if: |
+    if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 5 * * *') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.run_morning == 'true' || inputs.run_morning == ''))
-    env:
-      TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
-      CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
-      OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
-      GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
-      GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
-      # короткие советы из LLM для ежедневки ВКЛ
-      GEN_SKIP_SHORT: "1"
-      DISABLE_LLM_DAILY: "0"
-      # локальная зона для Python
-      TZ: Europe/Kaliningrad
-      # можно переопределить дату при ручном запуске
-      WORK_DATE: ${{ github.event.inputs.work_date }}
+      (github.event_name == 'workflow_dispatch' &&
+       (!github.event.inputs.run_morning || github.event.inputs.run_morning == 'true'))
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -62,12 +66,14 @@ jobs:
       - name: Post morning (for tomorrow)
         shell: bash
         run: |
-          # Если WORK_DATE задана → «переопределяем» pendulum.today()
           python <<'PY'
           import os, runpy, sys, pendulum
           wd = os.getenv("WORK_DATE")
           if wd:
-              pendulum.today = lambda tz=None: pendulum.parse(wd)
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
           # Ежедневный пост на завтра
           sys.argv = ["post_kld.py", "--for-tomorrow"]
           runpy.run_path("post_kld.py", run_name="__main__")
@@ -76,25 +82,16 @@ jobs:
   noon_fx:
     name: Noon FX only (12:00 MSK)
     runs-on: ubuntu-latest
-    if: |
+    if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_noon_fx == 'true')
-    env:
-      TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
-      CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
-      OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
-      GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
-      GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
-      GEN_SKIP_SHORT: "1"
-      DISABLE_LLM_DAILY: "0"
-      TZ: Europe/Kaliningrad
-      WORK_DATE: ${{ github.event.inputs.work_date }}
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -108,7 +105,10 @@ jobs:
           import os, runpy, sys, pendulum
           wd = os.getenv("WORK_DATE")
           if wd:
-              pendulum.today = lambda tz=None: pendulum.parse(wd)
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
           # Пост только с курсами валют
           sys.argv = ["post_kld.py", "--fx-only"]
           runpy.run_path("post_kld.py", run_name="__main__")
