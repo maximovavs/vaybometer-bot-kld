@@ -343,6 +343,79 @@ def zsym(s: str) -> str:
         s = s.replace(name, sym)
     return s
 
+def build_astro_section(
+    date_local: Optional[pendulum.Date] = None,
+    tz_post: Union[str, pendulum.Timezone] = "Europe/Kaliningrad",
+    tz_calendar: str = "Asia/Nicosia",
+) -> str:
+    """
+    «Астрособытия» для ежедневного поста на конкретную дату.
+    Источник — lunar_calendar.json (советы + VoC), фолбэк — astro_events().
+    Правила:
+      • показываем фазу/знак (если есть) + до 3 советов из календаря;
+      • если VoC пересекает 06:00–22:00 локального TZ поста — добавляем строку '⚫️ VoC HH:mm–HH:mm';
+      • если календарь пуст — fallback к astro_events (и фильтруем VoC ≤ 5 мин).
+    """
+    tzp = _as_tz(tz_post)
+    date_local = date_local or pendulum.today(tzp)
+    date_key = date_local.to_date_string()
+
+    cal = load_calendar("lunar_calendar.json")
+    rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+
+    lines: List[str] = ["🌌 <b>Астрособытия</b>"]
+    added = False
+
+    # 1) Фаза/знак
+    raw_phase = (rec.get("phase") or rec.get("phase_name") or "").strip()
+    if raw_phase:
+        lines.append(zsym(raw_phase))
+        added = True
+
+    # 2) Советы (до 3), срезаем нумерацию типа "1. " / "2) "
+    adv = rec.get("advice") or []
+    if isinstance(adv, list):
+        for a in adv[:3]:
+            t = re.sub(r'^\s*\d+[\.\)]\s*', '', str(a).strip())
+            if t:
+                lines.append(t)
+                added = True
+
+    # 3) VoC: если пересекает 06:00–22:00 локального TZ поста
+    voc = voc_interval_for_date(rec, tz_local=tz_calendar)
+    if voc:
+        t1, t2 = voc
+        # Переводим во временную зону поста (Калининград)
+        t1p, t2p = t1.in_tz(tzp), t2.in_tz(tzp)
+        day_start = date_local.at(6, 0)
+        day_end   = date_local.at(22, 0)
+        if t2p > day_start and t1p < day_end:
+            s = max(t1p, day_start).format("HH:mm")
+            e = min(t2p, day_end).format("HH:mm")
+            lines.append(f"⚫️ VoC {s}–{e}")
+            added = True
+
+    # 4) Фолбэк: старый генератор astro_events (и фильтр VoC ≤ 5 мин)
+    if not added:
+        try:
+            astro = astro_events(offset_days=1, show_all_voc=True, tz=tz_calendar)
+            filtered: List[str] = []
+            for line in (astro or []):
+                m = re.search(r"(VoC|VOC|Луна.*без курса).*?(\d+)\s*мин", line, re.IGNORECASE)
+                if m and int(m.group(2)) <= 5:
+                    continue
+                filtered.append(zsym(line))
+            if filtered:
+                lines.extend(filtered)
+                added = True
+        except Exception:
+            pass
+
+    if not added:
+        lines.append("— нет данных —")
+
+    return "\n".join(lines)
+
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
@@ -498,22 +571,13 @@ def build_message(region_name: str,
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # Астрособытия (скрываем VoC <= 5 минут)
-    P.append("🌌 <b>Астрособытия</b>")
-    astro = astro_events(offset_days=1, show_all_voc=True)
-    filtered: List[str] = []
-    for line in (astro or []):
-        m = re.search(r"(VoC|VOC|Луна.*без курса).*?(\d+)\s*мин", line, re.IGNORECASE)
-        if m:
-            mins = int(m.group(2))
-            if mins <= 5:
-                continue
-        filtered.append(line)
-    if filtered:
-        P.extend([zsym(line) for line in filtered])
-    else:
-        P.append("— нет данных —")
-    P.append("———")
+    # Астрособытия (из календаря с VoC, фолбэк — astro_events)
+P.append(build_astro_section(
+    date_local=tom,
+    tz_post=tz_name,
+    tz_calendar="Asia/Nicosia",
+))
+P.append("———")
 
     # Вывод + советы
     culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
