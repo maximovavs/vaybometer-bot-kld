@@ -4,26 +4,48 @@
 pollen.py
 ~~~~~~~~~
 Получение данных о концентрациях пыльцы (берёзы, травы, амброзии) из Open-Meteo Air Quality API.
-Функция get_pollen возвращает либо None (если нет данных), либо словарь:
- {
-   "tree":  <birch_pollen>  | None,
-   "grass": <grass_pollen>  | None,
-   "weed":  <ragweed_pollen>| None,
-   "risk":  "низкий"|"умеренный"|"высокий"|"экстремальный"|"н/д"
- }
+
+get_pollen(lat, lon) → None | {
+  "tree":  float|None,   # birch_pollen
+  "grass": float|None,   # grass_pollen
+  "weed":  float|None,   # ragweed_pollen
+  "risk":  "низкий"|"умеренный"|"высокий"|"экстремальный"|"н/д"
+}
+
+Все сетевые вызовы обёрнуты в try/except, используется общий таймаут HTTP_TIMEOUT (сек).
 """
 
+from __future__ import annotations
+import os
+import math
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union
 
-from utils import _get
+from utils import _get  # ваша HTTP-обёртка
 
-# ───────────────────────── Constants ───────────────────────────────────────
-# По умолчанию — Лимассол (Кипр). Для Калининграда лучше передавать lat, lon явно.
-DEFAULT_LAT = 34.707   # Limassol
+# ───────────────────────── Логирование / таймаут ────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
+
+# ───────────────────────── Константы (дефолт) ───────────────────────────────
+# По умолчанию — Лимассол (Кипр). Для Калининграда передавайте координаты явно.
+DEFAULT_LAT = 34.707
 DEFAULT_LON = 33.022
 
-# ────────────────────── Уровень риска пыльцы ──────────────────────────────
+# ───────────────────────── Безопасная HTTP-обёртка ──────────────────────────
+def _safe_http_get(url: str, **params) -> Optional[Dict[str, Any]]:
+    """Пробует вызвать utils._get с таймаутом (если поддерживается). При ошибке → None."""
+    try:
+        try:
+            return _get(url, timeout=REQUEST_TIMEOUT, **params)
+        except TypeError:
+            # если ваша _get не принимает timeout
+            return _get(url, **params)
+    except Exception as e:
+        logging.warning("pollen: HTTP error: %s", e)
+        return None
+
+# ───────────────────────── Вспомогательные функции ──────────────────────────
 def _risk_level(val: Optional[float]) -> str:
     """
     По максимальной концентрации возвращает:
@@ -43,17 +65,31 @@ def _risk_level(val: Optional[float]) -> str:
         return "высокий"
     return "экстремальный"
 
+def _pick_nearest_past_hour(times: List[str], values: List[Any]) -> Optional[float]:
+    """
+    Берёт значение по ближайшему ПРОШЕДШЕМУ часу (UTC). Если нет валидных — None.
+    """
+    if not times or not values or len(times) != len(values):
+        return None
+    try:
+        # формат меток у Open-Meteo: 'YYYY-MM-DDTHH:MM'
+        from time import gmtime, strftime
+        now_iso = strftime("%Y-%m-%dT%H:00", gmtime())
+        idxs = [i for i, t in enumerate(times) if isinstance(t, str) and t <= now_iso]
+        if not idxs:
+            return None
+        v = values[max(idxs)]
+        if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0:
+            return float(v)
+    except Exception:
+        pass
+    return None
 
+# ───────────────────────── Публичное API ────────────────────────────────────
 def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[Dict[str, Any]]:
     """
     Запрашивает концентрации пыльцы (birch, grass, ragweed) из Open-Meteo Air Quality API.
-    Возвращает либо None (если нет данных или формат изменился), либо словарь:
-      {
-        "tree":  float | None,   # берёза (birch_pollen)
-        "grass": float | None,   # трава (grass_pollen)
-        "weed":  float | None,   # амброзия (ragweed_pollen)
-        "risk":  str             # уровень риска: "низкий"/"умеренный"/"высокий"/"экстремальный"/"н/д"
-      }
+    Возвращает None при любой ошибке или словарь с данными (см. шапку файла).
     """
     url = "https://air-quality-api.open-meteo.com/v1/air-quality"
     params = {
@@ -63,55 +99,49 @@ def get_pollen(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Optional[D
         "timezone":  "UTC",
     }
 
-    j = _get(url, **params)
+    j = _safe_http_get(url, **params)
     if not j or "hourly" not in j:
-        logging.warning("Pollen API: нет данных или формат ответа изменился")
+        logging.debug("pollen: нет hourly в ответе")
         return None
 
     try:
-        hourly = j["hourly"]
-        tree_arr  = hourly.get("birch_pollen", [])
-        grass_arr = hourly.get("grass_pollen", [])
-        weed_arr  = hourly.get("ragweed_pollen", [])
+        h = j["hourly"]
+        times: List[str] = h.get("time", []) or []
+        birch: List[Union[float, None]]   = h.get("birch_pollen", [])   or []
+        grass: List[Union[float, None]]   = h.get("grass_pollen", [])   or []
+        ragweed: List[Union[float, None]] = h.get("ragweed_pollen", []) or []
 
-        # Берём первый часовой отсчёт, если он ≥ 0
-        tree = (
-            float(tree_arr[0])
-            if isinstance(tree_arr, list) and tree_arr and tree_arr[0] is not None and tree_arr[0] >= 0
-            else None
-        )
-        grass = (
-            float(grass_arr[0])
-            if isinstance(grass_arr, list) and grass_arr and grass_arr[0] is not None and grass_arr[0] >= 0
-            else None
-        )
-        weed = (
-            float(weed_arr[0])
-            if isinstance(weed_arr, list) and weed_arr and weed_arr[0] is not None and weed_arr[0] >= 0
-            else None
-        )
+        tree_val  = _pick_nearest_past_hour(times, birch)
+        grass_val = _pick_nearest_past_hour(times, grass)
+        weed_val  = _pick_nearest_past_hour(times, ragweed)
 
-        # Рассчитываем риск по максимальной из доступных концентраций
-        max_val = max(x for x in (tree or 0.0, grass or 0.0, weed or 0.0))
+        # округлим до 1 знака, оставляя None как есть
+        def _rnd(x: Optional[float]) -> Optional[float]:
+            return round(float(x), 1) if isinstance(x, (int, float)) and math.isfinite(x) else None
+
+        tree_r  = _rnd(tree_val)
+        grass_r = _rnd(grass_val)
+        weed_r  = _rnd(weed_val)
+
+        # риск по максимальной доступной концентрации; если все None → "н/д"
+        candidates = [v for v in (tree_r, grass_r, weed_r) if isinstance(v, (int, float))]
+        max_val = max(candidates) if candidates else None
+
         return {
-            "tree":  round(tree,  1) if tree  is not None else None,
-            "grass": round(grass, 1) if grass is not None else None,
-            "weed":  round(weed,  1) if weed  is not None else None,
+            "tree":  tree_r,
+            "grass": grass_r,
+            "weed":  weed_r,
             "risk":  _risk_level(max_val),
         }
 
     except Exception as e:
-        logging.warning("Pollen parse error: %s", e)
+        logging.warning("pollen: parse error: %s", e)
         return None
 
-
+# ───────────────────────── CLI ──────────────────────────────────────────────
 if __name__ == "__main__":
     from pprint import pprint
-
-    # Пример для Калининграда
     print("Пыльца для Калининграда:")
     pprint(get_pollen(54.71, 20.45))
-
-    # Пример для Кипра (дефолтные координаты)
-    print("\nПыльца для Кипра:")
+    print("\nПыльца (дефолт):")
     pprint(get_pollen())
