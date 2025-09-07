@@ -572,12 +572,12 @@ def build_message(region_name: str,
     P.append("———")
 
     # Астрособытия (из календаря с VoC, фолбэк — astro_events)
-P.append(build_astro_section(
-    date_local=tom,
-    tz_post=tz_name,
-    tz_calendar="Asia/Nicosia",
-))
-P.append("———")
+    P.append(build_astro_section(
+        date_local=tom,
+        tz_post=tz_name,
+        tz_calendar="Asia/Nicosia",
+    ))
+    P.append("———")
 
     # Вывод + советы
     culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
@@ -614,7 +614,8 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
     await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
-                          # ==== lunar helpers for daily posts =========================================
+
+# ==== lunar helpers for daily posts =========================================
 
 def load_calendar(path: str = "lunar_calendar.json") -> dict:
     """Безопасно читает lunar_calendar.json. Возвращает {} при ошибке/пустоте."""
@@ -625,7 +626,7 @@ def load_calendar(path: str = "lunar_calendar.json") -> dict:
     except Exception:
         return {}
 
-def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
+def _parse_voc_dt(s: str, tz: pendulum.Timezone):
     """Поддерживает ISO и формат 'DD.MM HH:mm'."""
     if not s:
         return None
