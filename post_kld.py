@@ -23,6 +23,7 @@ import sys
 import argparse
 import asyncio
 import logging
+from pathlib import Path
 from typing import Dict, Any
 
 import pendulum
@@ -82,23 +83,9 @@ OTHER_CITIES_ALL = [
     ("Гвардейск",       (54.655, 21.078)),
 ]
 
-# ───────────────────────────── FX helpers (локально) ─────────────────────────
+# ───────────────────────────── FX helpers ─────────────────────────────
 
-def _load_fx_rates(date_local: pendulum.DateTime, tz: pendulum.timezone) -> Dict[str, Any]:
-    """
-    Пытаемся получить курсы валют через модуль fx.py (если он уже есть).
-    Ожидаемый интерфейс: fx.get_rates(date=date_local, tz=tz) -> dict:
-      {"USD":{"value":..,"delta":..},"EUR":{...},"CNY":{...}}
-    Возвращаем {} при любой ошибке.
-    """
-    try:
-        import importlib
-        fx = importlib.import_module("fx")
-        rates = fx.get_rates(date=date_local, tz=tz)  # type: ignore[attr-defined]
-        return rates or {}
-    except Exception as e:
-        logging.warning(f"FX: модуль fx.py не найден/ошибка получения данных: {e}")
-        return {}
+FX_CACHE_PATH = Path("fx_cache.json")  # кэш в корне репозитория
 
 def _fmt_delta(x: float | int | None) -> str:
     if x is None:
@@ -111,8 +98,8 @@ def _fmt_delta(x: float | int | None) -> str:
     sign = "−" if x < 0 else ""
     return f"{sign}{abs(x):.2f}"
 
-def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.timezone) -> str:
-    rates = _load_fx_rates(date_local, tz)
+def _fallback_build_fx_line(rates: Dict[str, Any]) -> str:
+    """Резервный форматтер линии курсов на случай отсутствия fx.format_rates_line."""
     def token(code: str, name: str) -> str:
         r = rates.get(code) or {}
         val = r.get("value")
@@ -124,17 +111,103 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.timezone) -> s
         except Exception:
             val_s = "—"
         return f"{name}: {val_s} ₽ ({_fmt_delta(dlt)})"
+    return " • ".join([token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")])
 
-    line = " • ".join([token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")])
+def _load_fx_rates(date_local: pendulum.DateTime, tz) -> Dict[str, Any]:
+    """
+    Универсальная загрузка курсов:
+      1) fx.get_rates(date=..., tz=...)
+      2) fx.fetch_cbr_daily() + fx.parse_cbr_rates(...)
+    Возвращает dict (должен включать ключ 'date' с датой курсов).
+    """
+    try:
+        import importlib
+        fx = importlib.import_module("fx")
+        # при наличии — get_rates
+        if hasattr(fx, "get_rates"):
+            rates = fx.get_rates(date=date_local, tz=tz)  # type: ignore[attr-defined]
+            return rates or {}
+        # иначе — fetch + parse
+        if hasattr(fx, "fetch_cbr_daily") and hasattr(fx, "parse_cbr_rates"):
+            raw = fx.fetch_cbr_daily()                    # type: ignore[attr-defined]
+            rates = fx.parse_cbr_rates(raw) or {}         # type: ignore[attr-defined]
+            return rates
+    except Exception as e:
+        logging.warning("FX: модуль fx.py не найден/ошибка получения: %s", e)
+    return {}
+
+def _build_fx_message(date_local: pendulum.DateTime, tz) -> tuple[str, Dict[str, Any]]:
+    """
+    Возвращает (текст_сообщения, rates_dict).
+    Сообщение содержит заголовок и одну строку с курсами.
+    """
+    rates = _load_fx_rates(date_local, tz) or {}
+    # пробуем форматтер из fx.py
+    fx_line = None
+    try:
+        import importlib
+        fx = importlib.import_module("fx")
+        if hasattr(fx, "format_rates_line"):
+            fx_line = fx.format_rates_line(rates)  # type: ignore[attr-defined]
+    except Exception:
+        fx_line = None
+    if not fx_line:
+        fx_line = _fallback_build_fx_line(rates)
+
     title = "💱 <b>Курсы валют</b>"
-    return f"{title}\n{line}"
+    return f"{title}\n{fx_line}", rates
 
-async def _send_fx_only(bot: Bot, chat_id: int, date_local: pendulum.DateTime, tz: pendulum.timezone, dry_run: bool) -> None:
-    text = _build_fx_message(date_local, tz)
+async def _send_fx_only(bot: Bot, chat_id: int, date_local: pendulum.DateTime, tz, dry_run: bool) -> None:
+    """
+    Отправка только блока «Курсы валют» с проверкой кэша:
+      - если should_publish_again(...) вернул False → лог и выход;
+      - если отправили — save_fx_cache(...).
+    """
+    text, rates = _build_fx_message(date_local, tz)
+
+    # достаём дату курсов ЦБ из rates
+    cbr_date = rates.get("date") or rates.get("cbr_date")
+    if isinstance(cbr_date, pendulum.DateTime):
+        cbr_date = cbr_date.to_date_string()
+    elif hasattr(cbr_date, "to_date_string"):
+        cbr_date = cbr_date.to_date_string()
+    elif isinstance(cbr_date, (int, float)):
+        # unix ts → дата
+        try:
+            cbr_date = pendulum.from_timestamp(int(cbr_date), tz="Europe/Moscow").to_date_string()
+        except Exception:
+            cbr_date = None
+    else:
+        cbr_date = str(cbr_date) if cbr_date else None
+
+    # проверка кэша (если у нас есть дата)
+    try:
+        import importlib
+        fx = importlib.import_module("fx")
+        if cbr_date and hasattr(fx, "should_publish_again"):
+            ok = fx.should_publish_again(FX_CACHE_PATH, cbr_date)  # type: ignore[attr-defined]
+            if not ok:
+                logging.info("Курсы ЦБ не обновились — пост пропущен")
+                return
+    except Exception as e:
+        # если проверка не удалась — публикуем (лучше лишний пост, чем пропуск)
+        logging.warning("FX cache check failed: %s (продолжаем публикацию)", e)
+
     if dry_run:
-        logging.info("DRY-RUN (fx-only):\n" + text)
+        logging.info("DRY-RUN (fx-only):\n%s", text)
         return
+
+    # отправка
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
+
+    # сохранение кэша после успешной отправки
+    try:
+        import importlib
+        fx = importlib.import_module("fx")
+        if cbr_date and hasattr(fx, "save_fx_cache"):
+            fx.save_fx_cache(FX_CACHE_PATH, cbr_date, text)  # type: ignore[attr-defined]
+    except Exception as e:
+        logging.warning("FX cache save failed: %s", e)
 
 # ───────────────────────────────── Main ─────────────────────────────────────
 
