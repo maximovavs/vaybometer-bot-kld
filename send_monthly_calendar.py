@@ -61,7 +61,9 @@ def _parse_dt(s: str, year: int) -> Optional[pendulum.DateTime]:
             return None
 
 
-def _merge_intervals(intervals: List[Tuple[pendulum.DateTime, pendulum.DateTime]], tol_min: int = 1
+def _merge_intervals(
+    intervals: List[Tuple[pendulum.DateTime, pendulum.DateTime]],
+    tol_min: int = 1
 ) -> List[Tuple[pendulum.DateTime, pendulum.DateTime]]:
     """Склейка пересекающихся/смежных интервалов (допускаем стык ±tol_min)."""
     if not intervals:
@@ -90,6 +92,18 @@ def _parse_voc_entry_local(obj: Dict[str, Any]) -> Tuple[Optional[pendulum.DateT
     if e <= s:
         return None, None
     return s, e
+
+
+def _format_voc_interval(start: pendulum.DateTime, end: pendulum.DateTime) -> str:
+    """
+    Единый стиль для VoC:
+      • если в одни сутки:  02.06 09:10–13:25
+      • если на разные дни: 02.06 23:10–03.06 01:05
+    """
+    same_day = (start.date() == end.date())
+    if same_day:
+        return f"{start.format('DD.MM')} {start.format('HH:mm')}–{end.format('HH:mm')}"
+    return f"{start.format('DD.MM HH:mm')}–{end.format('DD.MM HH:mm')}"
 
 
 def load_calendar(src: Any = None
@@ -239,16 +253,17 @@ def build_fav_blocks(rec_or_cats: Dict[str, Any]) -> str:
 def build_voc_block(voc_list: List[Tuple[pendulum.DateTime, pendulum.DateTime]]) -> str:
     """
     Рендерит месячный список VoC из уже нормализованных интервалов.
-    Применяет порог MIN_VOC_MINUTES.
+    Применяет порог MIN_VOC_MINUTES и единый стиль форматирования.
     """
     items: List[str] = []
     for s, e in voc_list:
         if (e - s).in_minutes() < MIN_VOC_MINUTES:
             continue
-        items.append(f"{s.format('DD.MM HH:mm')}  →  {e.format('DD.MM HH:mm')}")
+        items.append(_format_voc_interval(s, e))
+
     if not items:
         return ""
-    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(items)
+    return "<b>⚫️ VoC (Void-of-Course):</b>\n" + "\n".join(items)
 
 
 # ── сборка финального сообщения ────────────────────────────────────────────
