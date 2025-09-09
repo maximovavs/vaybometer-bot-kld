@@ -9,7 +9,7 @@ post_common.py — VayboMeter (Калининград).
 • Радиация из офиц. источника (строгая шкала 🟢🟡🔴)
 • Геомагнитка: Kp со «свежестью» + Солнечный ветер (Bz/Bt/v/n + статус)
 • Шуман (фоллбэк чтения JSON; либо прямой импорт schumann.get_schumann())
-• Астрособытия (знак как ♈ … ♓; VoC > 5 мин)
+• Астрособытия (микро-LLM 2–3 строки + VoC, извлекаем из lunar_calendar.json)
 • «Вините …», рекомендации, факт дня
 """
 
@@ -30,8 +30,7 @@ from weather      import get_weather, fetch_tomorrow_temps, day_night_stats
 from air          import get_air, get_sst, get_kp, get_solar_wind
 from pollen       import get_pollen
 from radiation    import get_radiation
-from astro        import astro_events
-from gpt          import gpt_blurb
+from gpt          import gpt_blurb, gpt_complete  # gpt_complete — для микро-LLM в «Астрособытиях»
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -40,6 +39,11 @@ KLD_LAT, KLD_LON = 54.710426, 20.452214
 
 # коэффициент перевода CPM -> μSv/h (можно переопределить ENV CPM_TO_USVH)
 CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
+
+# Кэш для микро-LLM «Астрособытий»
+CACHE_DIR = Path(".cache")
+CACHE_DIR.mkdir(exist_ok=True, parents=True)
+USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
 
 # ──────────── утилита: принять tz как объект или как строку ────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
@@ -54,7 +58,11 @@ WMO_DESC = {
     61: "🌧 дождь", 71: "❄️ снег", 95: "⛈ гроза",
 }
 def code_desc(c: Any) -> Optional[str]:
-    return WMO_DESC.get(int(c)) if isinstance(c, (int, float)) and int(c) in WMO_DESC else None
+    try:
+        i = int(c)
+    except Exception:
+        return None
+    return WMO_DESC.get(i)
 
 # ───────────── Шуман: чтение JSON-истории ─────────────
 def _read_schumann_history() -> List[Dict[str, Any]]:
@@ -335,13 +343,114 @@ def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> 
 # ───────────── Зодиаки → символы ─────────────
 ZODIAC = {
     "Овен": "♈","Телец": "♉","Близнецы": "♊","Рак": "♋","Лев": "♌",
-    ", Дева": "♍","Весы": "♎",", Скорпион": "♏","Стрелец": "♐",
+    "Дева": "♍","Весы": "♎","Скорпион": "♏","Стрелец": "♐",
     "Козерог": "♑","Водолей": "♒","Рыбы": "♓",
 }
 def zsym(s: str) -> str:
     for name, sym in ZODIAC.items():
         s = s.replace(name, sym)
     return s
+
+# ───────────── Астрособытия (микро-LLM + VoC) ─────────────
+def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
+    """
+    Возвращает 2–3 короткие строки для блока «Астрособытия».
+    Кэш: .cache/astro_YYYY-MM-DD.txt
+    """
+    cache_file = CACHE_DIR / f"astro_{date_str}.txt"
+    if cache_file.exists():
+        lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
+        if lines:
+            return lines[:3]
+
+    if not USE_DAILY_LLM:
+        return []
+
+    system = (
+        "Ты делаешь очень короткую сводку астрособытий на СЕГОДНЯ (2–3 строки). "
+        "Пиши по-русски, без клише. Используй ТОЛЬКО данную информацию: "
+        "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
+        "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи."
+    )
+    prompt = (
+        f"Дата: {date_str}. Фаза Луны: {phase} ({percent}% освещённости), знак: {sign or 'н/д'}. "
+        f"Void-of-Course: {voc_text or 'нет'}."
+    )
+    try:
+        txt = gpt_complete(prompt=prompt, system=system, temperature=0.5, max_tokens=180)
+        lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
+        if lines:
+            cache_file.write_text("\n".join(lines[:3]), "utf-8")
+            return lines[:3]
+    except Exception:
+        pass
+    return []
+
+def build_astro_section(date_local: Optional[pendulum.Date] = None,
+                        tz_local: str = "Asia/Nicosia") -> str:
+    """
+    Собирает блок «Астрособытия»: 2–3 строки от LLM (если доступен) +
+    VoC (если попадает в день). Данные берём из lunar_calendar.json (ключи days).
+    """
+    tz = pendulum.timezone(tz_local)
+    date_local = date_local or pendulum.today(tz)
+    date_key = date_local.format("YYYY-MM-DD")
+
+    cal = load_calendar("lunar_calendar.json")  # возвращает {YYYY-MM-DD: rec}
+    rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+
+    # аккуратные извлечения полей
+    phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
+    phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
+
+    percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
+    try:
+        percent = int(round(float(percent)))
+    except Exception:
+        percent = 0
+
+    sign = rec.get("sign") or rec.get("zodiac") or ""
+
+    # VoC интервал в локальной TZ
+    voc = voc_interval_for_date(rec, tz_local=tz_local)
+    voc_text = ""
+    if voc:
+        t1, t2 = voc
+        # показываем, если пересекает «часы бодрствования» Калининграда
+        klg = pendulum.timezone("Europe/Kaliningrad")
+        day_start = date_local.in_tz(klg).at(6, 0).in_tz(tz)
+        day_end   = date_local.in_tz(klg).at(22, 0).in_tz(tz)
+        if t2 > day_start and t1 < day_end:
+            s = max(t1, day_start).format("HH:mm")
+            e = min(t2, day_end).format("HH:mm")
+            voc_text = f"{s}–{e}"
+
+    # 1) пробуем LLM
+    bullets = _astro_llm_bullets(
+        date_local.format("DD.MM.YYYY"),
+        phase_name,
+        int(percent or 0),
+        sign,
+        voc_text
+    )
+
+    # 2) фолбэк – советы из календаря
+    if not bullets:
+        adv = rec.get("advice") or []
+        bullets = [f"• {a}" for a in adv[:3]] if adv else []
+
+    # 3) последний фолбэк – «жёсткий»
+    if not bullets:
+        base = f"🌙 Фаза: {phase_name}" if phase_name else "🌙 Лунный день в норме"
+        prm  = f" ({percent}%)" if isinstance(percent, int) and percent else ""
+        bullets = [base + prm, (f"♒ Знак: {sign}" if sign else "— знак Луны н/д")]
+
+    # формируем блок
+    lines = ["🌌 <b>Астрособытия</b>"]
+    lines += [zsym(x) for x in bullets[:3]]
+    if voc_text:
+        lines.append(f"⚫️ VoC: {voc_text}")
+    return "\n".join(lines)
 
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
@@ -384,6 +493,7 @@ def build_message(region_name: str,
     P.append(" • ".join([x for x in kal_parts if x]))
     P.append("———")
 
+    # Морские города (топ-5)
     # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     for city, (la, lo) in sea_cities:
@@ -498,21 +608,11 @@ def build_message(region_name: str,
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # Астрособытия (скрываем VoC <= 5 минут)
-    P.append("🌌 <b>Астрособытия</b>")
-    astro = astro_events(offset_days=1, show_all_voc=True)
-    filtered: List[str] = []
-    for line in (astro or []):
-        m = re.search(r"(VoC|VOC|Луна.*без курса).*?(\d+)\s*мин", line, re.IGNORECASE)
-        if m:
-            mins = int(m.group(2))
-            if mins <= 5:
-                continue
-        filtered.append(line)
-    if filtered:
-        P.extend([zsym(line) for line in filtered])
-    else:
-        P.append("— нет данных —")
+    # Астрособытия (LLM+VoC из lunar_calendar.json)
+    P.append(build_astro_section(
+        date_local=pendulum.today(pendulum.timezone("Asia/Nicosia")),  # календарь ведём в Asia/Nicosia
+        tz_local="Asia/Nicosia"
+    ))
     P.append("———")
 
     # Вывод + советы
@@ -550,3 +650,77 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
     await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
+
+# ==== lunar helpers for daily posts =========================================
+# (Единый доступ к lunar_calendar.json и VoC для ежедневки)
+
+def load_calendar(path: str = "lunar_calendar.json") -> dict:
+    """
+    Читает lunar_calendar.json и возвращает словарь дней {YYYY-MM-DD: rec}.
+    Поддерживает и «плоский», и новый формат с обёрткой {"days": ...}.
+    """
+    try:
+        data = json.loads(Path(path).read_text("utf-8"))
+    except Exception:
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("days"), dict):
+        return data["days"]
+    return data if isinstance(data, dict) else {}
+
+def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
+    """Поддерживает ISO и формат 'DD.MM HH:mm'."""
+    if not s:
+        return None
+    try:
+        return pendulum.parse(s).in_tz(tz)
+    except Exception:
+        pass
+    try:
+        dmy, hm = s.split()
+        d, m = map(int, dmy.split("."))
+        hh, mm = map(int, hm.split(":"))
+        year = pendulum.today(tz).year
+        return pendulum.datetime(year, m, d, hh, mm, tz=tz)
+    except Exception:
+        return None
+
+def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
+    """
+    Возвращает (start_dt, end_dt) для VoC из записи дня или None.
+    В JSON VoC хранится как строки "DD.MM HH:mm" (локальная TZ) или ISO.
+    """
+    if not isinstance(rec, dict):
+        return None
+    voc = (rec.get("void_of_course")
+           or rec.get("voc")
+           or rec.get("void")
+           or {})
+    if not isinstance(voc, dict):
+        return None
+    s = voc.get("start") or voc.get("from") or voc.get("start_time")
+    e = voc.get("end")   or voc.get("to")   or voc.get("end_time")
+    if not s or not e:
+        return None
+    tz = pendulum.timezone(tz_local)
+    t1 = _parse_voc_dt(s, tz)
+    t2 = _parse_voc_dt(e, tz)
+    if not t1 or not t2:
+        return None
+    return (t1, t2)
+
+def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
+    """Формат: '⚫️ VoC сегодня 09:10–13:25.'"""
+    if not start or not end:
+        return ""
+    return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
+
+def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
+    """
+    Достаёт советы из календаря на указанную дату.
+    date_obj: pendulum.Date/DateTime или строка 'YYYY-MM-DD'.
+    """
+    key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
+    rec = (cal or {}).get(key, {}) or {}
+    adv = rec.get("advice")
+    return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
+      

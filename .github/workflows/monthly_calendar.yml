@@ -18,80 +18,86 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. Checkout
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      # 1. Checkout
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    # 2. Решаем, нужен ли расчёт
-    - name: 🔍 Decide run condition
-      id: decide
-      shell: bash
-      run: |
-        # По-умолчанию «нет»
-        run=no
-        # Завтра первое число → генерируем СЛЕДУЮЩИЙ месяц
-        if [[ $(date -d 'tomorrow' +%d) == "01" ]]; then
-          run=yes
-          work_date=$(date -d "$(date +%Y-%m-01) +1 month" +%Y-%m-%d)
-        fi
-        # Ручной запуск c force_run=true → текущий месяц
-        if [[ "${{ github.event_name }}" == 'workflow_dispatch' && \
-              "${{ github.event.inputs.force_run }}" == 'true' ]]; then
-          run=yes
-          work_date=$(date +%Y-%m-%d)   # сегодня
-        fi
-        echo "RUN_CALENDAR=$run"  >> $GITHUB_ENV
-        echo "WORK_DATE=${work_date:-}" >> $GITHUB_ENV
+      # 2. Решаем, нужен ли расчёт
+      - name: Decide run condition
+        id: decide
+        shell: bash
+        run: |
+          # По-умолчанию «нет»
+          run=no
+          # Завтра первое число → генерируем СЛЕДУЮЩИЙ месяц
+          if [[ $(date -d 'tomorrow' +%d) == "01" ]]; then
+            run=yes
+            work_date=$(date -d "$(date +%Y-%m-01) +1 month" +%Y-%m-%d)
+          fi
+          # Ручной запуск c force_run=true → текущий месяц
+          if [[ "${{ github.event_name }}" == 'workflow_dispatch' && \
+                "${{ github.event.inputs.force_run }}" == 'true' ]]; then
+            run=yes
+            work_date=$(date +%Y-%m-%d)   # сегодня
+          fi
+          echo "RUN_CALENDAR=$run"  >> $GITHUB_ENV
+          echo "WORK_DATE=${work_date:-}" >> $GITHUB_ENV
 
-    # 3. Python
-    - uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+      # 3. Python
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-    # 4. Deps
-    - name: 📦 Install dependencies
-      if: env.RUN_CALENDAR == 'yes'
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      # 4. Deps
+      - name: Install dependencies
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    # 5. Генерация календаря
-    - name: 🌙 Generate lunar_calendar.json
-      if: env.RUN_CALENDAR == 'yes'
-      env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        WORK_DATE:      ${{ env.WORK_DATE }}
-      run: |
-        # Если WORK_DATE задана → «переопределяем» pendulum.today()
-        python <<'PY'
-        import os, pendulum, runpy, sys
-        wd = os.getenv("WORK_DATE")
-        if wd:
-            pendulum.today = lambda tz=None: pendulum.parse(wd)
-        sys.argv = ["gen_lunar_calendar.py"]
-        runpy.run_path("gen_lunar_calendar.py", run_name="__main__")
-        PY
+      # 5. Генерация календаря
+      - name: Generate lunar_calendar.json
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+          GEN_SKIP_SHORT: "1"
+          DEBUG_VOC:      "1"
+          WORK_DATE:      ${{ env.WORK_DATE }}
+        run: |
+          # Если WORK_DATE задана → «переопределяем» pendulum.today()
+          python <<'PY'
+          import os, pendulum, runpy, sys
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              pendulum.today = lambda tz=None: pendulum.parse(wd)
+          sys.argv = ["gen_lunar_calendar.py"]
+          runpy.run_path("gen_lunar_calendar.py", run_name="__main__")
+          PY
 
-    # 6. Commit & push
-    - name: ✏️ Commit & push
-      if: env.RUN_CALENDAR == 'yes'
-      run: |
-        git config user.name  "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add lunar_calendar.json
-        if git diff --cached --quiet; then
-          echo "✅ lunar_calendar.json актуален"
-        else
-          git commit -m "chore: update lunar_calendar.json"
-          git pull --rebase --autostash || true
-          git push
-        fi
+      # 6. Commit & push
+      - name: Commit & push
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add lunar_calendar.json
+          if git diff --cached --quiet; then
+            echo "✅ lunar_calendar.json актуален"
+          else
+            git commit -m "chore: update lunar_calendar.json"
+            git pull --rebase --autostash || true
+            git push
+          fi
 
-    # 7. Telegram summary
-    - name: 📨 Send monthly summary
-      if: env.RUN_CALENDAR == 'yes'
-      env:
-        TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
-        CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
-      run: python send_monthly_calendar.py
+      # 7. Telegram summary
+      - name: Send monthly summary
+        if: ${{ env.RUN_CALENDAR == 'yes' }}
+        env:
+          TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
+          CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
+        run: python send_monthly_calendar.py

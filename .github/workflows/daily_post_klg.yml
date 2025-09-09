@@ -1,55 +1,115 @@
-name: 🇷🇺 Kaliningrad daily post
+name: Daily VayboMeter (KLD)
 
 on:
   schedule:
-    # 12:00 UTC → 17:00 Asia/Nicosia
-    - cron: '0 15 * * *'
+    # Утренний пост: 05:00 UTC = 08:00 МСК
+    - cron: '0 5 * * *'
+    # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
+    - cron: '0 9 * * *'
   workflow_dispatch:
+    inputs:
+      run_morning:
+        description: "Запустить утренний пост"
+        default: "true"
+        required: false
+      run_noon_fx:
+        description: "Запустить пост только с курсами"
+        default: "false"
+        required: false
+      work_date:
+        description: "Переопределить дату (YYYY-MM-DD)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-post-klg
+  cancel-in-progress: false
+
+# общие переменные окружения для всех джоб
+env:
+  TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
+  CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
+  OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
+  # короткие советы из LLM для ежедневки — включены
+  GEN_SKIP_SHORT: "1"
+  DISABLE_LLM_DAILY: "0"
+  # локальная зона для Python
+  TZ: Europe/Kaliningrad
+  # можно переопределить дату при ручном запуске
+  WORK_DATE: ${{ github.event.inputs.work_date }}
 
 jobs:
-  post:
+  morning:
+    name: Morning post (08:00 MSK)
     runs-on: ubuntu-latest
-
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 5 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+       (!github.event.inputs.run_morning || github.event.inputs.run_morning == 'true'))
     steps:
-      - name: 📥 Checkout repo
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: 🔍 Проверка сети Schumann и Open-Meteo
-        run: |
-          echo "=== Проверка Schumann API через зеркала ==="
-          # зеркало через CodeTabs
-          curl -I https://api.codetabs.com/v1/proxy?quest=https://api.glcoherence.org/v1/earth || true
-          # зеркало через Freeboard ThingProxy
-          curl -I https://thingproxy.freeboard.io/fetch/https://api.glcoherence.org/v1/earth || true
-          # зеркало через AllOrigins
-          curl -I https://api.allorigins.win/raw?url=https://api.glcoherence.org/v1/earth || true
-          # прямой основной endpoint
-          curl -I https://api.glcoherence.org/v1/earth || true
-          # второй источник
-          curl -I https://gci-api.ucsd.edu/data/latest || true
-          echo "---"
-          echo "=== Проверка Open-Meteo Forecast ==="
-          curl -I "https://api.open-meteo.com/v1/forecast?latitude=34.707&longitude=33.022&hourly=soil_temperature_0cm" || true
-
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      - name: 📦 Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt \
-              requests python-dateutil pendulum astropy
+          pip install -r requirements.txt
 
-      - name: 🚀 Run VayбоМетр poster
-        env:
-          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
-          TELEGRAM_TOKEN_KLG:  ${{ secrets.TELEGRAM_TOKEN_KLG }}
-          CHANNEL_ID_KLG:      ${{ secrets.CHANNEL_ID_KLG }}
-          OWM_KEY:         ${{ secrets.OWM_KEY }}
-          AIRVISUAL_KEY:   ${{ secrets.AIRVISUAL_KEY }}
-          AMBEE_KEY:       ${{ secrets.AMBEE_KEY }}
-          COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
-          COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
-        run: python post_kld.py
+      - name: Post morning (for tomorrow)
+        shell: bash
+        run: |
+          python <<'PY'
+          import os, runpy, sys, pendulum
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
+          # Ежедневный пост на завтра
+          sys.argv = ["post_kld.py", "--for-tomorrow"]
+          runpy.run_path("post_kld.py", run_name="__main__")
+          PY
+
+  noon_fx:
+    name: Noon FX only (12:00 MSK)
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Post FX only (12:00 MSK)
+        shell: bash
+        run: |
+          python <<'PY'
+          import os, runpy, sys, pendulum
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
+          # Пост только с курсами валют
+          sys.argv = ["post_kld.py", "--fx-only"]
+          runpy.run_path("post_kld.py", run_name="__main__")
+          PY

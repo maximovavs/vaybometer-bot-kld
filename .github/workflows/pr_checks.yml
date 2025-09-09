@@ -1,0 +1,37 @@
+name: PR checks (smoke daily & FX)
+on:
+  pull_request:
+    branches: [ "main" ]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Smoke daily (dry-run)
+        env:
+          TELEGRAM_TOKEN_KLG: "test"
+          CHANNEL_ID_KLG: "-1001234567890"
+          TZ: Europe/Kaliningrad
+        run: |
+          python - <<'PY'
+          import runpy, sys, pendulum
+          pendulum.today = lambda tz=None: pendulum.parse("2025-09-05").in_tz(tz) if tz else pendulum.parse("2025-09-05")
+          sys.argv = ["post_kld.py", "--for-tomorrow", "--dry-run"]
+          runpy.run_path("post_kld.py", run_name="__main__")
+          PY
+      - name: Smoke FX (dry-run)
+        env:
+          TELEGRAM_TOKEN_KLG: "test"
+          CHANNEL_ID_KLG: "-1001234567890"
+          TZ: Europe/Kaliningrad
+        run: |
+          python post_kld.py --date 2025-09-05 --fx-only --dry-run

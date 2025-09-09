@@ -5,9 +5,10 @@ send_monthly_calendar.py
 
 Отправка месячного лунного поста-резюме в Telegram-канал.
 
-• читает lunar_calendar.json
+• читает lunar_calendar.json (новый формат {"days": ..., "month_voc": ...}
+  или старый — даты на верхнем уровне)
 • формирует красивый HTML-текст
-• фильтрует Void-of-Course короче MIN_VOC_MINUTES
+• корректно собирает/склеивает Void-of-Course и фильтрует интервалы короче MIN_VOC_MINUTES
 """
 
 import os
@@ -15,7 +16,8 @@ import json
 import asyncio
 import html
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+from collections import OrderedDict
 
 import pendulum
 from telegram import Bot, constants
@@ -38,7 +40,7 @@ except ValueError:
     raise RuntimeError("CHANNEL_ID_KLG должен быть числом")
 
 
-# ── helpers ────────────────────────────────────────────────────────────────
+# ── helpers (общие) ────────────────────────────────────────────────────────
 
 def _parse_dt(s: str, year: int) -> Optional[pendulum.DateTime]:
     """
@@ -58,6 +60,126 @@ def _parse_dt(s: str, year: int) -> Optional[pendulum.DateTime]:
         except Exception:
             return None
 
+
+def _merge_intervals(
+    intervals: List[Tuple[pendulum.DateTime, pendulum.DateTime]],
+    tol_min: int = 1
+) -> List[Tuple[pendulum.DateTime, pendulum.DateTime]]:
+    """Склейка пересекающихся/смежных интервалов (допускаем стык ±tol_min)."""
+    if not intervals:
+        return []
+    intervals = sorted(intervals, key=lambda ab: ab[0])
+    out = [intervals[0]]
+    tol = pendulum.duration(minutes=tol_min)
+    for s, e in intervals[1:]:
+        ps, pe = out[-1]
+        if s <= pe + tol:  # пересечение или почти стык
+            out[-1] = (ps, max(pe, e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def _parse_voc_entry_local(obj: Dict[str, Any]) -> Tuple[Optional[pendulum.DateTime], Optional[pendulum.DateTime]]:
+    """Парсинг дневного VoC из локальных строк 'DD.MM HH:mm' → pendulum в TZ."""
+    if not obj or not obj.get("start") or not obj.get("end"):
+        return None, None
+    try:
+        s = pendulum.from_format(obj["start"], "DD.MM HH:mm", tz=TZ)
+        e = pendulum.from_format(obj["end"],   "DD.MM HH:mm", tz=TZ)
+    except Exception:
+        return None, None
+    if e <= s:
+        return None, None
+    return s, e
+
+
+def _format_voc_interval(start: pendulum.DateTime, end: pendulum.DateTime) -> str:
+    """
+    Единый стиль для VoC:
+      • если в одни сутки:  02.06 09:10–13:25
+      • если на разные дни: 02.06 23:10–03.06 01:05
+    """
+    same_day = (start.date() == end.date())
+    if same_day:
+        return f"{start.format('DD.MM')} {start.format('HH:mm')}–{end.format('HH:mm')}"
+    return f"{start.format('DD.MM HH:mm')}–{end.format('DD.MM HH:mm')}"
+
+
+def load_calendar(src: Any = None
+) -> Tuple[OrderedDict[str, Dict[str, Any]], List[Tuple[pendulum.DateTime, pendulum.DateTime]], Dict[str, Any]]:
+    """
+    Нормализованный загрузчик календаря.
+
+    Вход: путь к файлу, Path, либо уже разобранный dict.
+    Выход:
+      days_map  — OrderedDict[YYYY-MM-DD] -> запись дня
+      month_voc — список (start_dt, end_dt) в TZ (локальные даты/время)
+      cats      — словарь категорий месяца
+    """
+    if src is None:
+        obj = json.loads(Path(CAL_FILE).read_text("utf-8"))
+    elif isinstance(src, (str, Path)):
+        obj = json.loads(Path(src).read_text("utf-8"))
+    else:
+        obj = src  # уже dict
+
+    # Новый формат
+    if isinstance(obj, dict) and "days" in obj:
+        days_map: OrderedDict[str, Dict[str, Any]] = OrderedDict(sorted(obj["days"].items()))
+        first_day = next(iter(days_map.values()), {})
+        cats = first_day.get("favorable_days") or {}
+
+        # month_voc из корня, если есть
+        voc_list: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+        for it in obj.get("month_voc") or []:
+            try:
+                s = pendulum.from_format(it["start"], "DD.MM HH:mm", tz=TZ)
+                e = pendulum.from_format(it["end"],   "DD.MM HH:mm", tz=TZ)
+                if e > s:
+                    voc_list.append((s, e))
+            except Exception:
+                continue
+
+        # Если month_voc нет — собираем из дневных кусков
+        if not voc_list:
+            pieces: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+            for rec in days_map.values():
+                s, e = _parse_voc_entry_local(rec.get("void_of_course"))
+                if s and e:
+                    pieces.append((s, e))
+            voc_list = _merge_intervals(pieces)
+
+    # Старый формат
+    else:
+        days_map = OrderedDict(sorted(obj.items()))
+        first_day = next(iter(days_map.values()), {})
+        cats = first_day.get("favorable_days") or {}
+
+        pieces: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+        for rec in days_map.values():
+            s, e = _parse_voc_entry_local(rec.get("void_of_course"))
+            if s and e:
+                pieces.append((s, e))
+        voc_list = _merge_intervals(pieces)
+
+    # Обрежем интервалы VoC рамками месяца на всякий случай
+    y, m = map(int, next(iter(days_map.keys())).split("-")[:2])
+    month_start = pendulum.datetime(y, m, 1, 0, 0, tz=TZ)
+    month_end   = month_start.end_of("month")
+    clipped: List[Tuple[pendulum.DateTime, pendulum.DateTime]] = []
+    for s, e in voc_list:
+        if s < month_end and e > month_start:
+            s2 = max(s, month_start)
+            e2 = min(e, month_end)
+            if e2 > s2:
+                clipped.append((s2, e2))
+    voc_list = _merge_intervals(clipped)
+
+    return days_map, voc_list, cats
+
+
+# ── рендер блоков ──────────────────────────────────────────────────────────
 
 def build_phase_blocks(data: Dict[str, Any]) -> str:
     """
@@ -104,18 +226,15 @@ def build_phase_blocks(data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_fav_blocks(rec: Dict[str, Any]) -> str:
+def build_fav_blocks(rec_or_cats: Dict[str, Any]) -> str:
     """
-    Формирует блок «благоприятных/неблагоприятных дней»:
-    ✅ Благоприятные: 2, 3, 9, 27
-    ❌ Неблагоприятные: 13, 14, 24
-    ✂️ Стрижка: 2, 3, 9
-    ✈️ Путешествия: 4, 5
-    🛍️ Покупки: 1, 2, 7
-    ❤️ Здоровье: 20, 21, 27
+    Формирует блок «благоприятных/неблагоприятных дней».
+    Функция принимает либо запись дня с ключом 'favorable_days', либо сам словарь категорий.
     """
-    fav = rec.get("favorable_days", {})
+    fav = rec_or_cats.get("favorable_days") if "favorable_days" in rec_or_cats else rec_or_cats
+    fav = fav or {}
     general = fav.get("general", {})
+
     def fmt_list(key: str) -> str:
         lst = fav.get(key, {}).get("favorable", [])
         return ", ".join(map(str, lst)) if lst else "—"
@@ -131,32 +250,27 @@ def build_fav_blocks(rec: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def build_voc_list(data: Dict[str, Any], year: int) -> str:
+def build_voc_block(voc_list: List[Tuple[pendulum.DateTime, pendulum.DateTime]]) -> str:
     """
-    Собирает все VoC длительностью ≥ MIN_VOC_MINUTES:
-    02.06 14:30 → 02.06 15:10
+    Рендерит месячный список VoC из уже нормализованных интервалов.
+    Применяет порог MIN_VOC_MINUTES и единый стиль форматирования.
     """
     items: List[str] = []
-    for d in sorted(data):
-        voc = data[d].get("void_of_course", {})
-        start_s = voc.get("start")
-        end_s = voc.get("end")
-        if not start_s or not end_s:
+    for s, e in voc_list:
+        if (e - s).in_minutes() < MIN_VOC_MINUTES:
             continue
-        t1 = _parse_dt(start_s, year)
-        t2 = _parse_dt(end_s, year)
-        if not t1 or not t2:
-            continue
-        if (t2 - t1).in_minutes() < MIN_VOC_MINUTES:
-            continue
-        items.append(f"{t1.format('DD.MM HH:mm')}  →  {t2.format('DD.MM HH:mm')}")
+        items.append(_format_voc_interval(s, e))
 
     if not items:
         return ""
-    return "<b>⚫️ Void-of-Course:</b>\n" + "\n".join(items)
+    return "<b>⚫️ VoC (Void-of-Course):</b>\n" + "\n".join(items)
 
 
-def build_message(data: Dict[str, Any]) -> str:
+# ── сборка финального сообщения ────────────────────────────────────────────
+
+def build_message(days_map: Dict[str, Any],
+                  month_voc: List[Tuple[pendulum.DateTime, pendulum.DateTime]],
+                  cats: Dict[str, Any]) -> str:
     """
     Собирает полный HTML-текст для месячного поста:
     1) Заголовок с месяцем и годом
@@ -165,18 +279,13 @@ def build_message(data: Dict[str, Any]) -> str:
     4) Блок VoC (если есть)
     5) Пояснение про VoC
     """
-    # первая дата в словаре, используется для заголовка
-    first_key = sorted(data.keys())[0]
+    first_key = next(iter(days_map.keys()))
     first_day = pendulum.parse(first_key)
     header = f"{MOON_EMOJI} <b>Лунный календарь {first_day.format('MMMM YYYY', locale='ru').upper()}</b>\n"
 
-    phases_block = build_phase_blocks(data)
-
-    # берем первый элемент словаря, чтобы получить список favorable_days
-    example_rec = next(iter(data.values()), {})
-    fav_block = build_fav_blocks(example_rec)
-
-    voc_block = build_voc_list(data, first_day.year)
+    phases_block = build_phase_blocks(days_map)
+    fav_block = build_fav_blocks(cats)
+    voc_block = build_voc_block(month_voc)
 
     footer = (
         "\n<i>⚫️ Void-of-Course — период, когда Луна завершила все аспекты "
@@ -196,9 +305,12 @@ def build_message(data: Dict[str, Any]) -> str:
 async def main():
     # читаем lunar_calendar.json
     raw = Path(CAL_FILE).read_text("utf-8")
-    data = json.loads(raw)  # ожидаем { "2025-06-01": { ... }, ... }
+    obj = json.loads(raw)
 
-    text = build_message(data)
+    # нормализуем данные (работает и с новым, и со старым форматом)
+    days_map, month_voc, cats = load_calendar(obj)
+
+    text = build_message(days_map, month_voc, cats)
 
     bot = Bot(TOKEN)
     await bot.send_message(

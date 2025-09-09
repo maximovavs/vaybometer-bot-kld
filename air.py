@@ -8,7 +8,7 @@ air.py
   1) IQAir / nearest_city  (API key: AIRVISUAL_KEY)
   2) Open-Meteo Air-Quality (без ключа)
 
-• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Meteо
+• merge_air_sources() — объединяет словари с приоритетом IQAir → Open-Meteo
 • get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
 • get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
 • get_kp()               — (kp, state, ts_unix, src) — индекс Kp с «свежестью»
@@ -40,9 +40,14 @@ from utils import _get  # HTTP-обёртка (_get_retry внутри)
 
 __all__ = ("get_air", "get_sst", "get_kp", "get_solar_wind")
 
-# ───────────────────────── Константы / кеш ─────────────────────────
+# ───────────────────────── Константы / лог / кеш ─────────────────────────
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 AIR_KEY = os.getenv("AIRVISUAL_KEY")
+
+# Единый сетевой таймаут (сек) — можно переопределить переменной окружения HTTP_TIMEOUT
+REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
 
 CACHE_DIR = Path.home() / ".cache" / "vaybometer"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -69,6 +74,23 @@ SWP_PLA_5M = "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute
 
 SRC_EMOJI = {"iqair": "📡", "openmeteo": "🛰", "n/d": "⚪"}
 SRC_ICON  = {"iqair": "📡 IQAir", "openmeteo": "🛰 OM", "n/d": "⚪ н/д"}
+
+# ───────────────────────── Безопасная HTTP-обёртка ─────────────────────────
+
+def _safe_http_get(url: str, **kwargs) -> Optional[Dict[str, Any]]:
+    """
+    Пытается вызвать utils._get с таймаутом. Если у _get нет аргумента timeout,
+    повторно вызывает без него. Любые исключения логируются и возвращается None.
+    """
+    try:
+        try:
+            return _get(url, timeout=REQUEST_TIMEOUT, **kwargs)
+        except TypeError:
+            # если твой _get не поддерживает timeout
+            return _get(url, **kwargs)
+    except Exception as e:
+        logging.warning("_safe_http_get — HTTP error: %s", e)
+        return None
 
 # ───────────────────────── Утилиты AQI/Kp ──────────────────────────
 
@@ -105,20 +127,17 @@ def _pick_nearest_hour(arr_time: List[str], arr_val: List[Any]) -> Optional[floa
 def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     if not AIR_KEY:
         return None
-    try:
-        resp = _get(
-            "https://api.airvisual.com/v2/nearest_city",
-            lat=lat, lon=lon, key=AIR_KEY,
-        )
-    except Exception as e:
-        logging.warning("IQAir request error: %s", e)
-        return None
+    resp = _safe_http_get(
+        "https://api.airvisual.com/v2/nearest_city",
+        lat=lat, lon=lon, key=AIR_KEY,
+    )
     if not resp or "data" not in resp:
         return None
     try:
-        pol = resp["data"]["current"].get("pollution", {}) or {}
+        pol = (resp.get("data", {}) or {}).get("current", {}).get("pollution", {}) or {}
         aqi_val  = pol.get("aqius")
-        pm25_val = pol.get("p2")
+        # В публичном API обычно нет микрограммов PM, оставляем None если нет
+        pm25_val = pol.get("p2")   # если ключа нет — будет None (ок)
         pm10_val = pol.get("p1")
         return {
             "aqi":  float(aqi_val)  if isinstance(aqi_val,  (int, float)) else None,
@@ -131,15 +150,11 @@ def _src_iqair(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         return None
 
 def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    try:
-        resp = _get(
-            "https://air-quality-api.open-meteo.com/v1/air-quality",
-            latitude=lat, longitude=lon,
-            hourly="pm10,pm2_5,us_aqi", timezone="UTC",
-        )
-    except Exception as e:
-        logging.warning("Open-Meteo AQ request error: %s", e)
-        return None
+    resp = _safe_http_get(
+        "https://air-quality-api.open-meteo.com/v1/air-quality",
+        latitude=lat, longitude=lon,
+        hourly="pm10,pm2_5,us_aqi", timezone="UTC",
+    )
     if not resp or "hourly" not in resp:
         return None
     try:
@@ -153,7 +168,7 @@ def _src_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         pm10_norm = float(pm10_val) if isinstance(pm10_val, (int, float)) and math.isfinite(pm10_val) and pm10_val >= 0 else None
         return {"aqi": aqi_norm, "pm25": pm25_norm, "pm10": pm10_norm, "src": "openmeteo"}
     except Exception as e:
-        logging.warning("Open-Mетео AQ parse error: %s", e)
+        logging.warning("Open-Meteo AQ parse error: %s", e)
         return None
 
 # ───────────────────────── Merge AQI ───────────────────────────────
@@ -215,15 +230,11 @@ def get_air(lat: float, lon: float) -> Dict[str, Any]:
 # ───────────────────────── SST (по ближайшему часу) ─────────────────
 
 def get_sst(lat: float, lon: float) -> Optional[float]:
-    try:
-        resp = _get(
-            "https://marine-api.open-meteo.com/v1/marine",
-            latitude=lat, longitude=lon,
-            hourly="sea_surface_temperature", timezone="UTC",
-        )
-    except Exception as e:
-        logging.warning("Marine SST request error: %s", e)
-        return None
+    resp = _safe_http_get(
+        "https://marine-api.open-meteo.com/v1/marine",
+        latitude=lat, longitude=lon,
+        hourly="sea_surface_temperature", timezone="UTC",
+    )
     if not resp or "hourly" not in resp:
         return None
     try:
@@ -255,12 +266,16 @@ def _save_kp_cache(kp: float, ts: int, src: str) -> None:
         logging.warning("Kp cache write error: %s", e)
 
 def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optional[Any]:
+    data = None
     for i in range(attempts):
-        data = _get(url)
+        data = _safe_http_get(url)
         if data:
-            return data
-        time.sleep(backoff ** i)
-    return None
+            break
+        try:
+            time.sleep(backoff ** i)
+        except Exception:
+            pass
+    return data
 
 def _parse_kp_from_table(data: Any) -> tuple[Optional[float], Optional[int]]:
     """
@@ -341,7 +356,6 @@ def get_kp() -> tuple[Optional[float], str, Optional[int], str]:
         if age <= KP_TTL_SEC:
             return c_kp, _kp_state(c_kp), c_ts, (c_src or "cache")
         if age <= KP_HARD_MAX_AGE_SEC:
-            # Разрешаем как «последнее известное», но уже лучше подсвечивать «давность» в тексте
             return c_kp, _kp_state(c_kp), c_ts, (c_src or "cache")
 
     return None, "н/д", None, "n/d"
@@ -432,14 +446,8 @@ def get_solar_wind() -> Dict[str, Any]:
     now_ts = int(time.time())
 
     # 1) читаем оба продукта
-    try:
-        mag = _get(SWP_MAG_5M)  # ожидание формата: [ [header...], [row...], ... ]
-    except Exception:
-        mag = None
-    try:
-        pla = _get(SWP_PLA_5M)
-    except Exception:
-        pla = None
+    mag = _safe_http_get(SWP_MAG_5M)
+    pla = _safe_http_get(SWP_PLA_5M)
 
     bz = bt = v = n = None
     ts_list: List[int] = []
