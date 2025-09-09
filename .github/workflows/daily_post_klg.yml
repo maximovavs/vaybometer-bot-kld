@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       run_morning:
-        description: "Запустить утренний пост"
+        description: "Запустить вечернийй пост"
         default: "true"
         required: false
       run_noon_fx:
