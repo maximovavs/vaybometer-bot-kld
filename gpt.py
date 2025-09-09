@@ -46,14 +46,11 @@ PROVIDER_ORDER = [p for p in ("openai", "gemini", "groq")]
 
 # (любой из списка, по порядку)
 GROQ_MODELS = [
-    "llama-3.1-8b-instant",     # быстрый
-    "llama-3.1-70b-specdec",    # если доступен в твоём аккаунте
-    "llama-3.2-11b-text-preview",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b",
-    "llama3-70b-8192",
-    "mixtral-8x7b-32768",
-    "gemma-7b-it"
+    "llama-3.3-70b-versatile",   # топ по качеству из доступных
+    "llama-3.1-8b-instant",      # дешёвый/быстрый
+    "gemma2-9b-it",              # аккуратный, стабильный
+    "qwen/qwen3-32b",            # сильный баланс
+    "deepseek-r1-distill-llama-70b",  # мощный, но даёт <think>…</think>
 ]
 
 # ── клиенты ────────────────────────────────────────────────────────────────
