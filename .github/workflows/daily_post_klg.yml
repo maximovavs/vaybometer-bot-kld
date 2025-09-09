@@ -8,7 +8,7 @@ on:
     - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
-      run_morning:
+      run_evening:
         description: "Запустить вечерний пост"
         default: "true"
         required: false
@@ -60,7 +60,7 @@ jobs:
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
-       (!github.event.inputs.run_morning || github.event.inputs.run_morning == 'true'))
+       (!github.event.inputs.run_evening || github.event.inputs.run_evening == 'true'))
     steps:
       - uses: actions/checkout@v4
 
