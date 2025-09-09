@@ -367,7 +367,8 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
         return []
 
     system = (
-        "Ты делаешь очень короткую сводку астрособытий на СЕГОДНЯ (2–3 строки). "
+        "Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
+        "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
         "Пиши по-русски, без клише. Используй ТОЛЬКО данную информацию: "
         "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
         "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи."
@@ -610,7 +611,7 @@ def build_message(region_name: str,
 
     # Астрособытия (LLM+VoC из lunar_calendar.json)
     P.append(build_astro_section(
-        date_local=pendulum.today(pendulum.timezone("Asia/Nicosia")),  # календарь ведём в Asia/Nicosia
+        date_local=pendulum.today(pendulum.timezone("Asia/Nicosia").add(days=1)),  # календарь ведём в Asia/Nicosia
         tz_local="Asia/Nicosia"
     ))
     P.append("———")
