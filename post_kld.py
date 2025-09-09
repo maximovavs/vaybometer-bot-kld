@@ -9,11 +9,16 @@ post_kld.py  •  Запуск «Kaliningrad daily post» для Telegram-кан
   3) --dry-run           — ничего не отправляет (полезно для теста workflow).
   4) --date YYYY-MM-DD   — дата для заголовков/FX (по умолчанию — сегодня в TZ).
   5) --for-tomorrow      — сдвиг даты +1 день (удобно для «поста на завтра»).
+  6) --to-test           — публиковать в тестовый канал (CHANNEL_ID_TEST).
+  7) --chat-id ID        — явный chat_id канала (перебивает всё остальное).
 
 Переменные окружения:
-  TELEGRAM_TOKEN_KLG, CHANNEL_ID_KLG — обязательно.
-  DISABLE_LLM_DAILY — если "1"/"true" → ежедневный LLM отключён (чтение в post_common).
-  TZ (опц.) — таймзона, по умолчанию Europe/Kaliningrad.
+  TELEGRAM_TOKEN_KLG — обязательно.
+  CHANNEL_ID_KLG     — ID основного канала (если не задан --chat-id/--to-test).
+  CHANNEL_ID_TEST    — ID тестового канала (для --to-test).
+  CHANNEL_ID_OVERRIDE — явный chat_id (перебивает всё; удобно в Actions inputs).
+  DISABLE_LLM_DAILY  — если "1"/"true" → ежедневный LLM отключён (читает post_common).
+  TZ (опц.)          — таймзона, по умолчанию Europe/Kaliningrad.
 """
 
 from __future__ import annotations
@@ -35,17 +40,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ────────────────────────────── Secrets / Env ────────────────────────────────
 
-TOKEN_KLG      = os.getenv("TELEGRAM_TOKEN_KLG", "")
-CHANNEL_ID_KLG = os.getenv("CHANNEL_ID_KLG", "")
-
-if not TOKEN_KLG or not CHANNEL_ID_KLG:
-    logging.error("Не заданы TELEGRAM_TOKEN_KLG и/или CHANNEL_ID_KLG")
-    sys.exit(1)
-
-try:
-    CHAT_ID_KLG = int(CHANNEL_ID_KLG)
-except ValueError:
-    logging.error("CHANNEL_ID_KLG должен быть числом (например, -1001234567890)")
+TOKEN_KLG = os.getenv("TELEGRAM_TOKEN_KLG", "")
+if not TOKEN_KLG:
+    logging.error("Не задан TELEGRAM_TOKEN_KLG")
     sys.exit(1)
 
 # ───────────────────────────── Параметры региона ────────────────────────────
@@ -136,7 +133,7 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> T
 def _normalize_cbr_date(raw) -> str | None:
     """
     Приводим дату ЦБ к строке 'YYYY-MM-DD' в TZ Москвы.
-    Поддерживаем варианты: pendulum Date/DateTime, unix timestamp, ISO-строка.
+    Поддерживаем варианты: pendulum Date/DateTime, unix timestamp, ISO-строка и т.п.
     """
     if raw is None:
         return None
@@ -155,7 +152,6 @@ def _normalize_cbr_date(raw) -> str | None:
     # строка
     try:
         s = str(raw).strip()
-        # если есть время — распарсим и возьмём дату по Москве
         if "T" in s or " " in s:
             return pendulum.parse(s, tz="Europe/Moscow").to_date_string()
         # возможно уже YYYY-MM-DD
@@ -185,7 +181,7 @@ async def _send_fx_only(
         if cbr_date and hasattr(fx, "should_publish_again"):  # type: ignore[attr-defined]
             should = fx.should_publish_again(FX_CACHE_PATH, cbr_date)  # type: ignore[attr-defined]
             if not should:
-                logging.info("FX: Курсы ЦБ не обновились — пост пропущен.")
+                logging.info("Курсы ЦБ не обновились — пост пропущен.")
                 return
     except Exception as e:
         # не считаем ошибкой — просто публикуем
@@ -206,6 +202,47 @@ async def _send_fx_only(
     except Exception as e:
         logging.warning("FX: save cache failed: %s", e)
 
+# ───────────────────────────── Chat selection ────────────────────────────────
+
+def resolve_chat_id(args_chat: str, to_test: bool) -> int:
+    """
+    Выбирает chat_id по приоритетам:
+      1) --chat-id / CHANNEL_ID_OVERRIDE
+      2) --to-test  → CHANNEL_ID_TEST
+      3) CHANNEL_ID_KLG
+    """
+    # 1) явный аргумент или ENV override
+    chat_override = (args_chat or "").strip() or os.getenv("CHANNEL_ID_OVERRIDE", "").strip()
+    if chat_override:
+        try:
+            return int(chat_override)
+        except Exception:
+            logging.error("Неверный chat_id (override): %r", chat_override)
+            sys.exit(1)
+
+    # 2) тестовый канал
+    if to_test:
+        ch_test = os.getenv("CHANNEL_ID_TEST", "").strip()
+        if not ch_test:
+            logging.error("--to-test задан, но CHANNEL_ID_TEST не определён в окружении")
+            sys.exit(1)
+        try:
+            return int(ch_test)
+        except Exception:
+            logging.error("CHANNEL_ID_TEST должен быть числом, получено: %r", ch_test)
+            sys.exit(1)
+
+    # 3) основной канал
+    ch_main = os.getenv("CHANNEL_ID_KLG", "").strip()
+    if not ch_main:
+        logging.error("CHANNEL_ID_KLG не задан и не указан --chat-id/override")
+        sys.exit(1)
+    try:
+        return int(ch_main)
+    except Exception:
+        logging.error("CHANNEL_ID_KLG должен быть числом, получено: %r", ch_main)
+        sys.exit(1)
+
 # ───────────────────────────────── Main ─────────────────────────────────────
 
 async def main_kld() -> None:
@@ -214,6 +251,8 @@ async def main_kld() -> None:
     parser.add_argument("--for-tomorrow", action="store_true", help="Использовать дату +1 день")
     parser.add_argument("--dry-run", action="store_true", help="Не отправлять сообщение, только лог")
     parser.add_argument("--fx-only", action="store_true", help="Отправить только блок «Курсы валют»")
+    parser.add_argument("--to-test", action="store_true", help="Публиковать в тестовый канал (CHANNEL_ID_TEST)")
+    parser.add_argument("--chat-id", type=str, default="", help="Явный chat_id канала (перебивает все остальные)")
     args = parser.parse_args()
 
     tz = pendulum.timezone(TZ_STR)
@@ -221,10 +260,11 @@ async def main_kld() -> None:
     if args.for_tomorrow:
         base_date = base_date.add(days=1)
 
+    chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN_KLG)
 
     if args.fx_only:
-        await _send_fx_only(bot, CHAT_ID_KLG, base_date, tz, dry_run=args.dry_run)
+        await _send_fx_only(bot, chat_id, base_date, tz, dry_run=args.dry_run)
         return
 
     if args.dry_run:
@@ -234,7 +274,7 @@ async def main_kld() -> None:
     # Обычный ежедневный пост
     await main_common(
         bot=bot,
-        chat_id=CHAT_ID_KLG,
+        chat_id=chat_id,
         region_name="Калининградская область",
         sea_label=SEA_LABEL,
         sea_cities=SEA_CITIES_ORDERED,
