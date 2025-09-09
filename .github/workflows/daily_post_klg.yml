@@ -2,8 +2,8 @@ name: Daily VayboMeter (KLD)
 
 on:
   schedule:
-    # Утренний пост: 05:00 UTC = 08:00 МСК
-    - cron: '0 5 * * *'
+    # Вечерний пост: 12:00 UTC → 17:00 Asia/Nicosia
+    - cron: '0 15 * * *'
     # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
     - cron: '0 9 * * *'
   workflow_dispatch:
