@@ -609,12 +609,15 @@ def build_message(region_name: str,
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-    # Астрособытия (LLM+VoC из lunar_calendar.json)
+   # Астрособытия (LLM+VoC из lunar_calendar.json)
+    tz_nic = pendulum.timezone("Asia/Nicosia")              # календарь ведём в Asia/Nicosia
+    date_for_astro = pendulum.today(tz_nic).add(days=1)     # ← .add на *дате*, а не на таймзоне
     P.append(build_astro_section(
-        date_local=pendulum.today(pendulum.timezone("Asia/Nicosia").add(days=1)),  # календарь ведём в Asia/Nicosia
+        date_local=date_for_astro,
         tz_local="Asia/Nicosia"
     ))
     P.append("———")
+
 
     # Вывод + советы
     culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
