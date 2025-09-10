@@ -194,25 +194,25 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 
 def schumann_line(s: Dict[str, Any]) -> str:
     """
-    Возвращает 2 строки:
-    1) статус + числа + тренд + H7
-    2) мягкая интерпретация
-    — если нет чисел, показываем компактную строку без «н/д Гц / н/д».
+    2 строки:
+      1) статус + числа/сообщение + тренд + H7
+      2) мягкая интерпретация
+    — если чисел нет, показываем коротко, без повторения «Шуман».
     """
     freq = s.get("freq")
     amp  = s.get("amp")
     trend_text = s.get("trend_text") or _trend_text(s.get("trend", "→"))
-    status = s.get("status") or _freq_status(freq)[0]
+    status_lbl = s.get("status") or _freq_status(freq)[0]
     h7line = s.get("h7_text") or _h7_text(s.get("h7_amp"), s.get("h7_spike"))
     interp = s.get("interpretation") or _gentle_interpretation(s.get("status_code") or _freq_status(freq)[1])
 
     if not isinstance(freq, (int, float)) and not isinstance(amp, (int, float)):
-        main = f"{status} Шуман: данных нет — используем последнюю оценку; тренд: {trend_text} • {h7line}"
+        main = f"{status_lbl} — нет свежих чисел; тренд: {trend_text} • {h7line}"
         return main + "\n" + interp
 
     fstr = f"{freq:.2f}" if isinstance(freq, (int, float)) else "н/д"
     astr = f"{amp:.2f} pT" if isinstance(amp, (int, float)) else "н/д"
-    main = f"{status} Шуман: {fstr} Гц / {astr} — тренд: {trend_text} • {h7line}"
+    main = f"{status_lbl} Шуман: {fstr} Гц / {astr} — тренд: {trend_text} • {h7line}"
     return main + "\n" + interp
 
 # ───────────── Safecast / чтение файла ─────────────
@@ -319,15 +319,11 @@ def safecast_block_lines() -> List[str]:
 
 # ───────────── Радиация (официальный источник) ─────────────
 def radiation_line(lat: float, lon: float) -> Optional[str]:
-    """
-    Берём дозу из get_radiation(lat, lon) и возвращаем строку для поста
-    со строгой шкалой эмодзи 🟢/🟡/🔴. Возвращает None, если данных нет.
-    """
     data = get_radiation(lat, lon) or {}
     dose = data.get("dose")
     if isinstance(dose, (int, float)):
         em, lbl = official_usvh_risk(float(dose))
-        return f"{em} Радиация: {float(dose):.3f} μSv/h ({lbl})"
+        return f"{em} Радиация: {dose:.3f} μSv/h ({lbl})"
     return None
 
 # ───────────── Зодиаки → символы ─────────────
@@ -503,8 +499,12 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None,
     # формируем блок
     lines = ["🌌 <b>Астрособытия</b>"]
     lines += [zsym(x) for x in bullets[:3]]
-    if voc_text:
+
+    # Если LLM использовался (и уже упомянул VoC), отдельную строку не добавляем
+    llm_used = bool(bullets) and USE_DAILY_LLM
+    if voc_text and not llm_used:
         lines.append(f"⚫️ VoC: {voc_text}")
+
     return "\n".join(lines)
 
 # ───────────── Помощники: hourly на завтра (ветер/давление) ─────────────
@@ -529,9 +529,8 @@ def _nearest_index_for_day(times: List[pendulum.DateTime], date_obj: pendulum.Da
     if not times:
         return None
     target = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, prefer_hour, 0, tz=tz)
-    best_i, best_dt, best_diff = None, None, None
+    best_i, best_diff = None, None
     for i, dt in enumerate(times):
-        # times уже в локальном часовом поясе (как вернул weather.get_weather), но на всякий случай:
         try:
             dt_local = dt.in_tz(tz)
         except Exception:
@@ -540,7 +539,7 @@ def _nearest_index_for_day(times: List[pendulum.DateTime], date_obj: pendulum.Da
             continue
         diff = abs((dt_local - target).total_seconds())
         if best_diff is None or diff < best_diff:
-            best_i, best_dt, best_diff = i, dt_local, diff
+            best_i, best_diff = i, diff
     return best_i
 
 def _circular_mean_deg(deg_list: List[float]) -> Optional[float]:
@@ -558,74 +557,76 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
     Возвращает:
       wind_ms (float|None), wind_dir_deg (int|None),
       pressure_hpa (int|None), pressure_trend ("↑","↓","→")
-    Берём ближайшее к 12:00; тренд — относительно 06:00.
+    Берём ближайшее к 12:00 завтрашнего дня; тренд — относительно ~06:00.
+    Даём мягкие фолбэки на current.
     """
     hourly = wm.get("hourly") or {}
     times = _hourly_times(wm)
-    if not times:
-        return None, None, None, "→"
-
     tomorrow = pendulum.now(tz).add(days=1).date()
 
-    idx_noon = _nearest_index_for_day(times, tomorrow, prefer_hour=12, tz=tz)
-    idx_morn = _nearest_index_for_day(times, tomorrow, prefer_hour=6, tz=tz)
-    if idx_noon is None:
-        # возьмём среднее за день
-        idxs = [i for i, t in enumerate(times) if t.in_tz(tz).date() == tomorrow]
-        if not idxs:
-            return None, None, None, "→"
-        # ветер — усреднение, давление — медиана/среднее последнего
-        spd_key = _pick(hourly, "windspeed_10m", "windspeed", default=[])
-        dir_key = _pick(hourly, "winddirection_10m", "winddirection", default=[])
-        prs_key = _pick(hourly, "surface_pressure", default=[])
-        try:
-            speeds = [float(spd_key[i]) for i in idxs if i < len(spd_key)]
-        except Exception:
-            speeds = []
-        try:
-            dirs = [float(dir_key[i]) for i in idxs if i < len(dir_key)]
-        except Exception:
-            dirs = []
-        try:
-            prs_vals = [float(prs_key[i]) for i in idxs if i < len(prs_key)]
-        except Exception:
-            prs_vals = []
-        wind_ms = kmh_to_ms(sum(speeds)/len(speeds)) if speeds else None
-        wind_dir = int(round(_circular_mean_deg(dirs))) if dirs and _circular_mean_deg(dirs) is not None else None
-        press_val = int(round(sum(prs_vals)/len(prs_vals))) if prs_vals else None
-        return wind_ms, wind_dir, press_val, "→"
+    # Набор синонимов ключей
+    spd_arr = _pick(hourly, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed", default=[])
+    dir_arr = _pick(hourly, "winddirection_10m", "winddirection", "wind_dir_10m", "wind_dir", default=[])
+    prs_arr = hourly.get("surface_pressure", []) or hourly.get("pressure", [])
 
-    # точечные значения (около 12:00 и 06:00)
-    spd_arr = _pick(hourly, "windspeed_10m", "windspeed", default=[])
-    dir_arr = _pick(hourly, "winddirection_10m", "winddirection", default=[])
-    prs_arr = hourly.get("surface_pressure", [])
-    try:
-        spd = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
-    except Exception:
-        spd = None
-    try:
-        wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
-    except Exception:
-        wdir = None
-    try:
-        p_noon = float(prs_arr[idx_noon]) if idx_noon < len(prs_arr) else None
-    except Exception:
-        p_noon = None
-    try:
-        p_morn = float(prs_arr[idx_morn]) if (idx_morn is not None and idx_morn < len(prs_arr)) else None
-    except Exception:
-        p_morn = None
+    if times:
+        idx_noon = _nearest_index_for_day(times, tomorrow, prefer_hour=12, tz=tz)
+        idx_morn = _nearest_index_for_day(times, tomorrow, prefer_hour=6,  tz=tz)
+    else:
+        idx_noon = idx_morn = None
 
-    wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else None
-    wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
-
+    wind_ms = None
+    wind_dir = None
+    press_val = None
     trend = "→"
-    if isinstance(p_noon, (int, float)) and isinstance(p_morn, (int, float)):
-        diff = p_noon - p_morn
-        if diff >= 0.3: trend = "↑"
-        elif diff <= -0.3: trend = "↓"
 
-    press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
+    # Попытка №1: точечные значения 12:00/06:00
+    if idx_noon is not None:
+        try: spd = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
+        except Exception: spd = None
+        try: wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
+        except Exception: wdir = None
+        try: p_noon = float(prs_arr[idx_noon]) if idx_noon < len(prs_arr) else None
+        except Exception: p_noon = None
+        try: p_morn = float(prs_arr[idx_morn]) if (idx_morn is not None and idx_morn < len(prs_arr)) else None
+        except Exception: p_morn = None
+
+        wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else None
+        wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
+        press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
+        if isinstance(p_noon, (int, float)) and isinstance(p_morn, (int, float)):
+            diff = p_noon - p_morn
+            if diff >= 0.3: trend = "↑"
+            elif diff <= -0.3: trend = "↓"
+
+    # Попытка №2: среднее за день
+    if wind_ms is None and times:
+        idxs = [i for i, t in enumerate(times) if t.in_tz(tz).date() == tomorrow]
+        if idxs:
+            try: speeds = [float(spd_arr[i]) for i in idxs if i < len(spd_arr)]
+            except Exception: speeds = []
+            try: dirs   = [float(dir_arr[i]) for i in idxs if i < len(dir_arr)]
+            except Exception: dirs = []
+            try: prs    = [float(prs_arr[i]) for i in idxs if i < len(prs_arr)]
+            except Exception: prs = []
+            if speeds: wind_ms = kmh_to_ms(sum(speeds)/len(speeds))
+            mean_dir = _circular_mean_deg(dirs)
+            wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
+            if prs: press_val = int(round(sum(prs)/len(prs)))
+
+    # Попытка №3: фолбэк на current
+    if wind_ms is None or wind_dir is None or press_val is None:
+        cur = wm.get("current") or {}
+        if wind_ms is None:
+            spd = cur.get("windspeed") or cur.get("wind_speed")
+            wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else wind_ms
+        if wind_dir is None:
+            wdir = cur.get("winddirection") or cur.get("wind_dir")
+            wind_dir = int(round(float(wdir))) if isinstance(wdir, (int, float)) else wind_dir
+        if press_val is None and isinstance(cur.get("pressure"), (int, float)):
+            press_val = int(round(float(cur["pressure"])))
+        # тренд оставляем "→"
+
     return wind_ms, wind_dir, press_val, trend
 
 # ───────────── сообщение ─────────────
