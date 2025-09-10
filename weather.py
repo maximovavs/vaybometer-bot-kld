@@ -10,12 +10,7 @@ weather.py
 
 Дополнительно:
 • day_night_stats(lat, lon, tz="UTC") → {"t_day_max","t_night_min","rh_avg","rh_min","rh_max"}
-  Надёжная агрегация «день/ночь» на завтра:
-    - если есть daily.sunrise/sunset — используем окно [sunrise..sunset] для «дня»;
-    - «ночь» — [00:00..06:00] локального времени;
-    - влажность — среднее/мин/макс по завтрашним 24 часам.
 • fetch_tomorrow_temps(lat, lon, tz="UTC") → (t_day_max, t_night_min)
-  Быстрый доступ к значениям «день/ночь» для рендера в post_common.py
 """
 
 from __future__ import annotations
@@ -30,31 +25,52 @@ from utils import _get  # HTTP-обёртка из utils.py
 OWM_KEY = os.getenv("OWM_KEY")            # ключ OpenWeather, может быть None
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
-# Единый сетевой таймаут (сек), можно переопределить переменной окружения HTTP_TIMEOUT
+# Единый сетевой таймаут (сек)
 REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-# ────────────────────────── Безопасный HTTP-обёртка с таймаутом ──────────────
+# ────────────────────────── Безопасный HTTP-обёртка ──────────────────────────
 
 def _safe_http_get(url: str, **kwargs) -> Optional[Dict[str, Any]]:
-    """
-    Пытается вызвать utils._get с таймаутом. Если у _get нет аргумента timeout,
-    повторно вызывает без него. Любые исключения логируются и возвращается None.
-    """
     try:
         try:
             return _get(url, timeout=REQUEST_TIMEOUT, **kwargs)
         except TypeError:
-            # на случай если твой _get не принимает timeout
             return _get(url, **kwargs)
     except Exception as e:
         logging.warning("_safe_http_get — HTTP error: %s", e)
         return None
 
 
-# ────────────────────────── Вспомогательный запрос Open-Meteo ────────────────
+# ────────────────────────── Алиасы ключей ────────────────────────────────────
+
+def _ensure_aliases_om_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Добавляет дублирующие ключи для совместимости."""
+    hr = payload.get("hourly") or {}
+    dl = payload.get("daily") or {}
+
+    # hourly
+    if "wind_speed_10m" in hr and "windspeed_10m" not in hr:
+        hr["windspeed_10m"] = hr["wind_speed_10m"]
+    if "wind_direction_10m" in hr and "winddirection_10m" not in hr:
+        hr["winddirection_10m"] = hr["wind_direction_10m"]
+    if "wind_gusts_10m" in hr and "windgusts_10m" not in hr:
+        hr["windgusts_10m"] = hr["wind_gusts_10m"]
+
+    # daily
+    if "wind_speed_10m_max" in dl and "windspeed_10m_max" not in dl:
+        dl["windspeed_10m_max"] = dl["wind_speed_10m_max"]
+    if "wind_gusts_10m_max" in dl and "windgusts_10m_max" not in dl:
+        dl["windgusts_10m_max"] = dl["wind_gusts_10m_max"]
+
+    payload["hourly"] = hr
+    payload["daily"] = dl
+    return payload
+
+
+# ────────────────────────── Вспомогательный запрос Open-Meteо ────────────────
 
 def _openmeteo_hourly_daily(
     lat: float,
@@ -68,7 +84,8 @@ def _openmeteo_hourly_daily(
     Возвращает словарь с hourly и daily полями на указанный диапазон дат (включая обе границы).
     Часовые метки приходят уже в локальной TZ, указанной в параметре timezone.
     """
-    daily_list = ["temperature_2m_max", "temperature_2m_min", "weathercode"]
+    daily_list = ["temperature_2m_max", "temperature_2m_min", "weathercode",
+                  "wind_speed_10m_max", "wind_gusts_10m_max"]
     if need_sun:
         daily_list += ["sunrise", "sunset"]
 
@@ -80,6 +97,9 @@ def _openmeteo_hourly_daily(
         "weathercode",
         "wind_speed_10m",
         "wind_direction_10m",
+        "wind_gusts_10m",                 # ← порывы, важно!
+        "rain",
+        "thunderstorm_probability",
     ]
 
     j = _safe_http_get(
@@ -95,7 +115,7 @@ def _openmeteo_hourly_daily(
     )
     if not j or "hourly" not in j or "daily" not in j:
         return None
-    return j
+    return _ensure_aliases_om_payload(j)
 
 
 # ────────────────────────── Агрегация день/ночь/влажность ────────────────────
@@ -107,10 +127,6 @@ def _filter_hours_for_date(
     hour_from: int,
     hour_to: int,
 ) -> List[float]:
-    """
-    Берёт пары (time, value) за конкретную дату date_str ('YYYY-MM-DD'), фильтрует по часам [hour_from..hour_to] включительно,
-    возвращает список валидных чисел.
-    """
     out: List[float] = []
     for t, v in zip(times, values):
         if not isinstance(v, (int, float)):
@@ -141,14 +157,6 @@ def day_night_stats(
     lon: float,
     tz: str | None = "UTC",
 ) -> Dict[str, Optional[float]]:
-    """
-    Считает:
-      t_day_max   — максимум температуры за «дневное» окно (sunrise..sunset; если нет — 09:00..18:00),
-      t_night_min — минимум температуры за «ночное» окно (00:00..06:00),
-      rh_avg/min/max — по всем часам завтрашней даты.
-
-    Возвращает словарь со значениями или None, если данных не хватило.
-    """
     tz_name = tz or "UTC"
     now = pendulum.now(tz_name)
     tomorrow = now.add(days=1).date().to_date_string()
@@ -176,7 +184,6 @@ def day_night_stats(
     sunrise_list = daily.get("sunrise", []) or []
     sunset_list = daily.get("sunset", []) or []
     if sunrise_list and sunset_list:
-        # строки вида 'YYYY-MM-DDTHH:MM'
         try:
             sr_hh = int(sunrise_list[0][11:13])
             ss_hh = int(sunset_list[0][11:13])
@@ -188,7 +195,7 @@ def day_night_stats(
 
     day_vals = _filter_hours_for_date(times, temps, tomorrow, day_from, day_to)
 
-    # 2) Окно ночи (фиксированное)
+    # 2) Окно ночи
     night_vals = _filter_hours_for_date(times, temps, tomorrow, 0, 6)
 
     # 3) Влажность по всем 24 часам
@@ -237,19 +244,10 @@ def fetch_tomorrow_temps(
     lon: float,
     tz: str | None = "UTC"
 ) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Возвращает (t_day_max, t_night_min) на завтра.
-
-    Логика:
-      1) Пробуем взять из hourly с окнами (sunrise..sunset / ночь 00–06).
-      2) Если hourly пустой — используем daily.temperature_2m_max/min.
-      3) Если и daily нет — возвращаем (None, None).
-    """
     stats = day_night_stats(lat, lon, tz=tz)
     t_day_max = stats.get("t_day_max")
     t_night_min = stats.get("t_night_min")
 
-    # Явный фоллбэк на чистый daily, если вдруг day_night_stats ничего не смог
     if t_day_max is None or t_night_min is None:
         tomorrow = pendulum.now(tz or "UTC").add(days=1).to_date_string()
         j = None
@@ -282,11 +280,6 @@ def fetch_tomorrow_temps(
 # ───────────────────────── OpenWeather/Open-Meteo сводки ─────────────────────
 
 def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    """
-    Получение прогноза через OpenWeather One Call (v3 или v2).
-    Возвращает структуру с ключами "current", "hourly", "daily", "strong_wind", "fog_alert",
-    или None при ошибке.
-    """
     if not OWM_KEY:
         return None
 
@@ -305,7 +298,6 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
         try:
             cur = ow.get("current", {}) or {}
-            # unify current
             wind_speed_ms = cur.get("wind_speed")
             windspeed_kmh = (wind_speed_ms * 3.6) if isinstance(wind_speed_ms, (int, float)) else None
 
@@ -313,20 +305,18 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
                 "temperature":    cur.get("temp"),
                 "pressure":       cur.get("pressure"),
                 "clouds":         cur.get("clouds", 0),
-                # В проекте используем км/ч → приводим из м/с
-                "windspeed":      windspeed_kmh,
+                "windspeed":      windspeed_kmh,          # км/ч
                 "winddirection":  cur.get("wind_deg"),
-                # weathercode ← id из weather[0]
                 "weathercode":    (cur.get("weather", [{}])[0] or {}).get("id"),
             }
 
-            # hourly.* заполним минимальным набором для единообразия
             unified_hourly = {
                 "surface_pressure":    [unified_current.get("pressure")],
                 "cloud_cover":         [unified_current.get("clouds")],
                 "weathercode":         [unified_current.get("weathercode")],
                 "wind_speed_10m":      [unified_current.get("windspeed")],
                 "wind_direction_10m":  [unified_current.get("winddirection")],
+                # алиасы добавим ниже
             }
 
             temp_val = unified_current.get("temperature")
@@ -340,11 +330,10 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             ow["current"] = unified_current
             ow["hourly"] = unified_hourly
             ow["daily"] = unified_daily
-            # сильный ветер по км/ч
             ow["strong_wind"] = (unified_current.get("windspeed") or 0) > 30.0
             ow["fog_alert"] = bool(unified_current.get("weathercode") in (45, 48))
 
-            return ow
+            return _ensure_aliases_om_payload(ow)
         except Exception as e:
             logging.warning("_openweather — ошибка обработки данных: %s", e)
             continue
@@ -353,18 +342,6 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
 
 def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    """
-    Запрос прогноза через Open-Meteo (полные daily + hourly + current).
-    Возвращает структуру:
-      {
-        "current": { … },
-        "hourly": { "surface_pressure": [...], "cloud_cover": [...], … },
-        "daily": { "temperature_2m_max": [...], "temperature_2m_min": [...], "weathercode": [...] },
-        "strong_wind": bool,
-        "fog_alert": bool
-      }
-    или None при ошибке/отсутствии полей.
-    """
     today = pendulum.today("UTC").to_date_string()
     tomorrow = pendulum.today("UTC").add(days=1).to_date_string()
 
@@ -376,8 +353,8 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         start_date=today,
         end_date=tomorrow,
         current_weather="true",
-        daily="temperature_2m_max,temperature_2m_min,weathercode",
-        hourly="surface_pressure,cloud_cover,weathercode,wind_speed_10m,wind_direction_10m",
+        daily="temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max,wind_gusts_10m_max",
+        hourly="surface_pressure,cloud_cover,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m,rain,thunderstorm_probability",
     )
     if not om or "current_weather" not in om or "daily" not in om or "hourly" not in om:
         logging.debug("_openmeteo — отсутствуют нужные ключи")
@@ -392,7 +369,7 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             "temperature":    cw.get("temperature"),
             "pressure":       cur_pressure if isinstance(cur_pressure, (int, float)) else None,
             "clouds":         cur_clouds if isinstance(cur_clouds, (int, float)) else None,
-            "windspeed":      cw.get("windspeed"),     # у Open-Meteo это км/ч
+            "windspeed":      cw.get("windspeed"),     # км/ч
             "winddirection":  cw.get("winddirection"),
             "weathercode":    cw.get("weathercode"),
         }
@@ -402,17 +379,13 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
                              and unified_current["windspeed"] > 30.0)
         om["fog_alert"] = (om.get("daily", {}).get("weathercode", [0])[0] in (45, 48))
 
-        return om
+        return _ensure_aliases_om_payload(om)
     except Exception as e:
         logging.warning("_openmeteo — ошибка обработки данных: %s", e)
         return None
 
 
 def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    """
-    Фоллбэк: только текущая погода через Open-Meteo.
-    Возвращает структуру того же формата (daily и hourly дублируют current).
-    """
     om = _safe_http_get(
         OPEN_METEO_URL,
         latitude=lat,
@@ -428,8 +401,8 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         cw = om.get("current_weather", {}) or {}
         unified_current = {
             "temperature":    cw.get("temperature"),
-            "pressure":       None,                 # в current_weather нет давления
-            "clouds":         None,                 # и облачности
+            "pressure":       None,
+            "clouds":         None,
             "windspeed":      cw.get("windspeed"),  # км/ч
             "winddirection":  cw.get("winddirection"),
             "weathercode":    cw.get("weathercode"),
@@ -448,12 +421,13 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             "weathercode":         [unified_current["weathercode"]],
             "wind_speed_10m":      [unified_current["windspeed"]],
             "wind_direction_10m":  [unified_current["winddirection"]],
+            # порывов в current нет
         }
 
         om["strong_wind"] = (isinstance(unified_current.get("windspeed"), (int, float))
                              and unified_current["windspeed"] > 30.0)
         om["fog_alert"] = (unified_current.get("weathercode") in (45, 48))
-        return om
+        return _ensure_aliases_om_payload(om)
     except Exception as e:
         logging.warning("_openmeteo_current_only — ошибка формирования данных: %s", e)
         return None
@@ -465,7 +439,6 @@ def get_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
       1) _openweather
       2) _openmeteo
       3) _openmeteo_current_only
-    или None, если ни один источник не дал правильного результата.
     """
     for fn in (_openweather, _openmeteo, _openmeteo_current_only):
         try:
