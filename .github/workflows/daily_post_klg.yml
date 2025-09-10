@@ -2,14 +2,14 @@ name: Daily VayboMeter (KLD)
 
 on:
   schedule:
-    # Вечерний пост: 12:00 UTC → 17:00 Asia/Nicosia
+    # Вечерний пост: 15:00 UTC (оставляю как в примере)
     - cron: '0 15 * * *'
     # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
     - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
-      run_morning:
-        description: "Запустить вечернийй пост"
+      run_evening:
+        description: "Запустить вечерний пост"
         default: "true"
         required: false
       run_noon_fx:
@@ -18,6 +18,14 @@ on:
         required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
+        required: false
+      to_test:
+        description: "Публиковать в тестовый канал?"
+        type: boolean
+        default: false
+        required: false
+      channel_override:
+        description: "Явный chat_id канала (перебивает параметры выше)"
         required: false
 
 permissions:
@@ -31,25 +39,28 @@ concurrency:
 env:
   TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
   CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
+  CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+  # опц. явная переадресация канала из inputs
+  CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
+  # вкл/выкл микро-LLM, таймзона, дата для ручного запуска
   OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
-  # короткие советы из LLM для ежедневки — включены
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
-  # локальная зона для Python
   TZ: Europe/Kaliningrad
-  # можно переопределить дату при ручном запуске
   WORK_DATE: ${{ github.event.inputs.work_date }}
+  # прокинем флаг в скрипт
+  TO_TEST: ${{ github.event.inputs.to_test }}
 
 jobs:
-  morning:
-    name: Morning post (08:00 MSK)
+  evening:
+    name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 5 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
-       (!github.event.inputs.run_morning || github.event.inputs.run_morning == 'true'))
+       (!github.event.inputs.run_evening || github.event.inputs.run_evening == 'true'))
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +74,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Post morning (for tomorrow)
+      - name: Post daily (announce tomorrow)
         shell: bash
         run: |
           python <<'PY'
@@ -74,8 +85,19 @@ jobs:
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
-          # Ежедневный пост на завтра
-          sys.argv = ["post_kld.py", "--for-tomorrow"]
+
+          args = ["post_kld.py", "--for-tomorrow"]
+          # явный override из input — передадим как --chat-id
+          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
+          if chat_override.strip():
+              args += ["--chat-id", chat_override.strip()]
+          else:
+              # иначе чекбокс to_test
+              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
+              if to_test:
+                  args.append("--to-test")
+
+          sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
 
@@ -109,7 +131,15 @@ jobs:
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
-          # Пост только с курсами валют
-          sys.argv = ["post_kld.py", "--fx-only"]
+
+          args = ["post_kld.py", "--fx-only"]
+          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
+          if chat_override.strip():
+              args += ["--chat-id", chat_override.strip()]
+          else:
+              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
+              if to_test:
+                  args.append("--to-test")
+          sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY

@@ -19,6 +19,7 @@ import re
 import json
 import asyncio
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 
@@ -193,20 +194,25 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 
 def schumann_line(s: Dict[str, Any]) -> str:
     """
-    Возвращает 2 строки:
-    1) статус + числа + тренд + H7
-    2) мягкая интерпретация
+    2 строки:
+      1) статус + числа/сообщение + тренд + H7
+      2) мягкая интерпретация
+    — если чисел нет, показываем коротко, без повторения «Шуман».
     """
     freq = s.get("freq")
     amp  = s.get("amp")
     trend_text = s.get("trend_text") or _trend_text(s.get("trend", "→"))
-    status = s.get("status") or _freq_status(freq)[0]
+    status_lbl = s.get("status") or _freq_status(freq)[0]
     h7line = s.get("h7_text") or _h7_text(s.get("h7_amp"), s.get("h7_spike"))
     interp = s.get("interpretation") or _gentle_interpretation(s.get("status_code") or _freq_status(freq)[1])
 
+    if not isinstance(freq, (int, float)) and not isinstance(amp, (int, float)):
+        main = f"{status_lbl} — нет свежих чисел; тренд: {trend_text} • {h7line}"
+        return main + "\n" + interp
+
     fstr = f"{freq:.2f}" if isinstance(freq, (int, float)) else "н/д"
     astr = f"{amp:.2f} pT" if isinstance(amp, (int, float)) else "н/д"
-    main = f"{status} Шуман: {fstr} Гц / {astr} — тренд: {trend_text} • {h7line}"
+    main = f"{status_lbl} Шуман: {fstr} Гц / {astr} — тренд: {trend_text} • {h7line}"
     return main + "\n" + interp
 
 # ───────────── Safecast / чтение файла ─────────────
@@ -320,26 +326,6 @@ def radiation_line(lat: float, lon: float) -> Optional[str]:
         return f"{em} Радиация: {dose:.3f} μSv/h ({lbl})"
     return None
 
-# ───────────── Давление: локальный тренд ─────────────
-def local_pressure_and_trend(wm: Dict[str, Any], threshold_hpa: float = 0.3) -> Tuple[Optional[int], str]:
-    cur_p = (wm.get("current") or {}).get("pressure")
-    if not isinstance(cur_p, (int, float)):
-        hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
-        if isinstance(hp, list) and hp:
-            cur_p = hp[-1]
-            prev = hp[-2] if len(hp) > 1 else None
-        else:
-            prev = None
-    else:
-        hp = (wm.get("hourly", {}) or {}).get("surface_pressure", [])
-        prev = hp[-1] if isinstance(hp, list) and hp else None
-    arrow = "→"
-    if isinstance(cur_p, (int, float)) and isinstance(prev, (int, float)):
-        diff = float(cur_p) - float(prev)
-        if diff >= threshold_hpa: arrow = "↑"
-        elif diff <= -threshold_hpa: arrow = "↓"
-    return (int(round(cur_p)) if isinstance(cur_p, (int, float)) else None, arrow)
-
 # ───────────── Зодиаки → символы ─────────────
 ZODIAC = {
     "Овен": "♈","Телец": "♉","Близнецы": "♊","Рак": "♋","Лев": "♌",
@@ -350,6 +336,77 @@ def zsym(s: str) -> str:
     for name, sym in ZODIAC.items():
         s = s.replace(name, sym)
     return s
+
+# ───────────── Чтение lunar_calendar.json и VoC ─────────────
+def load_calendar(path: str = "lunar_calendar.json") -> dict:
+    """
+    Читает lunar_calendar.json и возвращает словарь дней {YYYY-MM-DD: rec}.
+    Поддерживает и «плоский», и новый формат с обёрткой {"days": ...}.
+    """
+    try:
+        data = json.loads(Path(path).read_text("utf-8"))
+    except Exception:
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("days"), dict):
+        return data["days"]
+    return data if isinstance(data, dict) else {}
+
+def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
+    """Поддерживает ISO и формат 'DD.MM HH:mm'."""
+    if not s:
+        return None
+    try:
+        return pendulum.parse(s).in_tz(tz)
+    except Exception:
+        pass
+    try:
+        dmy, hm = s.split()
+        d, m = map(int, dmy.split("."))
+        hh, mm = map(int, hm.split(":"))
+        year = pendulum.today(tz).year
+        return pendulum.datetime(year, m, d, hh, mm, tz=tz)
+    except Exception:
+        return None
+
+def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
+    """
+    Возвращает (start_dt, end_dt) для VoC из записи дня или None.
+    В JSON VoC хранится как строки "DD.MM HH:mm" (локальная TZ) или ISO.
+    """
+    if not isinstance(rec, dict):
+        return None
+    voc = (rec.get("void_of_course")
+           or rec.get("voc")
+           or rec.get("void")
+           or {})
+    if not isinstance(voc, dict):
+        return None
+    s = voc.get("start") or voc.get("from") or voc.get("start_time")
+    e = voc.get("end")   or voc.get("to")   or voc.get("end_time")
+    if not s or not e:
+        return None
+    tz = pendulum.timezone(tz_local)
+    t1 = _parse_voc_dt(s, tz)
+    t2 = _parse_voc_dt(e, tz)
+    if not t1 or not t2:
+        return None
+    return (t1, t2)
+
+def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
+    """Формат: '⚫️ VoC сегодня 09:10–13:25.' (не используется в текущем блоке, оставим как утилиту)."""
+    if not start or not end:
+        return ""
+    return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
+
+def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
+    """
+    Достаёт советы из календаря на указанную дату.
+    date_obj: pendulum.Date/DateTime или строка 'YYYY-MM-DD'.
+    """
+    key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
+    rec = (cal or {}).get(key, {}) or {}
+    adv = rec.get("advice")
+    return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
 
 # ───────────── Астрособытия (микро-LLM + VoC) ─────────────
 def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
@@ -391,7 +448,7 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None,
                         tz_local: str = "Asia/Nicosia") -> str:
     """
     Собирает блок «Астрособытия»: 2–3 строки от LLM (если доступен) +
-    VoC (если попадает в день). Данные берём из lunar_calendar.json (ключи days).
+    VoC (полностью, если есть в этот день). Данные берём из lunar_calendar.json (ключи days).
     """
     tz = pendulum.timezone(tz_local)
     date_local = date_local or pendulum.today(tz)
@@ -400,7 +457,7 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None,
     cal = load_calendar("lunar_calendar.json")  # возвращает {YYYY-MM-DD: rec}
     rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
 
-    # аккуратные извлечения полей
+    # извлечения полей
     phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
     phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
 
@@ -412,19 +469,12 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None,
 
     sign = rec.get("sign") or rec.get("zodiac") or ""
 
-    # VoC интервал в локальной TZ
-    voc = voc_interval_for_date(rec, tz_local=tz_local)
+    # VoC интервал в локальной TZ — показываем полностью, без «часов бодрствования»
     voc_text = ""
+    voc = voc_interval_for_date(rec, tz_local=tz_local)
     if voc:
         t1, t2 = voc
-        # показываем, если пересекает «часы бодрствования» Калининграда
-        klg = pendulum.timezone("Europe/Kaliningrad")
-        day_start = date_local.in_tz(klg).at(6, 0).in_tz(tz)
-        day_end   = date_local.in_tz(klg).at(22, 0).in_tz(tz)
-        if t2 > day_start and t1 < day_end:
-            s = max(t1, day_start).format("HH:mm")
-            e = min(t2, day_end).format("HH:mm")
-            voc_text = f"{s}–{e}"
+        voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
 
     # 1) пробуем LLM
     bullets = _astro_llm_bullets(
@@ -449,9 +499,135 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None,
     # формируем блок
     lines = ["🌌 <b>Астрособытия</b>"]
     lines += [zsym(x) for x in bullets[:3]]
-    if voc_text:
+
+    # Если LLM использовался (и уже упомянул VoC), отдельную строку не добавляем
+    llm_used = bool(bullets) and USE_DAILY_LLM
+    if voc_text and not llm_used:
         lines.append(f"⚫️ VoC: {voc_text}")
+
     return "\n".join(lines)
+
+# ───────────── Помощники: hourly на завтра (ветер/давление) ─────────────
+def _pick(d: Dict[str, Any], *keys, default=None):
+    for k in keys:
+        if k in d:
+            return d[k]
+    return default
+
+def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
+    hourly = wm.get("hourly") or {}
+    times = hourly.get("time") or hourly.get("time_local") or hourly.get("timestamp") or []
+    out: List[pendulum.DateTime] = []
+    for t in times:
+        try:
+            out.append(pendulum.parse(str(t)))
+        except Exception:
+            continue
+    return out
+
+def _nearest_index_for_day(times: List[pendulum.DateTime], date_obj: pendulum.Date, prefer_hour: int, tz: pendulum.Timezone) -> Optional[int]:
+    if not times:
+        return None
+    target = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, prefer_hour, 0, tz=tz)
+    best_i, best_diff = None, None
+    for i, dt in enumerate(times):
+        try:
+            dt_local = dt.in_tz(tz)
+        except Exception:
+            dt_local = dt
+        if dt_local.date() != date_obj:
+            continue
+        diff = abs((dt_local - target).total_seconds())
+        if best_diff is None or diff < best_diff:
+            best_i, best_diff = i, diff
+    return best_i
+
+def _circular_mean_deg(deg_list: List[float]) -> Optional[float]:
+    if not deg_list:
+        return None
+    x = sum(math.cos(math.radians(d)) for d in deg_list)
+    y = sum(math.sin(math.radians(d)) for d in deg_list)
+    if x == 0 and y == 0:
+        return None
+    ang = math.degrees(math.atan2(y, x))
+    return (ang + 360.0) % 360.0
+
+def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> Tuple[Optional[float], Optional[int], Optional[int], str]:
+    """
+    Возвращает:
+      wind_ms (float|None), wind_dir_deg (int|None),
+      pressure_hpa (int|None), pressure_trend ("↑","↓","→")
+    Берём ближайшее к 12:00 завтрашнего дня; тренд — относительно ~06:00.
+    Даём мягкие фолбэки на current.
+    """
+    hourly = wm.get("hourly") or {}
+    times = _hourly_times(wm)
+    tomorrow = pendulum.now(tz).add(days=1).date()
+
+    # Набор синонимов ключей
+    spd_arr = _pick(hourly, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed", default=[])
+    dir_arr = _pick(hourly, "winddirection_10m", "winddirection", "wind_dir_10m", "wind_dir", default=[])
+    prs_arr = hourly.get("surface_pressure", []) or hourly.get("pressure", [])
+
+    if times:
+        idx_noon = _nearest_index_for_day(times, tomorrow, prefer_hour=12, tz=tz)
+        idx_morn = _nearest_index_for_day(times, tomorrow, prefer_hour=6,  tz=tz)
+    else:
+        idx_noon = idx_morn = None
+
+    wind_ms = None
+    wind_dir = None
+    press_val = None
+    trend = "→"
+
+    # Попытка №1: точечные значения 12:00/06:00
+    if idx_noon is not None:
+        try: spd = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
+        except Exception: spd = None
+        try: wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
+        except Exception: wdir = None
+        try: p_noon = float(prs_arr[idx_noon]) if idx_noon < len(prs_arr) else None
+        except Exception: p_noon = None
+        try: p_morn = float(prs_arr[idx_morn]) if (idx_morn is not None and idx_morn < len(prs_arr)) else None
+        except Exception: p_morn = None
+
+        wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else None
+        wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
+        press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
+        if isinstance(p_noon, (int, float)) and isinstance(p_morn, (int, float)):
+            diff = p_noon - p_morn
+            if diff >= 0.3: trend = "↑"
+            elif diff <= -0.3: trend = "↓"
+
+    # Попытка №2: среднее за день
+    if wind_ms is None and times:
+        idxs = [i for i, t in enumerate(times) if t.in_tz(tz).date() == tomorrow]
+        if idxs:
+            try: speeds = [float(spd_arr[i]) for i in idxs if i < len(spd_arr)]
+            except Exception: speeds = []
+            try: dirs   = [float(dir_arr[i]) for i in idxs if i < len(dir_arr)]
+            except Exception: dirs = []
+            try: prs    = [float(prs_arr[i]) for i in idxs if i < len(prs_arr)]
+            except Exception: prs = []
+            if speeds: wind_ms = kmh_to_ms(sum(speeds)/len(speeds))
+            mean_dir = _circular_mean_deg(dirs)
+            wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
+            if prs: press_val = int(round(sum(prs)/len(prs)))
+
+    # Попытка №3: фолбэк на current
+    if wind_ms is None or wind_dir is None or press_val is None:
+        cur = wm.get("current") or {}
+        if wind_ms is None:
+            spd = cur.get("windspeed") or cur.get("wind_speed")
+            wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else wind_ms
+        if wind_dir is None:
+            wdir = cur.get("winddirection") or cur.get("wind_dir")
+            wind_dir = int(round(float(wdir))) if isinstance(wdir, (int, float)) else wind_dir
+        if press_val is None and isinstance(cur.get("pressure"), (int, float)):
+            press_val = int(round(float(cur["pressure"])))
+        # тренд оставляем "→"
+
+    return wind_ms, wind_dir, press_val, trend
 
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
@@ -472,29 +648,35 @@ def build_message(region_name: str,
     # Калининград — день/ночь, ветер, RH, давление
     stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz_name)
     wm    = get_weather(KLD_LAT, KLD_LON) or {}
-    cur   = wm.get("current", {}) or {}
+
+    # Завтрашний код погоды берём из daily[1]
     wcarr = (wm.get("daily", {}) or {}).get("weathercode", [])
-    wc    = wcarr[1] if isinstance(wcarr, list) and len(wcarr) > 1 else cur.get("weathercode")
-    wind_ms = kmh_to_ms(cur.get("windspeed"))
+    wc    = wcarr[1] if isinstance(wcarr, list) and len(wcarr) > 1 else None
+
+    # RH и t по нашим helper’ам
     rh_min = stats.get("rh_min"); rh_max = stats.get("rh_max")
     t_day_max = stats.get("t_day_max"); t_night_min = stats.get("t_night_min")
 
-    p_val, p_trend = local_pressure_and_trend(wm, threshold_hpa=0.3)
-    press_part = f"{p_val} гПа {p_trend}" if isinstance(p_val, int) else "н/д"
+    # Ветер/давление — строго на завтра из hourly (около 12:00)
+    wind_ms, wind_dir_deg, press_val, press_trend = pick_tomorrow_header_metrics(wm, tz_obj)
+    wind_part = (
+        f"💨 {wind_ms:.1f} м/с ({compass(wind_dir_deg)})" if isinstance(wind_ms, (int, float)) and wind_dir_deg is not None
+        else (f"💨 {wind_ms:.1f} м/с" if isinstance(wind_ms, (int, float)) else "💨 н/д")
+    )
+    press_part = f"{press_val} гПа {press_trend}" if isinstance(press_val, int) else "н/д"
 
     desc = code_desc(wc)
     kal_parts = [
         f"🏙️ Калининград: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
         else "🏙️ Калининград: дн/ночь н/д",
         desc or None,
-        f"💨 {wind_ms:.1f} м/с ({compass(cur.get('winddirection', 0))})" if wind_ms is not None else f"💨 н/д ({compass(cur.get('winddirection', 0))})",
+        wind_part,
         (f"💧 RH {rh_min:.0f}–{rh_max:.0f}%" if rh_min is not None and rh_max is not None else None),
         f"🔹 {press_part}",
     ]
     P.append(" • ".join([x for x in kal_parts if x]))
     P.append("———")
 
-    # Морские города (топ-5)
     # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     for city, (la, lo) in sea_cities:
@@ -586,7 +768,7 @@ def build_message(region_name: str,
     else:
         P.append("🧲 Геомагнитка: н/д")
 
-    # Солнечный ветер (Bz/Bt/v/n) — показываем только если есть хоть что-то
+    # Солнечный ветер (Bz/Bt/v/n)
     sw = get_solar_wind() or {}
     bz = sw.get("bz"); bt = sw.get("bt"); v = sw.get("speed_kms"); n = sw.get("density")
     wind_status = sw.get("status", "н/д")
@@ -597,8 +779,6 @@ def build_message(region_name: str,
     if isinstance(n,  (int, float)): parts.append(f"n {n:.1f} см⁻³")
     if parts:
         P.append("🌬️ Солнечный ветер: " + ", ".join(parts) + f" — {wind_status}")
-
-    # если Kp высокий, но ветер спокойный — пояснение
     try:
         if (isinstance(kp, (int, float)) and kp >= 5) and isinstance(wind_status, str) and ("спокой" in wind_status.lower()):
             P.append("ℹ️ По ветру сейчас спокойно; Kp — глобальный индекс за 3 ч.")
@@ -609,15 +789,11 @@ def build_message(region_name: str,
     P.append(schumann_line(get_schumann_with_fallback()))
     P.append("———")
 
-   # Астрособытия (LLM+VoC из lunar_calendar.json)
-    tz_nic = pendulum.timezone("Asia/Nicosia")              # календарь ведём в Asia/Nicosia
-    date_for_astro = pendulum.today(tz_nic).add(days=1)     # ← .add на *дате*, а не на таймзоне
-    P.append(build_astro_section(
-        date_local=date_for_astro,
-        tz_local="Asia/Nicosia"
-    ))
+    # Астрособытия (LLM+VoC из lunar_calendar.json) — на завтра по Asia/Nicosia
+    tz_nic = pendulum.timezone("Asia/Nicosia")
+    date_for_astro = pendulum.today(tz_nic).add(days=1)
+    P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
     P.append("———")
-
 
     # Вывод + советы
     culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
@@ -654,77 +830,3 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
     await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
-
-# ==== lunar helpers for daily posts =========================================
-# (Единый доступ к lunar_calendar.json и VoC для ежедневки)
-
-def load_calendar(path: str = "lunar_calendar.json") -> dict:
-    """
-    Читает lunar_calendar.json и возвращает словарь дней {YYYY-MM-DD: rec}.
-    Поддерживает и «плоский», и новый формат с обёрткой {"days": ...}.
-    """
-    try:
-        data = json.loads(Path(path).read_text("utf-8"))
-    except Exception:
-        return {}
-    if isinstance(data, dict) and isinstance(data.get("days"), dict):
-        return data["days"]
-    return data if isinstance(data, dict) else {}
-
-def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
-    """Поддерживает ISO и формат 'DD.MM HH:mm'."""
-    if not s:
-        return None
-    try:
-        return pendulum.parse(s).in_tz(tz)
-    except Exception:
-        pass
-    try:
-        dmy, hm = s.split()
-        d, m = map(int, dmy.split("."))
-        hh, mm = map(int, hm.split(":"))
-        year = pendulum.today(tz).year
-        return pendulum.datetime(year, m, d, hh, mm, tz=tz)
-    except Exception:
-        return None
-
-def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
-    """
-    Возвращает (start_dt, end_dt) для VoC из записи дня или None.
-    В JSON VoC хранится как строки "DD.MM HH:mm" (локальная TZ) или ISO.
-    """
-    if not isinstance(rec, dict):
-        return None
-    voc = (rec.get("void_of_course")
-           or rec.get("voc")
-           or rec.get("void")
-           or {})
-    if not isinstance(voc, dict):
-        return None
-    s = voc.get("start") or voc.get("from") or voc.get("start_time")
-    e = voc.get("end")   or voc.get("to")   or voc.get("end_time")
-    if not s or not e:
-        return None
-    tz = pendulum.timezone(tz_local)
-    t1 = _parse_voc_dt(s, tz)
-    t2 = _parse_voc_dt(e, tz)
-    if not t1 or not t2:
-        return None
-    return (t1, t2)
-
-def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
-    """Формат: '⚫️ VoC сегодня 09:10–13:25.'"""
-    if not start or not end:
-        return ""
-    return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
-
-def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
-    """
-    Достаёт советы из календаря на указанную дату.
-    date_obj: pendulum.Date/DateTime или строка 'YYYY-MM-DD'.
-    """
-    key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
-    rec = (cal or {}).get(key, {}) or {}
-    adv = rec.get("advice")
-    return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
-      
