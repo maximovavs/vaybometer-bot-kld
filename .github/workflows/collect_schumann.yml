@@ -2,8 +2,8 @@ name: Collect Schumann
 
 on:
   schedule:
-    - cron: "*/30 * * * *"      # каждые 30 минут
-  workflow_dispatch: {}          # ручной запуск из UI
+    - cron: "*/30 * * * *"          # каждые 30 минут
+  workflow_dispatch: {}              # вручную из UI
 
 permissions:
   contents: write
@@ -34,44 +34,45 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests matplotlib beautifulsoup4 lxml
+          pip install requests beautifulsoup4 lxml matplotlib
 
       - name: Run collector (writes schumann_hourly.json v2)
         env:
-          # ====== Base settings ======
+          # — базовые настройки истории/тренда
           SCHU_FILE: schumann_hourly.json
           SCHU_MAX_LEN: "5000"
           SCHU_ALLOW_CACHE_ON_FAIL: "1"
           SCHU_AMP_SCALE: "1"
           SCHU_TREND_WINDOW: "24"
           SCHU_TREND_DELTA: "0.1"
-          SCHU_DEBUG: "0"
+          SCHU_DEBUG: "1"               # ← включим дампы во .cache/
+          SCHU_DEBUG_DUMPS: "1"
 
-          # ====== HeartMath (GCI) ======
+          # — HeartMath (GCI)
           SCHU_GCI_ENABLE: "1"
           SCHU_GCI_STATIONS: "GCI001,GCI003,GCI006,GCI004,GCI005"
           SCHU_GCI_URL: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/"
           SCHU_GCI_IFRAME: "https://www.heartmath.org/gci/gcms/live-data/gcms-magnetometer/power_levels.html"
-          SCHU_HEARTMATH_HTML: data/gcms_magnetometer_heartmath.html
+          SCHU_HEARTMATH_HTML: "data/gcms_magnetometer_heartmath.html"
           SCHU_MAP_GCI_POWER_TO_AMP: "1"
           SCHU_USER_AGENT: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
-          # ====== TSU / SOSRFF ======
+          # — TSU / SOSRFF
           SCHU_TSU_ENABLE: "1"
           SCHU_TSU_URL: "https://sosrff.tsu.ru/?page_id=502"
           SCHU_TSU_SNAPSHOT: "data/sosrff_tsu.html"
 
-          # ====== Optional custom JSON endpoint ======
+          # — кастомный JSON-эндпоинт (опционально)
           SCHU_CUSTOM_URL: ""
 
-          # ====== H7 placeholders (зарезервировано) ======
+          # — H7 (зарезервировано)
           H7_URL: ""
           H7_TARGET_HZ: "54.81"
           H7_WINDOW_H: "48"
           H7_Z: "2.5"
           H7_MIN_ABS: "0.2"
 
-          # ====== Circuit breaker for live sources ======
+          # — circuit breaker
           SCHU_BREAKER_THRESHOLD: "3"
           SCHU_BREAKER_COOLDOWN:  "1800"
         run: |
@@ -154,12 +155,12 @@ jobs:
             echo "changed=false" >> $GITHUB_OUTPUT
             echo "No changes to commit"
           else
-            git commit -m "schumann: update (v2.3; fix-history; charts) $(date -u +'%Y-%m-%dT%H:%MZ')"
+            git commit -m "schumann: update (v2.4; fix-history; charts) $(date -u +'%Y-%m-%dT%H:%MZ')"
             git push
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload artifacts (JSON + charts)
+      - name: Upload data artifacts (JSON + charts)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -173,6 +174,21 @@ jobs:
           compression-level: 6
           overwrite: false
           include-hidden-files: false
+
+      - name: Upload debug HTML (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schumann-debug
+          path: |
+            .cache/gci_page.html
+            .cache/gci_iframe.html
+            .cache/gci_iframe_only.html
+            .cache/gci_saved.html
+            .cache/tsu_live.html
+            .cache/tsu_snapshot.html
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Post to Telegram (optional)
         if: steps.commit.outputs.changed == 'true' && vars.TG_ENABLED == '1'
