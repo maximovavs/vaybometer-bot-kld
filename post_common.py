@@ -629,6 +629,70 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
 
     return wind_ms, wind_dir, press_val, trend
 
+# === Дополнительно: индексы завтрашних часов и шторм-флаги ==================
+def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[int]:
+    times = _hourly_times(wm)
+    tom = pendulum.now(tz).add(days=1).date()
+    idxs: List[int] = []
+    for i, dt in enumerate(times):
+        try:
+            if dt.in_tz(tz).date() == tom:
+                idxs.append(i)
+        except Exception:
+            pass
+    return idxs
+
+def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[str, Any]:
+    """Оцениваем максимумы на завтра и формируем краткое предупреждение."""
+    hourly = wm.get("hourly") or {}
+    idxs = _tomorrow_hourly_indices(wm, tz)
+    if not idxs:
+        return {"warning": False}
+
+    def _arr(*names, default=None):
+        v = _pick(hourly, *names, default=default)
+        return v if isinstance(v, list) else []
+
+    def _vals(arr):
+        out = []
+        for i in idxs:
+            if i < len(arr):
+                try:
+                    out.append(float(arr[i]))
+                except Exception:
+                    pass
+        return out
+
+    speeds_kmh = _vals(_arr("windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed", default=[]))
+    gusts_kmh  = _vals(_arr("windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[]))
+    rain_mm_h  = _vals(_arr("rain", default=[]))
+    tprob      = _vals(_arr("thunderstorm_probability", default=[]))
+
+    max_speed_ms = kmh_to_ms(max(speeds_kmh)) if speeds_kmh else None
+    max_gust_ms  = kmh_to_ms(max(gusts_kmh))  if gusts_kmh  else None
+    heavy_rain   = (max(rain_mm_h) >= 8.0) if rain_mm_h else False   # ливень ~≥8 мм/ч
+    thunder      = (max(tprob) >= 60) if tprob else False
+
+    reasons = []
+    if isinstance(max_speed_ms, (int, float)) and max_speed_ms >= 13:
+        reasons.append(f"ветер до {max_speed_ms:.0f} м/с")
+    if isinstance(max_gust_ms, (int, float)) and max_gust_ms >= 17:
+        reasons.append(f"порывы до {max_gust_ms:.0f} м/с")
+    if heavy_rain:
+        reasons.append("сильный дождь")
+    if thunder:
+        reasons.append("гроза")
+
+    return {
+        "max_speed_ms": max_speed_ms,
+        "max_gust_ms": max_gust_ms,
+        "heavy_rain": heavy_rain,
+        "thunder": thunder,
+        "warning": bool(reasons),
+        "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
+    }
+# ===========================================================================
+
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
@@ -649,6 +713,9 @@ def build_message(region_name: str,
     stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz_name)
     wm    = get_weather(KLD_LAT, KLD_LON) or {}
 
+    # Сторм-флаги по завтрашним часам
+    storm = storm_flags_for_tomorrow(wm, tz_obj)
+
     # Завтрашний код погоды берём из daily[1]
     wcarr = (wm.get("daily", {}) or {}).get("weathercode", [])
     wc    = wcarr[1] if isinstance(wcarr, list) and len(wcarr) > 1 else None
@@ -663,6 +730,10 @@ def build_message(region_name: str,
         f"💨 {wind_ms:.1f} м/с ({compass(wind_dir_deg)})" if isinstance(wind_ms, (int, float)) and wind_dir_deg is not None
         else (f"💨 {wind_ms:.1f} м/с" if isinstance(wind_ms, (int, float)) else "💨 н/д")
     )
+    # Добавим порывы, если прогнозируются заметные
+    if isinstance(storm.get("max_gust_ms"), (int, float)) and storm["max_gust_ms"] >= 12:
+        wind_part += f" (порывы до {storm['max_gust_ms']:.0f})"
+
     press_part = f"{press_val} гПа {press_trend}" if isinstance(press_val, int) else "н/д"
 
     desc = code_desc(wc)
@@ -676,6 +747,11 @@ def build_message(region_name: str,
     ]
     P.append(" • ".join([x for x in kal_parts if x]))
     P.append("———")
+
+    # Если есть причины — короткое предупреждение
+    if storm.get("warning"):
+        P.append(storm["warning_text"])
+        P.append("———")
 
     # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
