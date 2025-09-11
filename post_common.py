@@ -10,7 +10,7 @@ post_common.py — VayboMeter (Калининград).
 • Геомагнитка: Kp со «свежестью» + Солнечный ветер (Bz/Bt/v/n + статус)
 • Шуман (фоллбэк чтения JSON; либо прямой импорт schumann.get_schumann())
 • Астрособытия (микро-LLM 2–3 строки + VoC, извлекаем из lunar_calendar.json)
-• «Вините …», рекомендации, факт дня
+• Умный «Вывод» (приоритизация рисков) + рекомендации, факт дня
 """
 
 from __future__ import annotations
@@ -175,7 +175,17 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
     h7_amp = (last.get("h7_amp") if last else None)
     h7_spike = (last.get("h7_spike") if last else None)
     src = ((last or {}).get("src") or "").lower()
+
+    # cached если источник «cache» ИЛИ запись устарела > 2 часов
     cached = (src == "cache")
+    try:
+        last_ts = int((last or {}).get("ts", 0))
+        if last_ts > 0:
+            now_ts = pendulum.now("UTC").int_timestamp
+            if now_ts - last_ts > 2 * 3600:
+                cached = True
+    except Exception:
+        pass
 
     status, code = _freq_status(freq)
     return {
@@ -195,7 +205,7 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 def schumann_line(s: Dict[str, Any]) -> str:
     """
     2 строки:
-      1) статус + числа/сообщение + тренд + H7
+      1) статус + числа/сообщение + тренд + H7 (+ ⏳ если нет свежих чисел)
       2) мягкая интерпретация
     — если чисел нет, показываем коротко, без повторения «Шуман».
     """
@@ -205,14 +215,16 @@ def schumann_line(s: Dict[str, Any]) -> str:
     status_lbl = s.get("status") or _freq_status(freq)[0]
     h7line = s.get("h7_text") or _h7_text(s.get("h7_amp"), s.get("h7_spike"))
     interp = s.get("interpretation") or _gentle_interpretation(s.get("status_code") or _freq_status(freq)[1])
+    cached = bool(s.get("cached"))
+    stale_tag = "⏳ нет свежих чисел; " if cached else ""
 
     if not isinstance(freq, (int, float)) and not isinstance(amp, (int, float)):
-        main = f"{status_lbl} — нет свежих чисел; тренд: {trend_text} • {h7line}"
+        main = f"{status_lbl} — {stale_tag}тренд: {trend_text} • {h7line}"
         return main + "\n" + interp
 
     fstr = f"{freq:.2f}" if isinstance(freq, (int, float)) else "н/д"
     astr = f"{amp:.2f} pT" if isinstance(amp, (int, float)) else "н/д"
-    main = f"{status_lbl} Шуман: {fstr} Гц / {astr} — тренд: {trend_text} • {h7line}"
+    main = f"{status_lbl} Шуман: {fstr} Гц / {astr} — {stale_tag}тренд: {trend_text} • {h7line}"
     return main + "\n" + interp
 
 # ───────────── Safecast / чтение файла ─────────────
@@ -693,6 +705,59 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
     }
 # ===========================================================================
 
+# ───────────── Умный «Вывод»: оценка рисков ─────────────
+def _is_air_bad(air: Dict[str, Any]) -> tuple[bool, str]:
+    pm25 = air.get("pm25"); pm10 = air.get("pm10"); aqi = air.get("aqi")
+    try: pm25 = float(pm25) if pm25 is not None else None
+    except: pm25 = None
+    try: pm10 = float(pm10) if pm10 is not None else None
+    except: pm10 = None
+    try: aqi = float(aqi) if aqi is not None else None
+    except: aqi = None
+    bad = ((pm25 is not None and pm25 >= 35) or
+           (pm10 is not None and pm10 >= 50) or
+           (aqi  is not None and aqi  >= 100))
+    reason = []
+    if pm25 is not None: reason.append(f"PM₂.₅ {pm25:.0f}")
+    if pm10 is not None: reason.append(f"PM₁₀ {pm10:.0f}")
+    if aqi  is not None: reason.append(f"AQI {aqi:.0f}")
+    return bad, ", ".join(reason)
+
+def build_conclusion(kp, ks, air: Dict[str, Any], storm: Dict[str, Any], schu: Dict[str, Any]) -> list[str]:
+    """
+    Возвращает 1–2 строки выводов с приоритизацией рисков:
+      шторм  > магнитка  > воздух  > Шуман  > спокойно
+    """
+    lines: list[str] = []
+    if storm.get("warning"):
+        txt = (storm.get("warning_text") or "").replace("⚠️ ", "").replace("<b>", "").replace("</b>", "")
+        lines.append(f"Главный риск — {txt}. Планируйте дела с учётом погоды.")
+        return lines
+    if isinstance(kp, (int, float)):
+        if kp >= 6:
+            lines.append(f"Магнитосфера возбуждена (Kp={kp:.1f}) — чувствительные могут ощущать перегрузки; сократите стресс.")
+            return lines
+        if kp >= 5:
+            lines.append(f"Возможна слабая геомагнитная буря (Kp={kp:.1f}); бережный режим поможет сохранить тонус.")
+    bad_air, air_txt = _is_air_bad(air or {})
+    if bad_air:
+        msg = "Качество воздуха ухудшено" + (f" ({air_txt})" if air_txt else "")
+        if lines:
+            lines.append(msg + " — ограничьте активность на улице.")
+            return lines
+        else:
+            lines.append(msg + ".")
+            return lines
+    code = (schu or {}).get("status_code")
+    if code == "red":
+        lines.append("Волны Шумана заметно отклонены от нормы — прислушивайтесь к самочувствию и избегайте перегрузок.")
+        return lines
+    if (schu or {}).get("cached"):
+        lines.append("Сильных рисков не видно; по части Шумана свежих чисел нет — ориентируйтесь по самочувствию.")
+    else:
+        lines.append("День без выраженных рисков — хорош для дел и прогулок.")
+    return lines
+
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
@@ -730,9 +795,10 @@ def build_message(region_name: str,
         f"💨 {wind_ms:.1f} м/с ({compass(wind_dir_deg)})" if isinstance(wind_ms, (int, float)) and wind_dir_deg is not None
         else (f"💨 {wind_ms:.1f} м/с" if isinstance(wind_ms, (int, float)) else "💨 н/д")
     )
-    # Добавим порывы, если прогнозируются заметные
-    if isinstance(storm.get("max_gust_ms"), (int, float)) and storm["max_gust_ms"] >= 12:
-        wind_part += f" (порывы до {storm['max_gust_ms']:.0f})"
+    # всегда показываем максимум порывов на завтра, если он посчитан
+    gust = storm.get("max_gust_ms")
+    if isinstance(gust, (int, float)):
+        wind_part += f" (порывы до {gust:.0f})"
 
     press_part = f"{press_val} гПа {press_trend}" if isinstance(press_val, int) else "н/д"
 
@@ -862,7 +928,8 @@ def build_message(region_name: str,
         pass
 
     # Шуман
-    P.append(schumann_line(get_schumann_with_fallback()))
+    schu_state = get_schumann_with_fallback()
+    P.append(schumann_line(schu_state))
     P.append("———")
 
     # Астрособытия (LLM+VoC из lunar_calendar.json) — на завтра по Asia/Nicosia
@@ -871,14 +938,19 @@ def build_message(region_name: str,
     P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
     P.append("———")
 
-    # Вывод + советы
-    culprit = "магнитные бури" if isinstance(kp, (int, float)) and ks and ks.lower() == "буря" else "неблагоприятный прогноз погоды"
+    # Умный вывод + советы
     P.append("📜 <b>Вывод</b>")
-    P.append(f"Если что-то пойдёт не так, вините {culprit}! 😉")
+    P.extend(build_conclusion(kp, ks, air, storm, schu_state))
     P.append("———")
     P.append("✅ <b>Рекомендации</b>")
+    # Тема для советов — по главному фактору
     try:
-        _, tips = gpt_blurb(culprit)
+        theme = ("плохая погода" if storm.get("warning") else
+                 ("магнитные бури" if isinstance(kp, (int, float)) and kp >= 5 else
+                  ("плохой воздух" if _is_air_bad(air)[0] else
+                   ("волны Шумана" if (schu_state or {}).get("status_code") == "red" else
+                    "здоровый день"))))
+        _, tips = gpt_blurb(theme)
         for t in tips[:3]:
             t = t.strip()
             if t:
@@ -905,8 +977,9 @@ async def send_common_post(bot: Bot, chat_id: int, region_name: str,
 async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
-    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
-    __all__ = [
+    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_cities, tz)
+
+__all__ = [
     "build_message",
     "send_common_post",
     "main_common",
@@ -915,4 +988,3 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
     "pick_tomorrow_header_metrics",
     "storm_flags_for_tomorrow",
 ]
-
