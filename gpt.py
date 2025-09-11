@@ -46,6 +46,7 @@ PROVIDER_ORDER = [p for p in ("openai", "gemini", "groq")]
 
 # (любой из списка, по порядку)
 GROQ_MODELS = [
+    "moonshotai/kimi-k2-instruct-0905",
     "llama-3.3-70b-versatile",   # топ по качеству из доступных
     "llama-3.1-8b-instant",      # дешёвый/быстрый
     "gemma2-9b-it",              # аккуратный, стабильный
