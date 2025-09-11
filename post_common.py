@@ -485,12 +485,12 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None,
         voc_text
     )
 
-    # 2) фоллбэк – советы из календаря
+    # 2) фолбэк – советы из календаря
     if not bullets:
         adv = rec.get("advice") or []
         bullets = [f"• {a}" for a in adv[:3]] if adv else []
 
-    # 3) последний фоллбэк – «жёсткий»
+    # 3) последний фолбэк – «жёсткий»
     if not bullets:
         base = f"🌙 Фаза: {phase_name}" if phase_name else "🌙 Лунный день в норме"
         prm  = f" ({percent}%)" if isinstance(percent, int) and percent else ""
@@ -520,8 +520,7 @@ def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
     out: List[pendulum.DateTime] = []
     for t in times:
         try:
-            # если метка без TZ — считаем её UTC
-            out.append(pendulum.parse(str(t), tz='UTC'))
+            out.append(pendulum.parse(str(t)))
         except Exception:
             continue
     return out
@@ -615,7 +614,7 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
             wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
             if prs: press_val = int(round(sum(prs)/len(prs)))
 
-    # Попытка №3: фоллбэк на current
+    # Попытка №3: фолбэк на current
     if wind_ms is None or wind_dir is None or press_val is None:
         cur = wm.get("current") or {}
         if wind_ms is None:
@@ -668,24 +667,6 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
     gusts_kmh  = _vals(_arr("windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[]))
     rain_mm_h  = _vals(_arr("rain", default=[]))
     tprob      = _vals(_arr("thunderstorm_probability", default=[]))
-
-    # ---- Фоллбэк на daily (индекс 1 = завтра) ----
-    daily = wm.get("daily") or {}
-    if not gusts_kmh:
-        dgl = daily.get("wind_gusts_10m_max") or daily.get("windgusts_10m_max") or []
-        try:
-            dg = float(dgl[1])  # завтра
-            gusts_kmh = [dg]
-        except Exception:
-            pass
-    if not speeds_kmh:
-        dsl = daily.get("wind_speed_10m_max") or daily.get("windspeed_10m_max") or []
-        try:
-            ds = float(dsl[1])  # завтра
-            speeds_kmh = [ds]
-        except Exception:
-            pass
-    # -----------------------------------------------
 
     max_speed_ms = kmh_to_ms(max(speeds_kmh)) if speeds_kmh else None
     max_gust_ms  = kmh_to_ms(max(gusts_kmh))  if gusts_kmh  else None
@@ -908,22 +889,20 @@ def build_message(region_name: str,
     P.append("———")
     P.append(f"📚 {get_fact(tom, region_name)}")
     return "\n".join(P)
-    # ───────────── отправка ─────────────
-    async def send_common_post(bot: Bot, chat_id: int, region_name: str,
-                               sea_label: str, sea_cities, other_label: str,
-                               other_cities, tz: Union[pendulum.Timezone, str]):
-        msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=msg,
-            parse_mode=constants.ParseMode.HTML,
-            disable_web_page_preview=True
-        )
-    
-    async def main_common(bot: Bot, chat_id: int, region_name: str,
-                          sea_label: str, sea_cities, other_label: str,
-                          other_cities, tz: Union[pendulum.Timezone, str]):
-        # ⚠️ здесь надо передать other_label!
-        await send_common_post(
-            bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz
-        )
+
+# ───────────── отправка ─────────────
+async def send_common_post(bot: Bot, chat_id: int, region_name: str,
+                           sea_label: str, sea_cities, other_label: str,
+                           other_cities, tz: Union[pendulum.Timezone, str]):
+    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=msg,
+        parse_mode=constants.ParseMode.HTML,
+        disable_web_page_preview=True
+    )
+
+async def main_common(bot: Bot, chat_id: int, region_name: str,
+                      sea_label: str, sea_cities, other_label: str,
+                      other_cities, tz: Union[pendulum.Timezone, str]):
+    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
