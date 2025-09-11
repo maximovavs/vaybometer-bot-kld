@@ -906,3 +906,13 @@ async def main_common(bot: Bot, chat_id: int, region_name: str,
                       sea_label: str, sea_cities, other_label: str,
                       other_cities, tz: Union[pendulum.Timezone, str]):
     await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_label, other_cities, tz)
+    __all__ = [
+    "build_message",
+    "send_common_post",
+    "main_common",
+    "schumann_line",
+    "get_schumann_with_fallback",
+    "pick_tomorrow_header_metrics",
+    "storm_flags_for_tomorrow",
+]
+
