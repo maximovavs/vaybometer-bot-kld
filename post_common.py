@@ -204,27 +204,34 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
 
 def schumann_line(s: Dict[str, Any]) -> str:
     """
-    2 строки:
-      1) статус + числа/сообщение + тренд + H7 (+ ⏳ если нет свежих чисел)
-      2) мягкая интерпретация
-    — если чисел нет, показываем коротко, без повторения «Шуман».
+    Строка 1: (<status>) [⏳ нет свежих чисел] • тренд: … • H7: X.X [⚡ всплеск]
+    Строка 2: мягкое пояснение.
     """
     freq = s.get("freq")
     amp  = s.get("amp")
+    cached = bool(s.get("cached"))
     trend_text = s.get("trend_text") or _trend_text(s.get("trend", "→"))
     status_lbl = s.get("status") or _freq_status(freq)[0]
     h7line = s.get("h7_text") or _h7_text(s.get("h7_amp"), s.get("h7_spike"))
     interp = s.get("interpretation") or _gentle_interpretation(s.get("status_code") or _freq_status(freq)[1])
-    cached = bool(s.get("cached"))
-    stale_tag = "⏳ нет свежих чисел; " if cached else ""
 
+    # Если чисел нет — коротко, без "н/д"
     if not isinstance(freq, (int, float)) and not isinstance(amp, (int, float)):
-        main = f"{status_lbl} — {stale_tag}тренд: {trend_text} • {h7line}"
+        stale = "⏳ нет свежих чисел; " if cached else ""
+        main = f"{status_lbl} — {stale}тренд: {trend_text} • {h7line}"
         return main + "\n" + interp
 
-    fstr = f"{freq:.2f}" if isinstance(freq, (int, float)) else "н/д"
-    astr = f"{amp:.2f} pT" if isinstance(amp, (int, float)) else "н/д"
-    main = f"{status_lbl} Шуман: {fstr} Гц / {astr} — {stale_tag}тренд: {trend_text} • {h7line}"
+    # Есть хотя бы одно число — показываем только доступные значения
+    parts = []
+    if isinstance(freq, (int, float)):
+        parts.append(f"{freq:.2f} Гц")
+    if isinstance(amp, (int, float)):
+        parts.append(f"{amp:.2f} pT")
+    values = " / ".join(parts) if parts else "нет свежих чисел"
+    if cached and not parts:
+        values = "⏳ " + values
+
+    main = f"{status_lbl} Шуман: {values} — тренд: {trend_text} • {h7line}"
     return main + "\n" + interp
 
 # ───────────── Safecast / чтение файла ─────────────
@@ -797,8 +804,8 @@ def build_message(region_name: str,
     )
     # всегда показываем максимум порывов на завтра, если он посчитан
     gust = storm.get("max_gust_ms")
-    if isinstance(gust, (int, float)):
-        wind_part += f" (порывы до {gust:.0f})"
+    if isinstance(storm.get("max_gust_ms"), (int, float)):
+    wind_part += f" (порывы до {storm['max_gust_ms']:.0f})"
 
     press_part = f"{press_val} гПа {press_trend}" if isinstance(press_val, int) else "н/д"
 
@@ -818,6 +825,72 @@ def build_message(region_name: str,
     if storm.get("warning"):
         P.append(storm["warning_text"])
         P.append("———")
+
+    def smart_conclusion(
+    *,
+    storm: Dict[str, Any],
+    air: Dict[str, Any],
+    kp: Optional[float],
+    rh_min: Optional[float],
+    rh_max: Optional[float],
+    t_day_max: Optional[float],
+    t_night_min: Optional[float],
+) -> Tuple[str, str]:
+    """
+    Возвращает (текст вывода, причина для LLM-рекомендаций).
+    """
+    reasons: List[str] = []
+
+    # Погода
+    if storm.get("warning"):
+        reasons.append("штормовой ветер/осадки")
+    max_gust = storm.get("max_gust_ms")
+    if isinstance(max_gust, (int, float)) and max_gust >= 18:
+        reasons.append("сильные порывы ветра")
+
+    if isinstance(t_day_max, (int, float)) and t_day_max >= 27:
+        reasons.append("жара")
+    if isinstance(t_day_max, (int, float)) and t_day_max <= 10:
+        reasons.append("прохладно")
+
+    if isinstance(rh_max, (int, float)) and rh_max >= 95:
+        reasons.append("сырая погода")
+    if isinstance(rh_min, (int, float)) and rh_min <= 35:
+        reasons.append("сухой воздух")
+
+    # Воздух/дым
+    em_sm, lbl_sm = smoke_index(air.get("pm25"), air.get("pm10"))
+    if lbl_sm and str(lbl_sm).lower() not in ("низкое", "низкий", "нет", "н/д"):
+        reasons.append(f"задымление ({lbl_sm})")
+    try:
+        aqi = float(air.get("aqi"))
+        if aqi >= 80:
+            reasons.append("плохое качество воздуха")
+    except Exception:
+        pass
+
+    # Геомагнитка
+    if isinstance(kp, (int, float)) and kp >= 5:
+        reasons.append("магнитные бури")
+
+    reasons = list(dict.fromkeys(reasons))  # уникализируем, сохраняя порядок
+
+    if reasons:
+        text = "📜 <b>Вывод</b>\nЗавтра стоит быть внимательнее: " + ", ".join(reasons) + "."
+    else:
+        text = "📜 <b>Вывод</b>\nВыраженных рисков не видно — планируйте дела спокойно."
+
+    # причина для рекомендаций
+    if isinstance(kp, (int, float)) and kp >= 5:
+        cause = "магнитные бури"
+    elif storm.get("warning") or (isinstance(max_gust, (int, float)) and max_gust >= 18):
+        cause = "штормовой ветер и осадки"
+    elif reasons:
+        cause = reasons[0]
+    else:
+        cause = "спокойный день"
+
+    return text, cause
 
     # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
@@ -962,53 +1035,53 @@ def build_message(region_name: str,
     P.append(f"📚 {get_fact(tom, region_name)}")
     return "\n".join(P)
 
-   # ───────────── отправка ─────────────
-    async def send_common_post(
-        bot: Bot,
-        chat_id: int,
-        region_name: str,
-        sea_label: str,
-        sea_cities,
-        other_label: str,
-        other_cities,
-        tz: Union[pendulum.Timezone, str],
-    ) -> None:
-        msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=msg,
-            parse_mode=constants.ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
-    
-    async def main_common(
-        bot: Bot,
-        chat_id: int,
-        region_name: str,
-        sea_label: str,
-        sea_cities,
-        other_label: str,
-        other_cities,
-        tz: Union[pendulum.Timezone, str],
-    ) -> None:
-        await send_common_post(
-            bot=bot,
-            chat_id=chat_id,
-            region_name=region_name,
-            sea_label=sea_label,
-            sea_cities=sea_cities,
-            other_label=other_label,    # ← этот параметр раньше терялся
-            other_cities=other_cities,
-            tz=tz,
-        )
-    
-    # экспортируемые символы (на уровне модуля!)
-    __all__ = [
-        "build_message",
-        "send_common_post",
-        "main_common",
-        "schumann_line",
-        "get_schumann_with_fallback",
-        "pick_tomorrow_header_metrics",
-        "storm_flags_for_tomorrow",
-    ]
+    # ───────────── отправка ─────────────
+        async def send_common_post(
+            bot: Bot,
+            chat_id: int,
+            region_name: str,
+            sea_label: str,
+            sea_cities,
+            other_label: str,
+            other_cities,
+            tz: Union[pendulum.Timezone, str],
+        ) -> None:
+            msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=msg,
+                parse_mode=constants.ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        
+        async def main_common(
+            bot: Bot,
+            chat_id: int,
+            region_name: str,
+            sea_label: str,
+            sea_cities,
+            other_label: str,
+            other_cities,
+            tz: Union[pendulum.Timezone, str],
+        ) -> None:
+            await send_common_post(
+                bot=bot,
+                chat_id=chat_id,
+                region_name=region_name,
+                sea_label=sea_label,
+                sea_cities=sea_cities,
+                other_label=other_label,
+                other_cities=other_cities,
+                tz=tz,
+            )
+        
+        # экспортируемые символы (уровень модуля!)
+        __all__ = [
+            "build_message",
+            "send_common_post",
+            "main_common",
+            "schumann_line",
+            "get_schumann_with_fallback",
+            "pick_tomorrow_header_metrics",
+            "storm_flags_for_tomorrow",
+        ]
