@@ -962,29 +962,47 @@ def build_message(region_name: str,
     P.append(f"📚 {get_fact(tom, region_name)}")
     return "\n".join(P)
 
-    # ───────────── отправка ─────────────
-    async def send_common_post(bot: Bot, chat_id: int, region_name: str,
-                               sea_label: str, sea_cities, other_label: str,
-                               other_cities, tz: Union[pendulum.Timezone, str]):
+   # ───────────── отправка ─────────────
+    async def send_common_post(
+        bot: Bot,
+        chat_id: int,
+        region_name: str,
+        sea_label: str,
+        sea_cities,
+        other_label: str,
+        other_cities,
+        tz: Union[pendulum.Timezone, str],
+    ) -> None:
         msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
         await bot.send_message(
             chat_id=chat_id,
             text=msg,
             parse_mode=constants.ParseMode.HTML,
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
         )
     
-    async def main_common(bot: Bot, chat_id: int, region_name: str,
-                          sea_label: str, sea_cities, other_label: str,
-                          other_cities, tz: Union[pendulum.Timezone, str]):
-        # ✅ передаём other_label на место
+    async def main_common(
+        bot: Bot,
+        chat_id: int,
+        region_name: str,
+        sea_label: str,
+        sea_cities,
+        other_label: str,
+        other_cities,
+        tz: Union[pendulum.Timezone, str],
+    ) -> None:
         await send_common_post(
-            bot, chat_id, region_name,
-            sea_label, sea_cities,
-            other_label, other_cities,
-            tz
+            bot=bot,
+            chat_id=chat_id,
+            region_name=region_name,
+            sea_label=sea_label,
+            sea_cities=sea_cities,
+            other_label=other_label,    # ← этот параметр раньше терялся
+            other_cities=other_cities,
+            tz=tz,
         )
     
+    # экспортируемые символы (на уровне модуля!)
     __all__ = [
         "build_message",
         "send_common_post",
@@ -994,4 +1012,3 @@ def build_message(region_name: str,
         "pick_tomorrow_header_metrics",
         "storm_flags_for_tomorrow",
     ]
-
