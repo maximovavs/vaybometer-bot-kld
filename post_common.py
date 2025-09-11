@@ -962,29 +962,36 @@ def build_message(region_name: str,
     P.append(f"📚 {get_fact(tom, region_name)}")
     return "\n".join(P)
 
-# ───────────── отправка ─────────────
-async def send_common_post(bot: Bot, chat_id: int, region_name: str,
-                           sea_label: str, sea_cities, other_label: str,
-                           other_cities, tz: Union[pendulum.Timezone, str]):
-    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
-    await bot.send_message(
-        chat_id=chat_id,
-        text=msg,
-        parse_mode=constants.ParseMode.HTML,
-        disable_web_page_preview=True
-    )
+    # ───────────── отправка ─────────────
+    async def send_common_post(bot: Bot, chat_id: int, region_name: str,
+                               sea_label: str, sea_cities, other_label: str,
+                               other_cities, tz: Union[pendulum.Timezone, str]):
+        msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=msg,
+            parse_mode=constants.ParseMode.HTML,
+            disable_web_page_preview=True
+        )
+    
+    async def main_common(bot: Bot, chat_id: int, region_name: str,
+                          sea_label: str, sea_cities, other_label: str,
+                          other_cities, tz: Union[pendulum.Timezone, str]):
+        # ✅ передаём other_label на место
+        await send_common_post(
+            bot, chat_id, region_name,
+            sea_label, sea_cities,
+            other_label, other_cities,
+            tz
+        )
+    
+    __all__ = [
+        "build_message",
+        "send_common_post",
+        "main_common",
+        "schumann_line",
+        "get_schumann_with_fallback",
+        "pick_tomorrow_header_metrics",
+        "storm_flags_for_tomorrow",
+    ]
 
-async def main_common(bot: Bot, chat_id: int, region_name: str,
-                      sea_label: str, sea_cities, other_label: str,
-                      other_cities, tz: Union[pendulum.Timezone, str]):
-    await send_common_post(bot, chat_id, region_name, sea_label, sea_cities, other_cities, tz)
-
-__all__ = [
-    "build_message",
-    "send_common_post",
-    "main_common",
-    "schumann_line",
-    "get_schumann_with_fallback",
-    "pick_tomorrow_header_metrics",
-    "storm_flags_for_tomorrow",
-]
