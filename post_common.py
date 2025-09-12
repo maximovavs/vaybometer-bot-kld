@@ -44,7 +44,7 @@ CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
 # Кэш для микро-LLM «Астрособытий»
 CACHE_DIR = Path(".cache")
 CACHE_DIR.mkdir(exist_ok=True, parents=True)
-USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on"))
+USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
 
 # ──────────── утилита: принять tz как объект или как строку ────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
@@ -723,7 +723,7 @@ def _is_air_bad(air: Dict[str, Any]) -> Tuple[bool, str, str]:
     reason_parts = []
     bad = False
 
-    def _num(v):
+    def _num(v): 
         try: return float(v)
         except Exception: return None
 
@@ -819,8 +819,8 @@ def build_message(region_name: str,
     tz_name = tz_obj.name
 
     P: List[str] = []
-    today = pendulum.now(tz_obj).date()
-    tom   = today.add(days=1)
+    today = pendulum.today(tz_obj)
+    tom = today.add(days=1)
 
     # Заголовок
     P.append(f"<b>🌅 {region_name}: погода на завтра ({tom.format('DD.MM.YYYY')})</b>")

@@ -243,6 +243,41 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
         logging.error("CHANNEL_ID_KLG должен быть числом, получено: %r", ch_main)
         sys.exit(1)
 
+# ─────────────────────────── Патч даты для всего поста ──────────────────────
+
+class _TodayPatch:
+    """Контекстный менеджер для временной подмены `pendulum.today()` и `pendulum.now()`."""
+
+    def __init__(self, base_date: pendulum.DateTime):
+        self.base_date = base_date
+        self._orig_today = None
+        self._orig_now = None
+
+    def __enter__(self):
+        self._orig_today = pendulum.today
+        self._orig_now = pendulum.now
+
+        def _fake(dt: pendulum.DateTime, tz_arg=None):
+            return dt.in_tz(tz_arg) if tz_arg else dt
+
+        pendulum.today = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
+        pendulum.now = lambda tz_arg=None: _fake(self.base_date, tz_arg)    # type: ignore[assignment]
+
+        logging.info(
+            "Дата для поста зафиксирована как %s (TZ %s)",
+            self.base_date.to_datetime_string(),
+            self.base_date.timezone_name,
+        )
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._orig_today:
+            pendulum.today = self._orig_today  # type: ignore[assignment]
+        if self._orig_now:
+            pendulum.now = self._orig_now  # type: ignore[assignment]
+        # не подавляем исключения
+        return False
+
 # ───────────────────────────────── Main ─────────────────────────────────────
 
 async def main_kld() -> None:
@@ -263,25 +298,27 @@ async def main_kld() -> None:
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN_KLG)
 
-    if args.fx_only:
-        await _send_fx_only(bot, chat_id, base_date, tz, dry_run=args.dry_run)
-        return
+    # Подменяем pendulum.today, чтобы весь импортируемый код видел нужную дату
+    with _TodayPatch(base_date):
+        if args.fx_only:
+            await _send_fx_only(bot, chat_id, base_date, tz, dry_run=args.dry_run)
+            return
 
-    if args.dry_run:
-        logging.info("DRY-RUN: пропускаем отправку основного ежедневного поста")
-        return
+        if args.dry_run:
+            logging.info("DRY-RUN: пропускаем отправку основного ежедневного поста")
+            return
 
-    # Обычный ежедневный пост
-    await main_common(
-        bot=bot,
-        chat_id=chat_id,
-        region_name="Калининградская область",
-        sea_label=SEA_LABEL,
-        sea_cities=SEA_CITIES_ORDERED,
-        other_label=OTHER_LABEL,
-        other_cities=OTHER_CITIES_ALL,
-        tz=TZ_STR,  # post_common сам приведёт к pendulum.timezone
-    )
+        # Обычный ежедневный пост
+        await main_common(
+            bot=bot,
+            chat_id=chat_id,
+            region_name="Калининградская область",
+            sea_label=SEA_LABEL,
+            sea_cities=SEA_CITIES_ORDERED,
+            other_label=OTHER_LABEL,
+            other_cities=OTHER_CITIES_ALL,
+            tz=TZ_STR,  # post_common сам приведёт к pendulum.timezone
+        )
 
 if __name__ == "__main__":
     asyncio.run(main_kld())
