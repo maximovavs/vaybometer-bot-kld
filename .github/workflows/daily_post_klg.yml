@@ -86,7 +86,7 @@ jobs:
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
 
-          args = ["post_kld.py", "--for-tomorrow"]
+          args = ["post_kld.py"]
           # явный override из input — передадим как --chat-id
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
           if chat_override.strip():
