@@ -849,7 +849,7 @@ def build_message(region_name: str,
     # Всегда показываем максимальные порывы на завтра, если они есть
     gust = storm.get("max_gust_ms")
     if isinstance(gust, (int, float)):
-        wind_part += f" (порывы до {gust:.0f})"
+        wind_part += f" порывы до {gust:.0f}"
 
     press_part = f"{press_val} гПа {press_trend}" if isinstance(press_val, int) else "н/д"
 
