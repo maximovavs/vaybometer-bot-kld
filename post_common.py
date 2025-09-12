@@ -44,7 +44,7 @@ CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
 # Кэш для микро-LLM «Астрособытий»
 CACHE_DIR = Path(".cache")
 CACHE_DIR.mkdir(exist_ok=True, parents=True)
-USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
+USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on"))
 
 # ──────────── утилита: принять tz как объект или как строку ────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
@@ -705,7 +705,6 @@ def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[
         "warning": bool(reasons),
         "warning_text": "⚠️ <b>Штормовое предупреждение</b>: " + ", ".join(reasons) if reasons else "",
     }
-# ===========================================================================
 
 # ───────────── Air helpers для «Вывода» ─────────────
 def _is_air_bad(air: Dict[str, Any]) -> Tuple[bool, str, str]:
