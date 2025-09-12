@@ -246,23 +246,35 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
 # ─────────────────────────── Патч даты для всего поста ──────────────────────
 
 class _TodayPatch:
-    """Контекстный менеджер для временной подмены pendulum.today()."""
+    """Контекстный менеджер для временной подмены `pendulum.today()` и `pendulum.now()`."""
+
     def __init__(self, base_date: pendulum.DateTime):
         self.base_date = base_date
         self._orig_today = None
+        self._orig_now = None
 
     def __enter__(self):
         self._orig_today = pendulum.today
-        def _fake_today(tz_arg=None):
-            return self.base_date.in_tz(tz_arg) if tz_arg else self.base_date
-        pendulum.today = _fake_today  # type: ignore[assignment]
-        # Также нормализуем now() косвенно: многие функции дергают .date() от today()
-        logging.info("Дата для поста зафиксирована как %s (TZ %s)", self.base_date.to_datetime_string(), self.base_date.timezone_name)
+        self._orig_now = pendulum.now
+
+        def _fake(dt: pendulum.DateTime, tz_arg=None):
+            return dt.in_tz(tz_arg) if tz_arg else dt
+
+        pendulum.today = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
+        pendulum.now = lambda tz_arg=None: _fake(self.base_date, tz_arg)    # type: ignore[assignment]
+
+        logging.info(
+            "Дата для поста зафиксирована как %s (TZ %s)",
+            self.base_date.to_datetime_string(),
+            self.base_date.timezone_name,
+        )
         return self
 
     def __exit__(self, exc_type, exc, tb):
         if self._orig_today:
             pendulum.today = self._orig_today  # type: ignore[assignment]
+        if self._orig_now:
+            pendulum.now = self._orig_now  # type: ignore[assignment]
         # не подавляем исключения
         return False
 
