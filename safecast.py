@@ -24,6 +24,11 @@ CLI:
   SC_FILE                         — имя файла истории
   SC_MAX_LEN                      — макс. длина истории (дефолт 5000)
   SC_REGION                       — человекочитаемая метка региона (добавляется в запись)
+
+Доп. сетевые настройки (устойчивость):
+  SC_RETRIES                      — число повторов при сетевых сбоях (дефолт 3)
+  SC_TIMEOUT                      — таймаут запроса в сек (дефолт 30)
+  SC_BACKOFF                      — множитель экспоненциальной паузы (дефолт 1.7)
 """
 
 from __future__ import annotations
@@ -31,12 +36,18 @@ import os, sys, json, time, datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.parse
 import requests
+from requests import exceptions as req_exc
 
 ISO8601 = "%Y-%m-%dT%H:%M:%SZ"
 
 def env(name: str, default: Optional[str]=None) -> Optional[str]:
     v = os.environ.get(name)
     return v if (v is not None and v != "") else default
+
+# ─────────────────────── сетевые параметры (ENV) ───────────────────────
+SC_RETRIES = int(env("SC_RETRIES", "3") or "3")
+SC_TIMEOUT = float(env("SC_TIMEOUT", "30") or "30")
+SC_BACKOFF = float(env("SC_BACKOFF", "1.7") or "1.7")
 
 def parse_float(x: Any) -> Optional[float]:
     try:
@@ -86,12 +97,38 @@ def build_query(
     }
     return f"{base_url.rstrip('/')}/measurements.json?{urllib.parse.urlencode(params)}"
 
-def fetch_page(url: str, user_agent: Optional[str]=None, timeout: int = 30) -> List[Dict[str, Any]]:
+def _http_get_with_retry(url: str, headers: Dict[str, str], timeout: float) -> requests.Response:
+    """
+    GET с ретраями на сетевые таймауты/коннект и 5xx/429.
+    4xx (кроме 429) — не ретраим.
+    """
+    last_err: Optional[BaseException] = None
+    for attempt in range(SC_RETRIES):
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout)
+            # статус-коды для ретрая
+            if r.status_code in (429,) or 500 <= r.status_code < 600:
+                raise requests.HTTPError(f"HTTP {r.status_code}", response=r)
+            return r
+        except (req_exc.Timeout, req_exc.ConnectTimeout, req_exc.ReadTimeout, req_exc.ConnectionError) as e:
+            last_err = e
+        except requests.HTTPError as e:
+            last_err = e
+            if e.response is not None and e.response.status_code not in (429,) and not (500 <= e.response.status_code < 600):
+                # не ретраим «нормальные» 4xx — отдадим наверх
+                raise
+        # пауза перед следующим заходом, кроме последней попытки
+        if attempt < SC_RETRIES - 1:
+            time.sleep(SC_BACKOFF ** attempt)
+    assert last_err is not None
+    raise last_err  # type: ignore[misc]
+
+def fetch_page(url: str, user_agent: Optional[str]=None, timeout: float = SC_TIMEOUT) -> List[Dict[str, Any]]:
     headers = {"Accept": "application/json"}
     if user_agent:
         headers["User-Agent"] = user_agent
-    r = requests.get(url, headers=headers, timeout=timeout)
-    r.raise_for_status()
+    r = _http_get_with_retry(url, headers=headers, timeout=timeout)
+    # если сервер вернул 4xx/5xx не отретраенные, тут уже было raise_for_status в _http_get_with_retry
     data = r.json()
     if isinstance(data, dict) and "measurements" in data:
         data = data["measurements"]
@@ -113,8 +150,9 @@ def fetch_measurements(
     for page in range(1, max_pages+1):
         url = build_query(base_url, lat, lon, distance_km, captured_after_iso, page, per_page)
         try:
-            chunk = fetch_page(url, user_agent=user_agent)
+            chunk = fetch_page(url, user_agent=user_agent, timeout=SC_TIMEOUT)
         except requests.HTTPError as e:
+            # предсказуемые «нет данных/некорректный запрос» — прекращаем пагинацию
             if e.response is not None and e.response.status_code in (404, 422):
                 break
             raise
