@@ -29,13 +29,18 @@ jobs:
           python-version: "3.11"
 
       - name: Fetch SafeCast (Kaliningrad)
+        env:
+          SAFE_UA: "vaybometer-kld/1.0 (+github actions)"
+          SAFE_RETRIES: "4"
+          SAFE_TIMEOUT: "45"
+          SAFE_BACKOFF: "1.8"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p data
 
           python - <<'PY'
-          import json, urllib.parse, urllib.request
+          import os, json, urllib.parse, urllib.request, time
           from datetime import datetime, timedelta, timezone
           from statistics import median
 
@@ -45,29 +50,62 @@ jobs:
           HOURS    = 48         # окно по времени
           OUT_FILE = "data/safecast_kaliningrad.json"
 
+          # Сетевые настройки (ENV с дефолтами)
+          UA      = os.getenv("SAFE_UA", "vaybometer-kld/1.0 (+github actions)")
+          RETRIES = int(os.getenv("SAFE_RETRIES", "3"))
+          TIMEOUT = float(os.getenv("SAFE_TIMEOUT", "30"))
+          BACKOFF = float(os.getenv("SAFE_BACKOFF", "1.7"))
+
           def iso_to_dt(s: str):
             # Safecast возвращает ISO8601, иногда с 'Z'
-            s = s.replace("Z", "+00:00")
+            s = (s or "").replace("Z", "+00:00")
             return datetime.fromisoformat(s)
+
+          def fetch_json_with_retry(url: str):
+            last = None
+            for i in range(RETRIES):
+              try:
+                req = urllib.request.Request(
+                  url,
+                  headers={
+                    "Accept": "application/json",
+                    "User-Agent": UA,
+                  }
+                )
+                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                  return json.loads(r.read().decode("utf-8"))
+              except Exception as e:
+                last = e
+                if i < RETRIES - 1:
+                  time.sleep(BACKOFF ** i)
+                else:
+                  raise last
 
           qs = {
             "latitude": LAT,
             "longitude": LON,
-            "distance": DIST_M * 1.0,
+            "distance": float(DIST_M),          # метры
             "order": "captured_at",
             "direction": "desc",
+            "format": "json",
+            "per_page": 1000,
             "captured_after": (datetime.now(timezone.utc) - timedelta(hours=HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ"),
           }
           url = "https://api.safecast.org/measurements.json?" + urllib.parse.urlencode(qs)
 
-          with urllib.request.urlopen(url, timeout=60) as r:
-            raw = json.loads(r.read().decode("utf-8"))
+          raw = fetch_json_with_retry(url)
+
+          # Распакуем, если API завернуло в {"measurements":[...]}
+          if isinstance(raw, dict) and "measurements" in raw:
+            raw = raw["measurements"]
 
           # Готовим выборки по типам величин
           pm25_vals = []
           pm10_vals = []
           cpm_vals  = []
           usvh_vals = []
+
+          now = datetime.now(timezone.utc)
 
           for m in raw if isinstance(raw, list) else []:
             # ожидаем структуру { "value": ..., "unit": ..., "captured_at": ... }
@@ -79,10 +117,10 @@ jobs:
               continue
 
             # последние 6 часов для радиации (медиана)
-            if (datetime.now(timezone.utc) - t) <= timedelta(hours=6):
+            if (now - t) <= timedelta(hours=6):
               if "cpm" in unit:
                 cpm_vals.append(val)
-              # иногда приходят µSv/h в разных написаниях
+              # µSv/h в разных написаниях
               if "usv" in unit or "µsv" in unit or "μsv" in unit:
                 usvh_vals.append(val)
 
@@ -99,10 +137,10 @@ jobs:
               return None
 
           summary = {
-            "ts": int(datetime.now(tz=timezone.utc).timestamp()),
-            "pm25": med_or_none(pm25_vals),        # µg/m³
-            "pm10": med_or_none(pm10_vals),        # µg/m³
-            "cpm": med_or_none(cpm_vals),          # counts per minute
+            "ts": int(now.timestamp()),
+            "pm25": med_or_none(pm25_vals),            # µg/m³
+            "pm10": med_or_none(pm10_vals),            # µg/m³
+            "cpm": med_or_none(cpm_vals),              # counts per minute
             "radiation_usvh": med_or_none(usvh_vals),  # µSv/h
           }
 
