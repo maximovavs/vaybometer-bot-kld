@@ -40,7 +40,7 @@ jobs:
           mkdir -p data
 
           python - <<'PY'
-          import os, json, urllib.parse, urllib.request, time
+          import os, json, urllib.parse, urllib.request, urllib.error, time, sys
           from datetime import datetime, timedelta, timezone
           from statistics import median
 
@@ -57,47 +57,69 @@ jobs:
           BACKOFF = float(os.getenv("SAFE_BACKOFF", "1.7"))
 
           def iso_to_dt(s: str):
-            # Safecast возвращает ISO8601, иногда с 'Z'
-            s = (s or "").replace("Z", "+00:00")
-            return datetime.fromisoformat(s)
+              # Safecast возвращает ISO8601, иногда с 'Z'
+              s = (s or "").replace("Z", "+00:00")
+              return datetime.fromisoformat(s)
 
           def fetch_json_with_retry(url: str):
-            last = None
-            for i in range(RETRIES):
-              try:
-                req = urllib.request.Request(
-                  url,
-                  headers={
-                    "Accept": "application/json",
-                    "User-Agent": UA,
-                  }
-                )
-                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                  return json.loads(r.read().decode("utf-8"))
-              except Exception as e:
-                last = e
-                if i < RETRIES - 1:
-                  time.sleep(BACKOFF ** i)
-                else:
-                  raise last
+              """
+              GET с ретраями. Для 429/5xx (в т.ч. 503) — повторяем.
+              Для остальных 4xx — не ретраим.
+              По исчерпании попыток возвращаем None (чтобы job не падал).
+              """
+              last = None
+              for i in range(RETRIES):
+                  try:
+                      req = urllib.request.Request(
+                          url,
+                          headers={"Accept":"application/json","User-Agent":UA}
+                      )
+                      with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                          return json.loads(r.read().decode("utf-8"))
+                  except urllib.error.HTTPError as e:
+                      last = e
+                      code = getattr(e, "code", 0)
+                      if code in (429, 500, 502, 503, 504):
+                          if i < RETRIES - 1:
+                              time.sleep(BACKOFF ** i)
+                              continue
+                          else:
+                              break
+                      else:
+                          # «нормальные» 4xx — не ретраим
+                          print(f"WARN: HTTP {code} {e.reason}", file=sys.stderr)
+                          return None
+                  except Exception as e:
+                      last = e
+                      if i < RETRIES - 1:
+                          time.sleep(BACKOFF ** i)
+                          continue
+                      else:
+                          break
+              print(f"WARN: fetch failed after retries: {last}", file=sys.stderr)
+              return None
 
           qs = {
-            "latitude": LAT,
-            "longitude": LON,
-            "distance": float(DIST_M),          # метры
-            "order": "captured_at",
-            "direction": "desc",
-            "format": "json",
-            "per_page": 1000,
-            "captured_after": (datetime.now(timezone.utc) - timedelta(hours=HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "latitude": LAT,
+              "longitude": LON,
+              "distance": float(DIST_M),          # метры
+              "order": "captured_at",
+              "direction": "desc",
+              "format": "json",
+              "per_page": 1000,
+              "captured_after": (datetime.now(timezone.utc) - timedelta(hours=HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ"),
           }
           url = "https://api.safecast.org/measurements.json?" + urllib.parse.urlencode(qs)
 
           raw = fetch_json_with_retry(url)
+          if raw is None:
+              # не рушим пайплайн — просто выходим без изменений
+              print("WARN: Safecast unavailable; skip update.")
+              sys.exit(0)
 
           # Распакуем, если API завернуло в {"measurements":[...]}
           if isinstance(raw, dict) and "measurements" in raw:
-            raw = raw["measurements"]
+              raw = raw["measurements"]
 
           # Готовим выборки по типам величин
           pm25_vals = []
@@ -108,44 +130,44 @@ jobs:
           now = datetime.now(timezone.utc)
 
           for m in raw if isinstance(raw, list) else []:
-            # ожидаем структуру { "value": ..., "unit": ..., "captured_at": ... }
-            try:
-              val  = float(m.get("value"))
-              unit = (m.get("unit") or "").lower()
-              t    = iso_to_dt(m.get("captured_at"))
-            except Exception:
-              continue
+              # ожидаем структуру { "value": ..., "unit": ..., "captured_at": ... }
+              try:
+                  val  = float(m.get("value"))
+                  unit = (m.get("unit") or "").lower()
+                  t    = iso_to_dt(m.get("captured_at"))
+              except Exception:
+                  continue
 
-            # последние 6 часов для радиации (медиана)
-            if (now - t) <= timedelta(hours=6):
-              if "cpm" in unit:
-                cpm_vals.append(val)
-              # µSv/h в разных написаниях
-              if "usv" in unit or "µsv" in unit or "μsv" in unit:
-                usvh_vals.append(val)
+              # последние 6 часов для радиации (медиана)
+              if (now - t) <= timedelta(hours=6):
+                  if "cpm" in unit:
+                      cpm_vals.append(val)
+                  # µSv/h в разных написаниях
+                  if "usv" in unit or "µsv" in unit or "μsv" in unit:
+                      usvh_vals.append(val)
 
-            # PM берём за всё окно HOURS
-            if "pm2.5" in unit or "pm2_5" in unit or unit == "pm25":
-              pm25_vals.append(val)
-            if "pm10" in unit or unit == "pm_10":
-              pm10_vals.append(val)
+              # PM берём за всё окно HOURS
+              if "pm2.5" in unit or "pm2_5" in unit or unit == "pm25":
+                  pm25_vals.append(val)
+              if "pm10" in unit or unit == "pm_10":
+                  pm10_vals.append(val)
 
           def med_or_none(a):
-            try:
-              return float(median(a)) if a else None
-            except Exception:
-              return None
+              try:
+                  return float(median(a)) if a else None
+              except Exception:
+                  return None
 
           summary = {
-            "ts": int(now.timestamp()),
-            "pm25": med_or_none(pm25_vals),            # µg/m³
-            "pm10": med_or_none(pm10_vals),            # µg/m³
-            "cpm": med_or_none(cpm_vals),              # counts per minute
-            "radiation_usvh": med_or_none(usvh_vals),  # µSv/h
+              "ts": int(now.timestamp()),
+              "pm25": med_or_none(pm25_vals),            # µg/m³
+              "pm10": med_or_none(pm10_vals),            # µg/m³
+              "cpm": med_or_none(cpm_vals),              # counts per minute
+              "radiation_usvh": med_or_none(usvh_vals),  # µSv/h
           }
 
           with open(OUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False)
+              json.dump(summary, f, ensure_ascii=False)
 
           print(f"safecast ({OUT_FILE}): "
                 f"pm25={summary.get('pm25')} pm10={summary.get('pm10')} "
@@ -163,12 +185,12 @@ jobs:
           git add -N data/safecast_kaliningrad.json >/dev/null 2>&1 || true
 
           if ! git diff --quiet -- data/safecast_kaliningrad.json; then
-            git add data/safecast_kaliningrad.json
+            git add data/safecast_kalининград.json || git add data/safecast_kaliningrad.json
             # аккуратный rebase с stash, если параллельно были коммиты
             git stash push -u -m "pre-rebase" || true
             git pull --rebase || true
             git stash pop || true
-            git add data/safecast_kaliningrad.json
+            git add data/safecast_kalининград.json || git add data/safecast_kaliningrad.json
             git commit -m "safecast(Kaliningrad): update data/safecast_kaliningrad.json"
             git push
           else
