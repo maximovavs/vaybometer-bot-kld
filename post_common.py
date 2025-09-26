@@ -11,6 +11,8 @@ post_common.py — VayboMeter (Калининград).
 • Шуман (фоллбэк чтения JSON; либо прямой импорт schumann.get_schumann())
 • Астрособытия (микро-LLM 2–3 строки + VoC, извлекаем из lunar_calendar.json)
 • Умный «Вывод», рекомендации, факт дня
+
+(+ Water highlights) Для морских городов — короткая строка «что сейчас ОТЛИЧНО» для водных активностей.
 """
 
 from __future__ import annotations
@@ -33,6 +35,12 @@ from pollen       import get_pollen
 from radiation    import get_radiation
 from gpt          import gpt_blurb, gpt_complete  # gpt_complete — для микро-LLM в «Астрособытиях»
 
+# (опц.) волна из Open-Meteo Marine
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None  # type: ignore
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ────────────────────────── константы ──────────────────────────
@@ -45,6 +53,94 @@ CPM_TO_USVH = float(os.getenv("CPM_TO_USVH", "0.000571"))
 CACHE_DIR = Path(".cache")
 CACHE_DIR.mkdir(exist_ok=True, parents=True)
 USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
+
+# ────────────────────────── ENV TUNABLES (водные активности) ──────────────────────────
+# KITE — м/с
+KITE_WIND_MIN        = float(os.getenv("KITE_WIND_MIN",        "6"))
+KITE_WIND_GOOD_MIN   = float(os.getenv("KITE_WIND_GOOD_MIN",   "7"))
+KITE_WIND_GOOD_MAX   = float(os.getenv("KITE_WIND_GOOD_MAX",   "12"))
+KITE_WIND_STRONG_MAX = float(os.getenv("KITE_WIND_STRONG_MAX", "18"))
+KITE_GUST_RATIO_BAD  = float(os.getenv("KITE_GUST_RATIO_BAD",  "1.5"))
+KITE_WAVE_WARN       = float(os.getenv("KITE_WAVE_WARN",       "2.5"))
+
+# SUP — м/с и м
+SUP_WIND_GOOD_MAX     = float(os.getenv("SUP_WIND_GOOD_MAX",     "4"))
+SUP_WIND_OK_MAX       = float(os.getenv("SUP_WIND_OK_MAX",       "6"))
+SUP_WIND_EDGE_MAX     = float(os.getenv("SUP_WIND_EDGE_MAX",     "8"))
+SUP_WAVE_GOOD_MAX     = float(os.getenv("SUP_WAVE_GOOD_MAX",     "0.6"))
+SUP_WAVE_OK_MAX       = float(os.getenv("SUP_WAVE_OK_MAX",       "0.8"))
+SUP_WAVE_BAD_MIN      = float(os.getenv("SUP_WAVE_BAD_MIN",      "1.5"))
+OFFSHORE_SUP_WIND_MIN = float(os.getenv("OFFSHORE_SUP_WIND_MIN", "5"))
+
+# SURF — волна (м) и ветер (м/с)
+SURF_WAVE_GOOD_MIN   = float(os.getenv("SURF_WAVE_GOOD_MIN",   "0.9"))
+SURF_WAVE_GOOD_MAX   = float(os.getenv("SURF_WAVE_GOOD_MAX",   "2.5"))
+SURF_WIND_MAX        = float(os.getenv("SURF_WIND_MAX",        "10"))
+
+# ────────────────────────── споты и профиль береговой линии ──────────────────────────
+# face = направление «к морю» (куда смотрит берег). Для оншора ветер ДОЛЖЕН дуть примерно с этого курса.
+SHORE_PROFILE: Dict[str, float] = {
+    # Балтийская кромка области в целом «западная/северо-западная»
+    "Kaliningrad": 270.0,   # город сам не морской, но пусть будет дефолт
+    "Zelenogradsk": 285.0,
+    "Svetlogorsk": 300.0,
+    "Pionersky":   300.0,
+    "Yantarny":    300.0,
+    "Baltiysk":    270.0,
+    "Primorsk":    265.0,
+}
+
+SPOT_SHORE_PROFILE: Dict[str, float] = {
+    # популярные точки побережья — углы приблизительные, их можно переопределять ENV’ами SPOT_*
+    "Zelenogradsk":           285.0,
+    "Svetlogorsk":            300.0,
+    "Pionersky":              300.0,
+    "Yantarny":               300.0,
+    "Baltiysk (Spit)":        270.0,
+    "Baltiysk (North beach)": 280.0,
+    "Primorsk":               265.0,
+    "Donskoye":               300.0,
+}
+
+def _norm_key(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+_SPOT_INDEX = {_norm_key(k): k for k in SPOT_SHORE_PROFILE.keys()}
+
+def _parse_deg(val: Optional[str]) -> Optional[float]:
+    if not val: return None
+    try: return float(str(val).strip())
+    except Exception: return None
+
+def _env_city_key(city: str) -> str:
+    return city.upper().replace(" ", "_")
+
+def _spot_from_env(name: Optional[str]) -> Optional[Tuple[str, float]]:
+    if not name: return None
+    key = _norm_key(name)
+    real = _SPOT_INDEX.get(key)
+    if real:
+        return real, SPOT_SHORE_PROFILE[real]
+    return None
+
+def _shore_face_for_city(city: str) -> Tuple[Optional[float], Optional[str]]:
+    # 1) прямой override углом
+    face_env = _parse_deg(os.getenv(f"SHORE_FACE_{_env_city_key(city)}"))
+    if face_env is not None:
+        return face_env, f"ENV:SHORE_FACE_{_env_city_key(city)}"
+    # 2) спот для города
+    spot_env = os.getenv(f"SPOT_{_env_city_key(city)}")
+    sp = _spot_from_env(spot_env) if spot_env else None
+    # 3) глобальный активный спот
+    if not sp:
+        sp = _spot_from_env(os.getenv("ACTIVE_SPOT"))
+    if sp:
+        label, deg = sp
+        return deg, label
+    # 4) дефолт
+    if city in SHORE_PROFILE:
+        return SHORE_PROFILE[city], city
+    return None, None
 
 # ──────────── утилита: принять tz как объект или как строку ────────────
 def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
@@ -723,7 +819,7 @@ def _is_air_bad(air: Dict[str, Any]) -> Tuple[bool, str, str]:
     reason_parts = []
     bad = False
 
-    def _num(v): 
+    def _num(v):
         try: return float(v)
         except Exception: return None
 
@@ -809,6 +905,103 @@ def build_conclusion(kp: Any,
 
     return lines
 
+# ───────────── водные активности: короткий «highlights» ─────────────
+def _deg_diff(a: float, b: float) -> float:
+    return abs((a - b + 180) % 360 - 180)
+
+def _cardinal(deg: Optional[float]) -> Optional[str]:
+    if deg is None: return None
+    dirs = ["N","NE","E","SE","S","SW","W","NW"]
+    idx = int((deg + 22.5) // 45) % 8
+    return dirs[idx]
+
+def _shore_class(city: str, wind_from_deg: Optional[float]) -> Tuple[Optional[str], Optional[str]]:
+    """Возвращает (class, source_label). class ∈ {onshore,cross,offshore}."""
+    if wind_from_deg is None: return None, None
+    face_deg, src_label = _shore_face_for_city(city)
+    if face_deg is None: return None, src_label
+    diff = _deg_diff(wind_from_deg, face_deg)
+    if diff <= 45:  return "onshore", src_label
+    if diff >= 135: return "offshore", src_label
+    return "cross", src_label
+
+def _fetch_wave(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
+    if not requests: return None, None
+    try:
+        url = "https://marine-api.open-meteo.com/v1/marine"
+        params = {"latitude": lat, "longitude": lon, "hourly": "wave_height,wave_period"}
+        r = requests.get(url, params=params, timeout=6)
+        r.raise_for_status()
+        j = r.json()
+        h = (j.get("hourly") or {}).get("wave_height") or []
+        t = (j.get("hourly") or {}).get("wave_period") or []
+        if not h: return None, None
+        idx = len(h) - 1
+        w_h = h[idx] if h[idx] is not None else None
+        w_t = t[idx] if (t and t[idx] is not None) else None
+        return (float(w_h) if w_h is not None else None,
+                float(w_t) if w_t is not None else None)
+    except Exception as e:
+        logging.warning("marine fetch failed: %s", e)
+        return None, None
+
+def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
+    """
+    Возвращает ОДНУ короткую строку вида:
+      🧜🏼‍♂️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Zelenogradsk (W/cross)
+    Только то, что оценено как "good". Если good нет — None.
+    """
+    wm = get_weather(la, lo) or {}
+    wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
+    storm = storm_flags_for_tomorrow(wm, tz_obj)
+    gust = storm.get("max_gust_ms")
+    wave_h, wave_t = _fetch_wave(la, lo)
+
+    wind_val = float(wind_ms) if isinstance(wind_ms,(int,float)) else None
+    gust_val = float(gust) if isinstance(gust,(int,float)) else None
+    card = _cardinal(float(wind_dir)) if isinstance(wind_dir,(int,float)) else None
+    shore, shore_src = _shore_class(city, float(wind_dir) if isinstance(wind_dir,(int,float)) else None)
+
+    # — kite good?
+    kite_good = False
+    if wind_val is not None:
+        if KITE_WIND_GOOD_MIN <= wind_val <= KITE_WIND_GOOD_MAX:
+            kite_good = True
+        if shore == "offshore":
+            kite_good = False
+        if gust_val and wind_val and (gust_val / max(wind_val, 0.1) > KITE_GUST_RATIO_BAD):
+            kite_good = False
+        if wave_h is not None and wave_h >= KITE_WAVE_WARN:
+            kite_good = False
+
+    # — sup good?
+    sup_good = False
+    if wind_val is not None:
+        if (wind_val <= SUP_WIND_GOOD_MAX) and (wave_h is None or wave_h <= SUP_WAVE_GOOD_MAX):
+            sup_good = True
+        if shore == "offshore" and wind_val >= OFFSHORE_SUP_WIND_MIN:
+            sup_good = False
+
+    # — surf good?
+    surf_good = False
+    if wave_h is not None:
+        if SURF_WAVE_GOOD_MIN <= wave_h <= SURF_WAVE_GOOD_MAX and (wind_val is None or wind_val <= SURF_WIND_MAX):
+            surf_good = True
+
+    goods: List[str] = []
+    if kite_good: goods.append("Кайт/Винг/Винд")
+    if sup_good:  goods.append("SUP")
+    if surf_good: goods.append("Сёрф")
+
+    if not goods:
+        return None
+
+    dir_part = f" ({card}/{shore})" if card or shore else ""
+    spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
+    env_mark  = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
+
+    return "🧜🏼‍♀️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part
+
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
@@ -872,7 +1065,9 @@ def build_message(region_name: str,
 
     # Морские города (топ-5)
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
+    sea_lookup: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in sea_cities:
+        sea_lookup[city] = (la, lo)
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
         if tmax is None:
             continue
@@ -880,16 +1075,24 @@ def build_message(region_name: str,
         wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
         temps_sea[city] = (tmax, tmin or tmax, wcx, get_sst(la, lo))
     if temps_sea:
-        P.append(f"🎖️ <b>{sea_label}</b>")
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        P.append(f"🌊 <b>{sea_label}</b>")
+        medals = ["🥵", "😊", "🙄", "😮‍💨", "🥶"]
         for i, (city, (d, n, wcx, sst_c)) in enumerate(sorted(temps_sea.items(),
                                                               key=lambda kv: kv[1][0], reverse=True)[:5]):
             line = f"{medals[i]} {city}: {d:.1f}/{n:.1f}"
             descx = code_desc(wcx)
             if descx:
-                line += f", {descx}"
+                line += f" {descx}"
             if sst_c is not None:
                 line += f" 🌊 {sst_c:.1f}"
+            # короткий water-highlights — только если «отлично»
+            try:
+                la, lo = sea_lookup[city]
+                hl = _water_highlights(city, la, lo, tz_obj)
+                if hl:
+                    line += f"\n   {hl}"
+            except Exception:
+                pass
             P.append(line)
         P.append("———")
 
