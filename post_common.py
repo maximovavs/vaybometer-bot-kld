@@ -948,7 +948,7 @@ def _fetch_wave(lat: float, lon: float) -> Tuple[Optional[float], Optional[float
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     """
     Возвращает ОДНУ короткую строку вида:
-      💦 Отлично: Кайт/Винг/Винд; SUP; Сёрф @Zelenogradsk (W/cross)
+      🧜🏼‍♂️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Zelenogradsk (W/cross)
     Только то, что оценено как "good". Если good нет — None.
     """
     wm = get_weather(la, lo) or {}
@@ -1000,7 +1000,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
     env_mark  = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
 
-    return "💦 Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part
+    return "🧜🏼‍♀️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part
 
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
@@ -1075,8 +1075,8 @@ def build_message(region_name: str,
         wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
         temps_sea[city] = (tmax, tmin or tmax, wcx, get_sst(la, lo))
     if temps_sea:
-        P.append(f"🎖️ <b>{sea_label}</b>")
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        P.append(f"🌊 <b>{sea_label}</b>")
+        medals = ["🥵", "😊", "🙄", "😮‍💨", "🥶"]
         for i, (city, (d, n, wcx, sst_c)) in enumerate(sorted(temps_sea.items(),
                                                               key=lambda kv: kv[1][0], reverse=True)[:5]):
             line = f"{medals[i]} {city}: {d:.1f}/{n:.1f}"
