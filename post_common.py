@@ -690,13 +690,14 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
     else:
         idx_noon = idx_morn = None
 
-    wind_ms = None
-    wind_dir = None
-    press_val = None
+    wind_ms: Optional[float] = None
+    wind_dir: Optional[int] = None
+    press_val: Optional[int] = None
     trend = "→"
 
+    # 1) точка около 12:00 и тренд давления к ~06:00
     if idx_noon is not None:
-        try: spd = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
+        try: spd  = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
         except Exception: spd = None
         try: wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
         except Exception: wdir = None
@@ -706,13 +707,14 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
         except Exception: p_morn = None
 
         wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else None
-        wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
+        if isinstance(wdir, (int, float)) and not (isinstance(wdir, float) and math.isnan(wdir)):
+            wind_dir = int(round(wdir))
         press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
         if isinstance(p_noon, (int, float)) and isinstance(p_morn, (int, float)):
             diff = p_noon - p_morn
-            if diff >= 0.3: trend = "↑"
-            elif diff <= -0.3: trend = "↓"
+            trend = "↑" if diff >= 0.3 else "↓" if diff <= -0.3 else "→"
 
+    # 2) среднее за день, если точек нет
     if wind_ms is None and times:
         idxs = [i for i, t in enumerate(times) if t.in_tz(tz).date() == tomorrow]
         if idxs:
@@ -723,25 +725,28 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
             try: prs    = [float(prs_arr[i]) for i in idxs if i < len(prs_arr)]
             except Exception: prs = []
             if speeds: wind_ms = kmh_to_ms(sum(speeds)/len(speeds))
-            mean_dir = _circular_mean_deg(dirs)
+            mean_dir = _circular_mean_deg([d for d in dirs if not (isinstance(d, float) and math.isnan(d))])
             wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
             if prs: press_val = int(round(sum(prs)/len(prs)))
 
-        # Попытка №3: фоллбэк на current
+    # 3) фоллбэк на «текущее»: учитываем и current, и current_weather
     if wind_ms is None or wind_dir is None or press_val is None:
-        cur = wm.get("current") or {}
+        cur = (wm.get("current") or wm.get("current_weather") or {})
         if wind_ms is None:
             spd = _pick(cur, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed")
             wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else wind_ms
         if wind_dir is None:
             wdir = _pick(cur, "winddirection_10m", "winddirection", "wind_dir_10m", "wind_dir")
-            wind_dir = int(round(float(wdir))) if isinstance(wdir, (int, float)) else wind_dir
+            if isinstance(wdir, (int, float)) and not (isinstance(wdir, float) and math.isnan(wdir)):
+                wind_dir = int(round(float(wdir)))
         if press_val is None:
             pcur = _pick(cur, "surface_pressure", "pressure")
             if isinstance(pcur, (int, float)):
                 press_val = int(round(float(pcur)))
         # тренд оставляем "→"
-    return wind_ms, wind_dir, press_val, trend
+
+    return wind_ms, wind_dir, press_val, trend 
+ 
 
 # === шторм-флаги ==================
 def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[int]:
