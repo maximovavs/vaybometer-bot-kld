@@ -727,16 +727,20 @@ def pick_tomorrow_header_metrics(wm: Dict[str, Any], tz: pendulum.Timezone) -> T
             wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
             if prs: press_val = int(round(sum(prs)/len(prs)))
 
+        # Попытка №3: фоллбэк на current
     if wind_ms is None or wind_dir is None or press_val is None:
         cur = wm.get("current") or {}
         if wind_ms is None:
-            spd = cur.get("windspeed") or cur.get("wind_speed")
+            spd = _pick(cur, "windspeed_10m", "windspeed", "wind_speed_10m", "wind_speed")
             wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else wind_ms
         if wind_dir is None:
-            wdir = cur.get("winddirection") or cur.get("wind_dir")
+            wdir = _pick(cur, "winddirection_10m", "winddirection", "wind_dir_10m", "wind_dir")
             wind_dir = int(round(float(wdir))) if isinstance(wdir, (int, float)) else wind_dir
-        if press_val is None and isinstance(cur.get("pressure"), (int, float)):
-            press_val = int(round(float(cur["pressure"])))
+        if press_val is None:
+            pcur = _pick(cur, "surface_pressure", "pressure")
+            if isinstance(pcur, (int, float)):
+                press_val = int(round(float(pcur)))
+        # тренд оставляем "→"
     return wind_ms, wind_dir, press_val, trend
 
 # === шторм-флаги ==================
@@ -1024,7 +1028,10 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     if not goods:
         return None
 
-    dir_part  = f" ({card}/{shore})" if card or shore else ""
+        _parts = []
+        if card:  _parts.append(card)
+        if shore: _parts.append(shore)
+        dir_part = f" ({'/'.join(_parts)})" if _parts else ""
     spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
     env_mark  = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
 
