@@ -909,22 +909,31 @@ def _shore_class(city: str, wind_from_deg: Optional[float]) -> Tuple[Optional[st
     if diff >= 135: return "offshore", src_label
     return "cross", src_label
 
-def _fetch_wave(lat: float, lon: float) -> Tuple[Optional[float], Optional[float]]:
-    if not requests: return None, None
+def _fetch_wave_for_tomorrow(lat: float, lon: float, tz_obj: pendulum.Timezone,
+                             prefer_hour: int = 12) -> Tuple[Optional[float], Optional[float]]:
+    if not requests:
+        return None, None
     try:
         url = "https://marine-api.open-meteo.com/v1/marine"
-        params = {"latitude": lat, "longitude": lon, "hourly": "wave_height,wave_period"}
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "wave_height,wave_period",
+            "timezone": tz_obj.name,  # чтобы времена совпадали с локалью
+        }
         r = requests.get(url, params=params, timeout=6)
         r.raise_for_status()
         j = r.json()
-        h = (j.get("hourly") or {}).get("wave_height") or []
-        t = (j.get("hourly") or {}).get("wave_period") or []
-        if not h: return None, None
-        idx = len(h) - 1
-        w_h = h[idx] if h[idx] is not None else None
-        w_t = t[idx] if (t and t[idx] is not None) else None
-        return (float(w_h) if w_h is not None else None,
-                float(w_t) if w_t is not None else None)
+        hourly = j.get("hourly") or {}
+        times = [pendulum.parse(t) for t in (hourly.get("time") or []) if t]
+        idx = _nearest_index_for_day(times, pendulum.now(tz_obj).add(days=1).date(), prefer_hour, tz_obj)
+        if idx is None:
+            return None, None
+        h = hourly.get("wave_height") or []
+        p = hourly.get("wave_period") or []
+        w_h = float(h[idx]) if idx < len(h) and h[idx] is not None else None
+        w_t = float(p[idx]) if idx < len(p) and p[idx] is not None else None
+        return w_h, w_t
     except Exception as e:
         logging.warning("marine fetch failed: %s", e)
         return None, None
@@ -932,9 +941,23 @@ def _fetch_wave(lat: float, lon: float) -> Tuple[Optional[float], Optional[float
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     wm = get_weather(la, lo) or {}
     wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
-    storm = storm_flags_for_tomorrow(wm, tz_obj)
-    gust = storm.get("max_gust_ms")
-    wave_h, wave_t = _fetch_wave(la, lo)
+    wave_h, wave_t = _fetch_wave_for_tomorrow(la, lo, tz_obj)
+    
+    # порывы в тот же час, что и ветер (а не суточный максимум)
+    def _gust_at_noon(wm: Dict[str, Any], tz: pendulum.Timezone) -> Optional[float]:
+        hourly = wm.get("hourly") or {}
+        times  = _hourly_times(wm)
+        idx = _nearest_index_for_day(times, pendulum.now(tz).add(days=1).date(), 12, tz)
+        arr = _pick(hourly, "windgusts_10m","wind_gusts_10m","wind_gusts", default=[])
+        if idx is not None and idx < len(arr):
+            try:
+                return kmh_to_ms(float(arr[idx]))
+            except Exception:
+                return None
+        return None
+    
+    gust = _gust_at_noon(wm, tz_obj)
+
 
     wind_val = float(wind_ms) if isinstance(wind_ms,(int,float)) else None
     gust_val = float(gust) if isinstance(gust,(int,float)) else None
