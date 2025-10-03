@@ -466,7 +466,7 @@ def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
     if t >= WSUIT_65:     return "гидрокостюм 5/4 мм + капюшон (боты, перчатки)"
     return "гидрокостюм 6/5 мм + капюшон (боты, перчатки)"
 
-def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
+def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone, sst_hint: Optional[float] = None) -> Optional[str]:
     """
     Возвращает ОДНУ строку только если условия «good»:
       🧜‍♂️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Spot (SE/cross) • гидрокостюм 4/3 мм
@@ -488,7 +488,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         return None
 
     gust = _gust_at_noon(wm, tz_obj)
-    sst  = get_sst(la, lo)
+    sst  = sst_hint if isinstance(sst_hint, (int, float)) else get_sst(la, lo)
 
     wind_val = float(wind_ms) if isinstance(wind_ms, (int, float)) else None
     gust_val = float(gust)    if isinstance(gust,    (int, float)) else None
@@ -615,7 +615,7 @@ def build_message(region_name: str,
                 line += f" 🌊 {sst_c:.1f}"
             try:
                 la, lo = sea_lookup[city]
-                hl = _water_highlights(city, la, lo, tz_obj)
+                hl = _water_highlights(city, la, lo, tz_obj, sst_c)
                 if hl:
                     line += f"\n   {hl}"
             except Exception as e:
