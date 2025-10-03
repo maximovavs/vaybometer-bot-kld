@@ -48,6 +48,7 @@ env:
   GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
   GEN_SKIP_SHORT: "1"
   DISABLE_LLM_DAILY: "0"
+  DEBUG_WATER: "1"
   TZ: Europe/Kaliningrad
   WORK_DATE: ${{ github.event.inputs.work_date }}
   # прокинем флаг в скрипт
