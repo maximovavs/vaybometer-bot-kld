@@ -44,6 +44,7 @@ except Exception:
     requests = None  # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
 DEBUG_WATER = os.getenv("DEBUG_WATER", "").strip().lower() in ("1", "true", "yes", "on")
 
 # ────────────────────────── базовые константы ──────────────────────────
@@ -436,7 +437,8 @@ def _fetch_wave_for_tomorrow(lat: float, lon: float, tz_obj: pendulum.Timezone,
             "hourly": "wave_height,wave_period",
             "timezone": tz_obj.name,
         }
-        r = requests.get(url, params=params, timeout=8)
+
+        r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         j = r.json()
         hourly = j.get("hourly") or {}
@@ -492,6 +494,7 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
 
     wind_val = float(wind_ms) if isinstance(wind_ms, (int, float)) else None
     gust_val = float(gust)    if isinstance(gust,    (int, float)) else None
+
     card = _cardinal(float(wind_dir)) if isinstance(wind_dir, (int, float)) else None
     shore, shore_src = _shore_class(city, float(wind_dir) if isinstance(wind_dir, (int, float)) else None)
 
@@ -522,20 +525,33 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
             surf_good = True
 
     goods: List[str] = []
-    if kite_good: goods.append("Кайт/Винг/Винд")
-    if sup_good:  goods.append("SUP")
-    if surf_good: goods.append("Сёрф")
+    if kite_good:
+        goods.append("Кайт/Винг/Винд")
+    if sup_good:
+        goods.append("SUP")
+    if surf_good:
+        goods.append("Сёрф")
+
+    dir_part = f" ({card}/{shore})" if card or shore else ""
+    spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
+    env_mark = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
 
     if not goods:
+
+        # Всегда покажем подсказку по гидрокостюму, если знаем SST
+        suit_txt = _wetsuit_hint(sst)
         if DEBUG_WATER:
-            logging.info("WATER[%s]: no good. wind=%s dir=%s wave_h=%s gust=%s sst=%s shore=%s",
-                         city, wind_val, wind_dir, wave_h, gust_val, sst, shore)
+            logging.info(
+                "WATER[%s]: wind=%s dir=%s wave_h=%s wave_t=%s gust=%s sst=%s shore=%s",
+                city, wind_val, wind_dir, wave_h, wave_t, gust_val, sst, shore
+            )
+        if suit_txt:
+            sst_part = f"{sst:.1f}°C" if isinstance(sst, (int, float)) else "н/д"
+            return f"🧜‍♂️ Вода: {sst_part} • {suit_txt}" + spot_part + env_mark + dir_part
         return None
 
-    dir_part  = f" ({card}/{shore})" if card or shore else ""
-    spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
-    env_mark  = " (ENV)" if shore_src and str(shore_src).startswith("ENV:") else ""
-    suit_txt  = _wetsuit_hint(sst)
+    # есть good-активности — добавим гидрик хвостом, если нужно
+    suit_txt = _wetsuit_hint(sst)
     suit_part = f" • {suit_txt}" if suit_txt else ""
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
 
