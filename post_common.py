@@ -43,6 +43,7 @@ except Exception:
     requests = None  # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+DEBUG_WATER = os.getenv("DEBUG_WATER", "").strip().lower() in ("1","true","yes","on")
 
 # ────────────────────────── константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
@@ -930,7 +931,7 @@ def _fetch_wave_for_tomorrow(lat: float, lon: float, tz_obj: pendulum.Timezone,
             "hourly": "wave_height,wave_period",
             "timezone": tz_obj.name,  # чтобы времена совпадали с локалью
         }
-        r = requests.get(url, params=params, timeout=6)
+        r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         j = r.json()
         hourly = j.get("hourly") or {}
@@ -969,7 +970,7 @@ def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
 def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
     """
     Возвращает ОДНУ короткую строку вида:
-      🧜‍♂️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Lady's Mile (SE/cross)
+      🧜‍♀️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Lady's Mile (SE/cross)
     Только то, что оценено как "good". Если good нет — None.
     """
     wm = get_weather(la, lo) or {}
@@ -1030,8 +1031,23 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     if sup_good:  goods.append("SUP")
     if surf_good: goods.append("Сёрф")
 
-    if not goods:
+        if not goods:
+        # Всегда покажем подсказку по гидрику, если знаем SST
+        suit_txt = _wetsuit_hint(sst)
+        if DEBUG_WATER:
+            logging.info("WATER[%s]: wind=%s dir=%s wave_h=%s wave_t=%s gust=%s sst=%s shore=%s",
+                         city, wind_val, wind_dir, wave_h, wave_t, gust_val, sst, shore)
+
+        if suit_txt:
+            # оформим как отдельную "водную" строку
+            dir_part  = f" ({card}/{shore})" if card or shore else ""
+            spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
+            env_mark  = " (ENV)" if shore_src and shore_src.startswith("ENV:") else ""
+            sst_part  = f"{sst:.1f}°C" if isinstance(sst, (int,float)) else "н/д"
+            return f"🧜‍♂️ Вода: {sst_part} • {suit_txt}" + spot_part + env_mark + dir_part
+
         return None
+
 
         _parts = []
         if card:  _parts.append(card)
