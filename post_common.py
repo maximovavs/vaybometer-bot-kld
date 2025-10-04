@@ -468,48 +468,54 @@ def _wetsuit_hint(sst: Optional[float]) -> Optional[str]:
     if t >= WSUIT_65:     return "гидрокостюм 5/4 мм + капюшон (боты, перчатки)"
     return "гидрокостюм 6/5 мм + капюшон (боты, перчатки)"
 
-def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone) -> Optional[str]:
+def _water_highlights(
+    city: str,
+    la: float,
+    lo: float,
+    tz_obj: pendulum.Timezone,
+    sst_hint: Optional[float] = None
+) -> Optional[str]:
     """
-    Возвращает ОДНУ строку только если условия «good»:
-      🧜‍♂️ Отлично: Кайт/Винг/Винд; SUP; Сёрф @Spot (SE/cross) • гидрокостюм 4/3 мм
-    Если good-активностей нет — возвращает None (ничего не печатаем).
+    Возвращает строку ТОЛЬКО если условия «good».
+    Пример: 🧜‍♂️ Отлично: Кайт/Винг/Винд; SUP @Spot (SE/cross) • гидрокостюм 4/3 мм
+    Если good-активностей нет — вернёт None (ничего не печатаем).
     """
     wm = get_weather(la, lo) or {}
     wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
-    wave_h, wave_t = _fetch_wave_for_tomorrow(la, lo, tz_obj)
+    wave_h, _ = _fetch_wave_for_tomorrow(la, lo, tz_obj)
 
-    # порывы в тот же час, что и ветер
+    # порывы около полудня (тот же час, что и ветер)
     def _gust_at_noon(wm: Dict[str, Any], tz: pendulum.Timezone) -> Optional[float]:
         hourly = wm.get("hourly") or {}
         times = _hourly_times(wm)
         idx = _nearest_index_for_day(times, pendulum.now(tz).add(days=1).date(), 12, tz)
         arr = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[])
         if idx is not None and idx < len(arr):
-            try: return kmh_to_ms(float(arr[idx]))
-            except Exception: return None
+            try:
+                return kmh_to_ms(float(arr[idx]))
+            except Exception:
+                return None
         return None
 
     gust = _gust_at_noon(wm, tz_obj)
-    sst  = get_sst(la, lo)
 
     wind_val = float(wind_ms) if isinstance(wind_ms, (int, float)) else None
-    gust_val = float(gust)    if isinstance(gust,    (int, float)) else None
+    gust_val = float(gust) if isinstance(gust, (int, float)) else None
     card = _cardinal(float(wind_dir)) if isinstance(wind_dir, (int, float)) else None
     shore, shore_src = _shore_class(city, float(wind_dir) if isinstance(wind_dir, (int, float)) else None)
 
-    # — kite good?
+    # — критерии good
     kite_good = False
     if wind_val is not None:
         if KITE_WIND_GOOD_MIN <= wind_val <= KITE_WIND_GOOD_MAX:
             kite_good = True
-        if shore == "offshore":  # оффшор выключает кайт
+        if shore == "offshore":
             kite_good = False
         if gust_val and wind_val and (gust_val / max(wind_val, 0.1) > KITE_GUST_RATIO_BAD):
             kite_good = False
         if wave_h is not None and wave_h >= KITE_WAVE_WARN:
             kite_good = False
 
-    # — sup good?
     sup_good = False
     if wind_val is not None:
         if (wind_val <= SUP_WIND_GOOD_MAX) and (wave_h is None or wave_h <= SUP_WAVE_GOOD_MAX):
@@ -517,7 +523,6 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
         if shore == "offshore" and wind_val >= OFFSHORE_SUP_WIND_MIN:
             sup_good = False
 
-    # — surf good?
     surf_good = False
     if wave_h is not None:
         if SURF_WAVE_GOOD_MIN <= wave_h <= SURF_WAVE_GOOD_MAX and (wind_val is None or wind_val <= SURF_WIND_MAX):
@@ -528,17 +533,22 @@ def _water_highlights(city: str, la: float, lo: float, tz_obj: pendulum.Timezone
     if sup_good:  goods.append("SUP")
     if surf_good: goods.append("Сёрф")
 
+    # если good нет — не печатаем ничего
     if not goods:
         if DEBUG_WATER:
-            logging.info("WATER[%s]: no good. wind=%s dir=%s wave_h=%s gust=%s sst=%s shore=%s",
-                         city, wind_val, wind_dir, wave_h, gust_val, sst, shore)
+            logging.info("WATER[%s]: no good. wind=%s dir=%s wave_h=%s gust=%s shore=%s",
+                         city, wind_val, wind_dir, wave_h, gust_val, shore)
         return None
+
+    # оформили good — теперь можно добавить гидрик
+    sst = sst_hint if isinstance(sst_hint, (int, float)) else get_sst_cached(la, lo)
+    suit_txt  = _wetsuit_hint(sst)
+    suit_part = f" • {suit_txt}" if suit_txt else ""
 
     dir_part  = f" ({card}/{shore})" if card or shore else ""
     spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
     env_mark  = " (ENV)" if shore_src and str(shore_src).startswith("ENV:") else ""
-    suit_txt  = _wetsuit_hint(sst)
-    suit_part = f" • {suit_txt}" if suit_txt else ""
+
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
