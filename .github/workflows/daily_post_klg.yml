@@ -42,6 +42,7 @@ env:
   CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
   # опц. явная переадресация канала из inputs
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
+  DISABLE_SCHUMANN: "1"
   # вкл/выкл микро-LLM, таймзона, дата для ручного запуска
   OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
