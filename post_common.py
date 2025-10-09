@@ -46,6 +46,7 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 DEBUG_WATER = os.getenv("DEBUG_WATER", "").strip().lower() in ("1", "true", "yes", "on")
+DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1","true","yes","on")
 
 # ────────────────────────── базовые константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
@@ -708,9 +709,15 @@ def build_message(region_name: str,
     except Exception: pass
 
     # Шуман
-    schu_state = get_schumann_with_fallback()
-    P.append(schumann_line(schu_state))
-    P.append("———")
+    # schu_state = get_schumann_with_fallback()
+    # P.append(schumann_line(schu_state))
+    # P.append("———")
+    
+    schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
+    if not DISABLE_SCHUMANN:
+        P.append(schumann_line(schu_state))
+        P.append("———")
+
 
     # Астрособытия (на завтра по Asia/Nicosia — как в старом формате)
     tz_nic = pendulum.timezone("Asia/Nicosia")
