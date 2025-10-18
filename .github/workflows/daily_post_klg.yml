@@ -54,8 +54,7 @@ env:
   TZ: Europe/Kaliningrad
   WORK_DATE: ${{ github.event.inputs.work_date }}
 
-  # Поведение бота
-  DISABLE_SCHUMANN: "1"
+  # Общие настройки
   DISABLE_LLM_DAILY: "0"
   DEBUG_WATER: "0"
   GEN_SKIP_SHORT: "1"
@@ -77,6 +76,15 @@ jobs:
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 5 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_morning))
+    env:
+      # Разводка режима (как на Кипре)
+      POST_MODE: morning
+      DAY_OFFSET: "0"          # сегодня
+      ASTRO_OFFSET: "0"        # астроблок на сегодня
+      SHOW_AIR: "1"            # воздух/пыльца/офиц. радиация
+      SHOW_SPACE: "1"          # геомагнитка + солнечный ветер
+      SHOW_SCHUMANN: "1"       # Шуман включён утром
+      # НЕ отключаем Шумана глобально
     steps:
       - uses: actions/checkout@v4
 
@@ -123,6 +131,15 @@ jobs:
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_evening))
+    env:
+      # Разводка режима (как на Кипре)
+      POST_MODE: evening
+      DAY_OFFSET: "1"          # завтра
+      ASTRO_OFFSET: "1"        # астроблок на завтра
+      SHOW_AIR: "0"            # вечером воздух/пыльца/радиация не печатаем
+      SHOW_SPACE: "0"          # и космос не печатаем
+      SHOW_SCHUMANN: "0"       # Шуман выключен вечером
+      # НЕ задаём DISABLE_SCHUMANN глобально — управляем через SHOW_SCHUMANN
     steps:
       - uses: actions/checkout@v4
 
@@ -170,7 +187,7 @@ jobs:
       (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_noon_fx))
     env:
-      # на всякий случай вырубаем LLM в FX-посте
+      # На всякий случай вырубаем LLM в FX-посте
       DISABLE_LLM_DAILY: "1"
     steps:
       - uses: actions/checkout@v4
