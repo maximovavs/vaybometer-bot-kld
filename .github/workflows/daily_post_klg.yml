@@ -2,7 +2,7 @@ name: Daily VayboMeter (KLD)
 
 on:
   schedule:
-    # Вечерний пост: 15:00 UTC (оставляю как в примере)
+    # Вечерний пост: 15:00 UTC
     - cron: '0 15 * * *'
     # Курсы валют в полдень МСК: 09:00 UTC = 12:00 МСК
     - cron: '0 9 * * *'
@@ -10,11 +10,13 @@ on:
     inputs:
       run_evening:
         description: "Запустить вечерний пост"
-        default: "true"
+        type: boolean
+        default: true
         required: false
       run_noon_fx:
         description: "Запустить пост только с курсами"
-        default: "false"
+        type: boolean
+        default: false
         required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
@@ -32,37 +34,42 @@ permissions:
   contents: read
 
 concurrency:
-  group: daily-post-klg
+  group: daily-post-kld-${{ github.workflow }}-${{ github.job }}
   cancel-in-progress: false
 
-# общие переменные окружения для всех джоб
 env:
   TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
   CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
   CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
-  # опц. явная переадресация канала из inputs
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
-  DISABLE_SCHUMANN: "1"
-  # вкл/выкл микро-LLM, таймзона, дата для ручного запуска
-  OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
-  GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
-  GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
-  GEN_SKIP_SHORT: "1"
-  DISABLE_LLM_DAILY: "0"
-  DEBUG_WATER: "1"
+
+  # Таймзона и дата (для ручного прогона)
   TZ: Europe/Kaliningrad
   WORK_DATE: ${{ github.event.inputs.work_date }}
-  # прокинем флаг в скрипт
+
+  # Поведение бота
+  DISABLE_SCHUMANN: "1"
+  DISABLE_LLM_DAILY: "0"
+  DEBUG_WATER: "0"
+  GEN_SKIP_SHORT: "1"
+  PYTHONUNBUFFERED: "1"
+
+  # LLM ключи (опционально)
+  OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY:  ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
+
+  # Флаг публикации в тест-канал
   TO_TEST: ${{ github.event.inputs.to_test }}
 
 jobs:
   evening:
     name: Evening post (for tomorrow)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (!github.event.inputs.run_evening || github.event.inputs.run_evening == 'true'))
+      (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_evening))
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +77,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
@@ -89,12 +97,10 @@ jobs:
               pendulum.today = _fake_today
 
           args = ["post_kld.py"]
-          # явный override из input — передадим как --chat-id
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
           if chat_override.strip():
               args += ["--chat-id", chat_override.strip()]
           else:
-              # иначе чекбокс to_test
               to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
               if to_test:
                   args.append("--to-test")
@@ -106,9 +112,13 @@ jobs:
   noon_fx:
     name: Noon FX only (12:00 MSK)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: >
       (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_noon_fx == 'true')
+      (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_noon_fx))
+    env:
+      # На всякий случай вырубаем LLM в FX-посте
+      DISABLE_LLM_DAILY: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -116,6 +126,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
@@ -142,6 +153,7 @@ jobs:
               to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
               if to_test:
                   args.append("--to-test")
+
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
