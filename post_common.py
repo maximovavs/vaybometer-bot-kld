@@ -667,7 +667,7 @@ def build_message(region_name: str,
     sea_lookup: Dict[str, Tuple[float, float]] = {}
     for city, (la, lo) in sea_cities:
         sea_lookup[city] = (la, lo)
-        tmax, tmin = _fetch_temps_for_offset(la, lo, tz=tz_name, offset_days=DAY_OFFSET)
+        tmax, tmin = _fetch_temps_for_offset(la, lo, tz_name, DAY_OFFSET)
         if tmax is None:
             continue
         wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
@@ -701,7 +701,7 @@ def build_message(region_name: str,
     # Континентальные: «тёплые/холодные» (сортируем по tmax)
     temps_oth: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in other_cities:
-        tmax, tmin = _fetch_temps_for_offset(la, lo, tz=tz_name, offset_days=DAY_OFFSET)
+        tmax, tmin = _fetch_temps_for_offset(la, lo, tz_name, DAY_OFFSET)
         if tmax is None:
             continue
         wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
