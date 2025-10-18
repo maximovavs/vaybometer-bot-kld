@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 
 # -*- coding: utf-8 -*-
 """
 post_common.py — VayboMeter (Калининград).
@@ -47,6 +47,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 DEBUG_WATER = os.getenv("DEBUG_WATER", "").strip().lower() in ("1", "true", "yes", "on")
 DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1","true","yes","on")
+
+# Неразрывный пробел для «27/18 °C»
+NBSP = "\u00A0"
 
 # ────────────────────────── базовые константы ──────────────────────────
 KLD_LAT, KLD_LON = 54.710426, 20.452214
@@ -406,6 +409,15 @@ def build_conclusion(kp: Any, kp_status: str, air: Dict[str, Any], storm: Dict[s
     if secondary: lines.append("Также обратите внимание: " + "; ".join(secondary[:2]) + ".")
     return lines
 
+# ───────────── SST cache (минимальный фолбэк) ─────────────
+def get_sst_cached(la: float, lo: float) -> Optional[float]:
+    """Простой фолбэк: обёртка над get_sst; если нужно — заменим на кэш."""
+    try:
+        v = get_sst(la, lo)
+        return float(v) if isinstance(v, (int, float)) else None
+    except Exception:
+        return None
+
 # ───────────── водные активности: короткий «highlights» ─────────────
 def _deg_diff(a: float, b: float) -> float:
     return abs((a - b + 180) % 360 - 180)
@@ -550,7 +562,9 @@ def _water_highlights(
     spot_part = f" @{shore_src}" if shore_src and shore_src not in (city, f"ENV:SHORE_FACE_{_env_city_key(city)}") else ""
     env_mark  = " (ENV)" if shore_src and str(shore_src).startswith("ENV:") else ""
 
+    # одна строка даже если несколько активностей
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
+
 # ───────────── сообщение ─────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
@@ -583,13 +597,17 @@ def build_message(region_name: str,
     )
     gust = storm.get("max_gust_ms")
     if isinstance(gust, (int, float)):
-        wind_part += f" порывы до {gust:.0f}"
+        # короткий формат порывов (без единиц)
+        wind_part += f" • порывы — {int(round(gust))}"
     press_part = f"{press_val} гПа {press_trend}" if isinstance(press_val, int) else "н/д"
     desc = code_desc(wc)
 
+    tday_i  = int(round(t_day_max)) if isinstance(t_day_max, (int, float)) else None
+    tnight_i= int(round(t_night_min)) if isinstance(t_night_min, (int, float)) else None
+    kal_temp = f"{tday_i}/{tnight_i}{NBSP}°C" if (tday_i is not None and tnight_i is not None) else "н/д"
+
     kal_parts = [
-        f"🏙️ Калининград: дн/ночь {t_day_max:.0f}/{t_night_min:.0f} °C" if (t_day_max is not None and t_night_min is not None)
-        else "🏙️ Калининград: дн/ночь н/д",
+        f"🏙️ Калининград: дн/ночь {kal_temp}",
         desc or None,
         wind_part,
         (f"💧 RH {rh_min:.0f}–{rh_max:.0f}%" if rh_min is not None and rh_max is not None else None),
@@ -616,15 +634,17 @@ def build_message(region_name: str,
 
     if temps_sea:
         P.append(f"🌊 <b>{sea_label}</b>")
-        medals = ["🥵", "😊", "🙄", "😮‍💨", "🥶"]
+        medals = ["🥵", "😊", "🙄", "😮‍💨"]  # медали только первым четырём
         for i, (city, (d, n, wcx, sst_c)) in enumerate(sorted(temps_sea.items(),
                                                               key=lambda kv: kv[1][0], reverse=True)[:5]):
-            line = f"{medals[i]} {city}: {d:.1f}/{n:.1f}"
+            d_i, n_i = int(round(d)), int(round(n))
+            medal = medals[i] if i < len(medals) else "•"
+            line = f"{medal} {city}: {d_i}/{n_i}{NBSP}°C"
             descx = code_desc(wcx)
             if descx:
                 line += f" {descx}"
             if sst_c is not None:
-                line += f" 🌊 {sst_c:.1f}"
+                line += f" 🌊 {int(round(sst_c))}{NBSP}°C"
             try:
                 la, lo = sea_lookup[city]
                 hl = _water_highlights(city, la, lo, tz_obj, sst_c)
@@ -636,7 +656,7 @@ def build_message(region_name: str,
             P.append(line)
         P.append("———")
 
-    # Континентальные: «тёплые/холодные»
+    # Континентальные: «тёплые/холодные» (сортируем по tmax)
     temps_oth: Dict[str, Tuple[float, float, int]] = {}
     for city, (la, lo) in other_cities:
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
@@ -649,12 +669,14 @@ def build_message(region_name: str,
     if temps_oth:
         P.append("🔥 <b>Тёплые города, °C</b>")
         for city, (d, n, wcx) in sorted(temps_oth.items(), key=lambda kv: kv[1][0], reverse=True)[:3]:
+            d_i, n_i = int(round(d)), int(round(n))
             descx = code_desc(wcx)
-            P.append(f"   • {city}: {d:.1f}/{n:.1f}" + (f" {descx}" if descx else ""))
+            P.append(f"   • {city}: {d_i}/{n_i}{NBSP}°C" + (f" {descx}" if descx else ""))
         P.append("❄️ <b>Холодные города, °C</b>")
         for city, (d, n, wcx) in sorted(temps_oth.items(), key=lambda kv: kv[1][0])[:3]:
+            d_i, n_i = int(round(d)), int(round(n))
             descx = code_desc(wcx)
-            P.append(f"   • {city}: {d:.1f}/{n:.1f}" + (f" {descx}" if descx else ""))
+            P.append(f"   • {city}: {d_i}/{n_i}{NBSP}°C" + (f" {descx}" if descx else ""))
         P.append("———")
 
     # Air + Safecast + пыльца + радиация
@@ -708,18 +730,13 @@ def build_message(region_name: str,
             P.append("ℹ️ По ветру сейчас спокойно; Kp — глобальный индекс за 3 ч.")
     except Exception: pass
 
-    # Шуман
-    # schu_state = get_schumann_with_fallback()
-    # P.append(schumann_line(schu_state))
-    # P.append("———")
-    
+    # Шуман (можно отключить переменной окружения)
     schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
     if not DISABLE_SCHUMANN:
         P.append(schumann_line(schu_state))
         P.append("———")
 
-
-    # Астрособытия (на завтра по Asia/Nicosia — как в старом формате)
+    # Астрособытия
     tz_nic = pendulum.timezone("Asia/Nicosia")
     date_for_astro = pendulum.today(tz_nic).add(days=1)
     P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
@@ -1049,7 +1066,9 @@ def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: st
         prm  = f" ({percent}%)" if isinstance(percent, int) and percent else ""
         bullets = [base + prm, (f"♒ Знак: {sign}" if sign else "— знак Луны н/д")]
     lines = ["🌌 <b>Астрособытия</b>"]
-    lines += [zsym(x) for x in bullets[:3]]
+    # Если LLM выключен — максимум 2 пункта, иначе до 3
+    max_items = 3 if USE_DAILY_LLM else 2
+    lines += [zsym(x) for x in bullets[:max_items]]
     llm_used = bool(bullets) and USE_DAILY_LLM
     if voc_text and not llm_used:
         lines.append(f"⚫️ VoC: {voc_text}")
