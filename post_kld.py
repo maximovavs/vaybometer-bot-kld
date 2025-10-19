@@ -21,6 +21,10 @@ post_kld.py  •  Запуск «Kaliningrad daily post» для Telegram-кан
   TZ                  — таймзона, по умолчанию Europe/Kaliningrad.
   WORK_DATE           — альтернативный способ задать базовую дату (YYYY-MM-DD).
   MODE                — дефолт для --mode (morning/evening). CLI приоритетнее.
+
+Примечание:
+  Флаги показа блоков теперь задаются здесь жёстко (SHOW_AIR/SHOW_SPACE/SHOW_SCHUMANN),
+  чтобы утренний и вечерний посты гарантированно отличались по структуре.
 """
 
 from __future__ import annotations
@@ -156,8 +160,7 @@ def _normalize_cbr_date(raw) -> str | None:
         s = str(raw).strip()
         if "T" in s or " " in s:
             return pendulum.parse(s, tz="Europe/Moscow").to_date_string()
-        # возможно уже YYYY-MM-DD
-        pendulum.parse(s, tz="Europe/Moscow")
+        pendulum.parse(s, tz="Europe/Moscow")  # валидация
         return s
     except Exception:
         return None
@@ -169,14 +172,11 @@ async def _send_fx_only(
     tz: pendulum.Timezone,
     dry_run: bool
 ) -> None:
-    # формируем текст и получаем полные rates
     text, rates = _build_fx_message(date_local, tz)
 
-    # достаём дату ЦБ (учитываем разные ключи)
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
 
-    # если есть should_publish_again — проверим кэш и, при необходимости, пропустим публикацию
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -186,7 +186,6 @@ async def _send_fx_only(
                 logging.info("Курсы ЦБ не обновились — пост пропущен.")
                 return
     except Exception as e:
-        # не считаем ошибкой — просто публикуем
         logging.warning("FX: skip-check failed (продолжаем отправку): %s", e)
 
     if dry_run:
@@ -195,7 +194,6 @@ async def _send_fx_only(
 
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
-    # после успешной отправки обновим кэш
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -213,7 +211,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
       2) --to-test  → CHANNEL_ID_TEST
       3) CHANNEL_ID_KLG
     """
-    # 1) явный аргумент или ENV override
     chat_override = (args_chat or "").strip() or os.getenv("CHANNEL_ID_OVERRIDE", "").strip()
     if chat_override:
         try:
@@ -222,7 +219,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
             logging.error("Неверный chat_id (override): %r", chat_override)
             sys.exit(1)
 
-    # 2) тестовый канал
     if to_test:
         ch_test = os.getenv("CHANNEL_ID_TEST", "").strip()
         if not ch_test:
@@ -234,7 +230,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
             logging.error("CHANNEL_ID_TEST должен быть числом, получено: %r", ch_test)
             sys.exit(1)
 
-    # 3) основной канал
     ch_main = os.getenv("CHANNEL_ID_KLG", "").strip()
     if not ch_main:
         logging.error("CHANNEL_ID_KLG не задан и не указан --chat-id/override")
@@ -277,8 +272,7 @@ class _TodayPatch:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
             pendulum.now = self._orig_now  # type: ignore[assignment]
-        # не подавляем исключения
-        return False
+        return False  # не подавляем исключения
 
 # ───────────────────────────────── Main ─────────────────────────────────────
 
@@ -304,9 +298,31 @@ async def main_kld() -> None:
     if args.for_tomorrow:
         base_date = base_date.add(days=1)
 
-    # Выбранный режим прокинем в окружение (на случай использования внутри post_common)
-    os.environ["POST_MODE"] = args.mode
-    logging.info("Режим поста: %s", args.mode)
+    # Выбранный режим
+    mode = (args.mode or "evening").lower().strip()
+    logging.info("Режим поста: %s", mode)
+
+    # ── Прокинем флаги в post_common (жёстко для каждого режима)
+    # DAY_OFFSET/ASTRO_OFFSET: 0 для morning, 1 для evening
+    day_offset = 0 if mode == "morning" else 1
+    os.environ["POST_MODE"] = mode
+    os.environ["DAY_OFFSET"] = str(day_offset)
+    os.environ["ASTRO_OFFSET"] = str(day_offset)
+
+    # Показ блоков
+    if mode == "morning":
+        os.environ["SHOW_AIR"] = "1"
+        os.environ["SHOW_SPACE"] = "1"
+        # учитываем глобальный DISABLE_SCHUMANN (если был "1", то ниже блок всё равно не покажется)
+        os.environ["SHOW_SCHUMANN"] = "1"
+    else:  # evening
+        os.environ["SHOW_AIR"] = "0"
+        os.environ["SHOW_SPACE"] = "0"
+        os.environ["SHOW_SCHUMANN"] = "0"
+
+    logging.info("Флаги выводa: DAY_OFFSET=%s, ASTRO_OFFSET=%s, AIR=%s, SPACE=%s, SCHUMANN=%s",
+                 os.environ.get("DAY_OFFSET"), os.environ.get("ASTRO_OFFSET"),
+                 os.environ.get("SHOW_AIR"), os.environ.get("SHOW_SPACE"), os.environ.get("SHOW_SCHUMANN"))
 
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN_KLG)
@@ -321,7 +337,7 @@ async def main_kld() -> None:
             logging.info("DRY-RUN: пропускаем отправку основного ежедневного поста")
             return
 
-        # Обычный ежедневный пост (формат/контент различается внутри post_common по POST_MODE)
+        # Обычный ежедневный пост (формат/контент различается внутри post_common по ENV выше)
         await main_common(
             bot=bot,
             chat_id=chat_id,
