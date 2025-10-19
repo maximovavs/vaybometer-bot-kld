@@ -455,7 +455,7 @@ def build_conclusion(kp: Any, kp_status: str, air: Dict[str, Any], storm: Dict[s
     if secondary: lines.append("Также обратите внимание: " + "; ".join(secondary[:2]) + ".")
     return lines
 
-# ───────────── SST cache (минимальный фолбэк) ─────────────
+# ───────────── SST cache (минимальный фоллбэк) ─────────────
 def get_sst_cached(la: float, lo: float) -> Optional[float]:
     """Простой фолбэк: обёртка над get_sst; если нужно — заменим на кэш."""
     try:
