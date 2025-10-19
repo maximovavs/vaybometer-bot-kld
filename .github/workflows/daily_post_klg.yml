@@ -44,17 +44,17 @@ concurrency:
   group: daily-post-kld-${{ github.workflow }}-${{ github.job }}
   cancel-in-progress: false
 
+# Базовые ENV (общие)
 env:
   TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
   CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
   CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
 
-  # Таймзона и (опц.) дата для ручного запуска
   TZ: Europe/Kaliningrad
   WORK_DATE: ${{ github.event.inputs.work_date }}
 
-  # Общие настройки
+  # Поведение бота (общие)
   DISABLE_LLM_DAILY: "0"
   DEBUG_WATER: "0"
   GEN_SKIP_SHORT: "1"
@@ -77,14 +77,15 @@ jobs:
       (github.event_name == 'schedule' && github.event.schedule == '0 5 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_morning))
     env:
-      # Разводка режима (как на Кипре)
-      POST_MODE: morning
-      DAY_OFFSET: "0"          # сегодня
-      ASTRO_OFFSET: "0"        # астроблок на сегодня
-      SHOW_AIR: "1"            # воздух/пыльца/офиц. радиация
-      SHOW_SPACE: "1"          # геомагнитка + солнечный ветер
-      SHOW_SCHUMANN: "1"       # Шуман включён утром
-      # НЕ отключаем Шумана глобально
+      # ЯВНО фиксируем режим и секции
+      POST_MODE: "morning"
+      DAY_OFFSET: "0"
+      ASTRO_OFFSET: "0"
+      SHOW_AIR: "1"
+      SHOW_SPACE: "1"
+      SHOW_SCHUMANN: "1"
+      # на всякий случай не глушим шуман глобально
+      DISABLE_SCHUMANN: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -104,13 +105,13 @@ jobs:
         run: |
           python <<'PY'
           import os, runpy, sys, pendulum
+          print("Morning post (for today)")
           wd = os.getenv("WORK_DATE")
           if wd:
               def _fake_today(tz=None):
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
-
           args = ["post_kld.py", "--mode", "morning"]
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
           if chat_override.strip():
@@ -119,7 +120,6 @@ jobs:
               to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
               if to_test:
                   args.append("--to-test")
-
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
@@ -132,14 +132,13 @@ jobs:
       (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_evening))
     env:
-      # Разводка режима (как на Кипре)
-      POST_MODE: evening
-      DAY_OFFSET: "1"          # завтра
-      ASTRO_OFFSET: "1"        # астроблок на завтра
-      SHOW_AIR: "0"            # вечером воздух/пыльца/радиация не печатаем
-      SHOW_SPACE: "0"          # и космос не печатаем
-      SHOW_SCHUMANN: "0"       # Шуман выключен вечером
-      # НЕ задаём DISABLE_SCHUMANN глобально — управляем через SHOW_SCHUMANN
+      POST_MODE: "evening"
+      DAY_OFFSET: "1"
+      ASTRO_OFFSET: "1"
+      SHOW_AIR: "0"
+      SHOW_SPACE: "0"
+      SHOW_SCHUMANN: "0"
+      DISABLE_SCHUMANN: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -159,13 +158,13 @@ jobs:
         run: |
           python <<'PY'
           import os, runpy, sys, pendulum
+          print("Evening post (for tomorrow)")
           wd = os.getenv("WORK_DATE")
           if wd:
               def _fake_today(tz=None):
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
-
           args = ["post_kld.py", "--mode", "evening"]
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
           if chat_override.strip():
@@ -174,7 +173,6 @@ jobs:
               to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
               if to_test:
                   args.append("--to-test")
-
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
@@ -187,8 +185,8 @@ jobs:
       (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_noon_fx))
     env:
-      # На всякий случай вырубаем LLM в FX-посте
       DISABLE_LLM_DAILY: "1"
+      # FX не зависит от режимов, остальное не задаём
     steps:
       - uses: actions/checkout@v4
 
@@ -214,7 +212,6 @@ jobs:
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
-
           args = ["post_kld.py", "--fx-only"]
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
           if chat_override.strip():
@@ -223,7 +220,6 @@ jobs:
               to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
               if to_test:
                   args.append("--to-test")
-
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
