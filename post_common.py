@@ -262,8 +262,7 @@ def _nearest_index_for_day(times: List[pendulum.DateTime], date_obj: pendulum.Da
     if not times: return None
     target = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, prefer_hour, 0, tz=tz)
     best_i, best_diff = None, None
-    for i, dt in enumerate(times:
-        ):
+    for i, dt in enumerate(times):
         try: dt_local = dt.in_tz(tz)
         except Exception: dt_local = dt
         if dt_local.date() != date_obj: continue
@@ -304,7 +303,7 @@ def pick_header_metrics_for_offset(wm: Dict[str, Any], tz: pendulum.Timezone, of
         except Exception: spd = None
         try: wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
         except Exception: wdir = None
-        try: p_noon = float(prs_arr[idx_noon]) if idx_noон < len(prs_arr) else None
+        try: p_noon = float(prs_arr[idx_noon]) if idx_noon < len(prs_arr) else None
         except Exception: p_noon = None
         try: p_morn = float(prs_arr[idx_morn]) if (idx_morn is not None and idx_morn < len(prs_arr)) else None
         except Exception: p_morn = None
@@ -1097,7 +1096,7 @@ def load_calendar(path: str = "lunar_calendar.json") -> dict:
     if isinstance(data, dict) and isinstance(data.get("days"), dict): return data["days"]
     return data if isinstance(data, dict) else {}
 
-def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
+def _parse_voc_dt(s: str, tz: pendulum.Timezone):
     if not s: return None
     try: return pendulum.parse(s).in_tz(tz)
     except Exception: pass
