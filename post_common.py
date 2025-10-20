@@ -94,6 +94,39 @@ def aqi_risk_ru(aqi: Any) -> str:
     if v <= 150: return "высокий"
     return "очень высокий"
 
+def _kp_cyprus_like():
+    """Возвращает (kp, status, age_minutes) как в кипрском/мировом посте:
+    последний ЗАКРЫТЫЙ 3-часовой бар SWPC. Если старше 9 часов — н/д."""
+    try:
+        kp_tuple = get_kp(source="global")  # если air.get_kp поддерживает параметр
+    except TypeError:
+        kp_tuple = get_kp()
+    except Exception:
+        return None, "н/д", None
+
+    # ожидаем (kp, status, ts, src), но бережно распакуем
+    kp = kp_tuple[0] if isinstance(kp_tuple, (list, tuple)) and len(kp_tuple) > 0 else None
+    status = kp_tuple[1] if isinstance(kp_tuple, (list, tuple)) and len(kp_tuple) > 1 else "н/д"
+    ts = kp_tuple[2] if isinstance(kp_tuple, (list, tuple)) and len(kp_tuple) > 2 else None
+
+    age_min = None
+    try:
+        if isinstance(ts, int):
+            age_min = int((pendulum.now("UTC").int_timestamp - ts) / 60)
+            if age_min > 9 * 60:   # старше 9 часов — как «н/д»
+                return None, "н/д", None
+    except Exception:
+        pass
+    try:
+        if isinstance(kp, (int, float)):
+            kp = float(kp)
+            if kp < 0 or kp > 9:
+                kp = max(0.0, min(9.0, kp))
+    except Exception:
+        kp = None
+    return kp, status, age_min
+
+
 # ────────────────────────── Open-Meteo helpers ──────────────────────────
 def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
     hourly = wm.get("hourly") or {}
@@ -480,36 +513,35 @@ def build_message_morning_compact(region_name: str,
         pass
 
     # Космопогода: Kp + SW «в одну строку»
-    kp_val, kp_status, kp_ts, _ = (get_kp() or (None, "н/д", None, "n/d"))
+    # --- Kp (как в Кипре/мировом)
+    kp_val, kp_status, kp_age_min = _kp_cyprus_like()
     age_txt = ""
-    try:
-        if isinstance(kp_ts,int):
-            ago = int((pendulum.now("UTC").int_timestamp - kp_ts)/60)
-            age_txt = f", 🕓 {ago//60}ч назад" if ago>180 else (f", 🕓 {ago} мин назад" if ago>=0 else "")
-    except Exception:
-        age_txt = ""
-    kp_chunk = (f"Kp={kp_val:.1f} ({kp_status}{age_txt})" if isinstance(kp_val,(int,float)) else "Kp н/д")
+    if isinstance(kp_age_min, int):
+        age_txt = f", 🕓 {kp_age_min // 60}ч назад" if kp_age_min > 180 else f", 🕓 {kp_age_min} мин назад"
+    kp_chunk = f"Кр {kp_val:.1f} ({kp_status}{age_txt})" if isinstance(kp_val, (int, float)) else "Кр н/д"
+
+    # --- Солнечный ветер (как было)
     sw = get_solar_wind() or {}
     v = sw.get("speed_kms"); n = sw.get("density")
-    sw_chunk = None
-    if isinstance(v,(int,float)) or isinstance(n,(int,float)):
-        vtxt = f"v {float(v):.0f} км/с" if isinstance(v,(int,float)) else None
-        ntxt = f"n {float(n):.1f} см⁻³" if isinstance(n,(int,float)) else None
-        parts = [p for p in (vtxt, ntxt) if p]
-        sw_chunk = " • 🌬️ " + ", ".join(parts) + f" — {sw.get('status','н/д')}" if parts else None
+    vtxt = f"v {float(v):.0f} км/с" if isinstance(v, (int, float)) else None
+    ntxt = f"n {float(n):.1f} см⁻³" if isinstance(n, (int, float)) else None
+    parts = [p for p in (vtxt, ntxt) if p]
+    sw_chunk = (" • 🌬️ " + ", ".join(parts) + f" — {sw.get('status','н/д')}") if parts else ""
     space_line = "🧲 Космопогода: " + kp_chunk + (sw_chunk or "")
 
     # Safecast/радиация (только если есть)
     sc_line = safecast_summary_line()
     official_rad = radiation_line(KLD_LAT, KLD_LON)
 
-    # Шуман — только если «не зелёный»
+    # Шуман — только если включён вывод
     schu_line = schumann_line(get_schumann_with_fallback()) if SHOW_SCHUMANN else None
 
     # Итого
     storm_short = storm_short_text(wm_klg, tz_obj)
-    kp_short = kp_status or "н/д"
-    itogo = f"🔎 Итого: воздух {'🟠' if aqi_risk_ru(aqi) in ('высокий','очень высокий') else '🟢'} • {storm_short} • Kp {kp_short}"
+    kp_short = kp_status if isinstance(kp_val, (int, float)) else "н/д"
+    air_risk = aqi_risk_ru(aqi)
+    air_emoji = "🟠" if air_risk in ("высокий", "очень высокий") else ("🟡" if air_risk == "умеренный" else "🟢")
+    itogo = f"🔎 Итого: воздух {air_emoji} • {storm_short} • Кр {kp_short}"
 
     # Сегодня — одна строка через «;» и с точкой
     def safe_tips(theme: str) -> List[str]:
@@ -526,7 +558,9 @@ def build_message_morning_compact(region_name: str,
             except Exception:
                 pass
         return base.get(theme, base["здоровый день"])
-    theme = "магнитные бури" if (isinstance(kp_val,(int,float)) and kp_val >= 5) else ("плохой воздух" if aqi_risk_ru(aqi) in ("высокий","очень высокий") else "здоровый день")
+
+    theme = "магнитные бури" if (isinstance(kp_val, (int, float)) and kp_val >= 5) \
+            else ("плохой воздух" if air_risk in ("высокий", "очень высокий") else "здоровый день")
     today_line = "✅ Сегодня: " + "; ".join(safe_tips(theme)) + "."
 
     # Праздник/факт
