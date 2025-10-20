@@ -5,7 +5,7 @@ post_common.py — Kaliningrad (VayboMeter).
 
 Утренний пост (compact) стилизован «как на Кипре»:
   🌇 Закат сегодня • 🏭 AQI … (риск) • PM… • 🌿 пыльца: …
-  🧲 Космопогода: Kp … (статус, 🕓 …) • 🌬️ v …, n … — …
+  🧲 Космопогода: Кр … (статус, 🕓 …) • 🌬️ v …, n … — …
   🔎 Итого … • ✅ Сегодня: совет1; совет2; совет3.
 
 Вечерний пост (legacy) сохранён для совместимости.
@@ -489,7 +489,7 @@ def build_message_morning_compact(region_name: str,
         aqi = air.get("aqi"); aqi_i = int(round(float(aqi))) if isinstance(aqi,(int,float)) else "н/д"
     except Exception:
         aqi_i = "н/д"
-    def _int_or_nd(x): 
+    def _int_or_nd(x):
         try: return str(int(round(float(x))))
         except Exception: return "н/д"
     pm25_int = _int_or_nd(air.get("pm25"))
@@ -577,9 +577,10 @@ def build_message_morning_compact(region_name: str,
     if fx_line: P.append(fx_line)
     P.append(air_line)
     if uvi_line: P.append(uvi_line)
-    P.append(space_line)
-    if sc_line: P.append(sc_line)
-    if official_rad: P.append(official_rad)
+    if SHOW_SPACE: P.append(space_line)
+    sc_block_parts = [x for x in (sc_line, official_rad) if x]
+    if sc_block_parts:
+        P.append(" • ".join(sc_block_parts))
     if schu_line: P.append(schu_line)
     P.append("")
     P.append(itogo)
