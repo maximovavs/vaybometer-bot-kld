@@ -381,17 +381,19 @@ def _fx_line(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Optional[s
 def _sunset_for_offset(wm: Dict[str, Any], tz_name: str, offset_days: int) -> Optional[str]:
     daily = (wm or {}).get("daily") or {}
     times = daily.get("time") or []
-    sunsets = daily.get("sunset") or []
+    # возможные варианты ключей в разных сборках
+    sunset_arr = daily.get("sunset") or daily.get("sunset_time") or daily.get("sunset_local") or []
+    if not times or not sunset_arr:
+        return None
     tz = pendulum.timezone(tz_name)
     target = pendulum.today(tz).add(days=offset_days).date()
-    idx = None
     try:
         idx = [pendulum.parse(t).date() for t in times].index(target)
     except Exception:
         return None
-    if idx is not None and idx < len(sunsets):
+    if idx < len(sunset_arr):
         try:
-            return pendulum.parse(str(sunsets[idx])).in_tz(tz).format("HH:mm")
+            return pendulum.parse(str(sunset_arr[idx])).in_tz(tz).format("HH:mm")
         except Exception:
             return None
     return None
@@ -527,36 +529,41 @@ def safecast_line_always() -> str:
     sc = load_safecast()
 
     em, lbl = "⚪", "н/д"
-    pm25_s, pm10_s = "—", "—"
-    cpm_s, usvh_s  = "—", "—"
+    pm25_s = pm10_s = None
+    cpm_s = usvh_s = None
     risk = "н/д"
 
     if sc:
         pm25, pm10 = sc.get("pm25"), sc.get("pm10")
         em, lbl = safecast_pm_level(pm25, pm10)
-        if isinstance(pm25,(int,float)): pm25_s=f"{pm25:.0f}"
-        if isinstance(pm10,(int,float)): pm10_s=f"{pm10:.0f}"
+        if isinstance(pm25, (int, float)): pm25_s = f"{pm25:.0f}"
+        if isinstance(pm10, (int, float)): pm10_s = f"{pm10:.0f}"
         cpm  = sc.get("cpm")
         usvh = sc.get("radiation_usvh")
-        if not isinstance(usvh,(int,float)) and isinstance(cpm,(int,float)):
-            usvh = float(cpm)*CPM_TO_USVH
-        if isinstance(cpm,(int,float)): cpm_s=f"{cpm:.0f}"
-        if isinstance(usvh,(int,float)):
-            usvh_s=f"{usvh:.3f}"
+        if not isinstance(usvh, (int, float)) and isinstance(cpm, (int, float)):
+            usvh = float(cpm) * CPM_TO_USVH
+        if isinstance(cpm, (int, float)):  cpm_s  = f"{cpm:.0f}"
+        if isinstance(usvh, (int, float)):
+            usvh_s = f"{usvh:.3f}"
             _, risk_lbl = safecast_usvh_risk(float(usvh))
             risk = risk_lbl
         else:
             risk = lbl
 
-    return f"🧪 Safecast: {em} {lbl} · PM₂.₅ {pm25_s} | PM₁₀ {pm10_s} · {cpm_s} CPM ≈ {usvh_s} μSv/h — {risk}"
+    # Конструируем строку без «≈ —»
+    parts = [f"🧪 Safecast: {em} {lbl}"]
+    pm_str = f"PM₂.₅ {pm25_s or 'н/д'} | PM₁₀ {pm10_s or 'н/д'}"
+    parts.append(pm_str)
 
-def radiation_line(lat: float, lon: float) -> Optional[str]:
-    data = get_radiation(lat, lon) or {}
-    dose = data.get("dose")
-    if isinstance(dose,(int,float)):
-        em,lbl = official_usvh_risk(float(dose))
-        return f"{em} Радиация: {dose:.3f} μSv/h ({lbl})"
-    return None
+    rad_bits = []
+    if cpm_s:  rad_bits.append(f"{cpm_s} CPM")
+    if usvh_s: rad_bits.append(f"≈ {usvh_s} μSv/h")
+    if rad_bits:
+        parts.append(" · ".join(rad_bits) + f" — {risk}")
+    else:
+        parts.append("нет свежих данных")
+
+    return " · ".join(parts)
 
 # ───────────── астроблок (нужен только для VoC в компактном) ─────────────
 def load_calendar(path: str = "lunar_calendar.json") -> dict:
