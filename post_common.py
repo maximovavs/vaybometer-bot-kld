@@ -565,6 +565,21 @@ def safecast_line_always() -> str:
 
     return " · ".join(parts)
 
+from typing import Optional  # если ещё не импортировано
+
+def radiation_line(lat: float, lon: float) -> Optional[str]:
+    """
+    Официальная радиация по локации (μSv/h) с аккуратной шкалой риска.
+    Возвращает готовую строку для поста или None, если данных нет.
+    """
+    data = get_radiation(lat, lon) or {}
+    dose = data.get("dose")
+    if isinstance(dose, (int, float)):
+        em, lbl = official_usvh_risk(float(dose))  # использует уже объявленную шкалу
+        return f"{em} Радиация: {dose:.3f} μSv/h ({lbl})"
+    return None
+
+
 # ───────────── астроблок (нужен только для VoC в компактном) ─────────────
 def load_calendar(path: str = "lunar_calendar.json") -> dict:
     try: data = json.loads(Path(path).read_text("utf-8"))
@@ -843,6 +858,7 @@ __all__ = [
     "send_common_post",
     "main_common",
     "safecast_line_always",
+    "radiation_line",
     "pick_tomorrow_header_metrics",
     "storm_flags_for_tomorrow",
     "pick_header_metrics_for_offset",
