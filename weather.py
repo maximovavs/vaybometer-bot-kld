@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+=#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 weather.py
@@ -6,11 +6,13 @@ weather.py
 
 1) OpenWeather One Call (v3 → v2) — если есть OWM_KEY
 2) Open-Meteo (start_date / end_date = сегодня+завтра)
-3) Фоллбэк — Open-Meteo «current_weather»
+3) Фоллбэк — Open-Mетео «current_weather»
 
 Дополнительно:
 • day_night_stats(lat, lon, tz="UTC") → {"t_day_max","t_night_min","rh_avg","rh_min","rh_max"}
 • fetch_tomorrow_temps(lat, lon, tz="UTC") → (t_day_max, t_night_min)
+• get_sunrise_sunset(lat, lon, tz="UTC", day_offset=0) → (sunrise "HH:MM", sunset "HH:MM")
+• get_uv_index(lat, lon, tz="UTC", day_offset=0) → {"uvi","uvi_max","label","source"}
 """
 
 from __future__ import annotations
@@ -70,7 +72,7 @@ def _ensure_aliases_om_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-# ────────────────────────── Вспомогательный запрос Open-Meteо ────────────────
+# ────────────────────────── Вспомогательный запрос Open-Mетео ────────────────
 
 def _openmeteo_hourly_daily(
     lat: float,
@@ -85,7 +87,7 @@ def _openmeteo_hourly_daily(
     Часовые метки приходят уже в локальной TZ, указанной в параметре timezone.
     """
     daily_list = ["temperature_2m_max", "temperature_2m_min", "weathercode",
-                  "wind_speed_10m_max", "wind_gusts_10m_max"]
+                  "wind_speed_10m_max", "wind_gusts_10m_max", "uv_index_max"]
     if need_sun:
         daily_list += ["sunrise", "sunset"]
 
@@ -100,6 +102,8 @@ def _openmeteo_hourly_daily(
         "wind_gusts_10m",                 # ← порывы, важно!
         "rain",
         "thunderstorm_probability",
+        "uv_index",
+        "uv_index_clear_sky",
     ]
 
     j = _safe_http_get(
@@ -353,8 +357,8 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         start_date=today,
         end_date=tomorrow,
         current_weather="true",
-        daily="temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max,wind_gusts_10m_max",
-        hourly="surface_pressure,cloud_cover,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m,rain,thunderstorm_probability",
+        daily="temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max,wind_gusts_10m_max,uv_index_max,sunrise,sunset",
+        hourly="surface_pressure,cloud_cover,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m,rain,thunderstorm_probability,uv_index,uv_index_clear_sky",
     )
     if not om or "current_weather" not in om or "daily" not in om or "hourly" not in om:
         logging.debug("_openmeteo — отсутствуют нужные ключи")
@@ -421,7 +425,7 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             "weathercode":         [unified_current["weathercode"]],
             "wind_speed_10m":      [unified_current["windspeed"]],
             "wind_direction_10m":  [unified_current["winddirection"]],
-            # порывов в current нет
+            # порывов и UVI в current нет
         }
 
         om["strong_wind"] = (isinstance(unified_current.get("windspeed"), (int, float))
@@ -451,3 +455,113 @@ def get_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             return data
 
     return None
+
+
+# ───────────────────────────── Солнце и УФ ───────────────────────────────────
+
+def _date_for_offset(tz: str, day_offset: int) -> str:
+    return pendulum.today(tz or "UTC").add(days=day_offset).to_date_string()
+
+def _nearest_index(times: List[str], target: pendulum.DateTime) -> Optional[int]:
+    best_i, best_diff = None, None
+    for i, iso in enumerate(times or []):
+        try:
+            dt = pendulum.parse(iso)
+            diff = abs((dt - target).total_seconds())
+            if best_diff is None or diff < best_diff:
+                best_i, best_diff = i, diff
+        except Exception:
+            continue
+    return best_i
+
+def get_sunrise_sunset(
+    lat: float,
+    lon: float,
+    tz: str | None = "UTC",
+    day_offset: int = 0,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Возвращает (sunrise, sunset) в формате HH:MM локальной TZ для указанного дня."""
+    tz_name = tz or "UTC"
+    date_str = _date_for_offset(tz_name, day_offset)
+    j = _openmeteo_hourly_daily(lat, lon, tz_name, date_str, date_str, need_sun=True)
+    if not j:
+        return None, None
+    dl = j.get("daily", {}) or {}
+    try:
+        sr = (dl.get("sunrise") or [None])[0]
+        ss = (dl.get("sunset")  or [None])[0]
+        sr_out = sr[11:16] if isinstance(sr, str) and len(sr) >= 16 else None
+        ss_out = ss[11:16] if isinstance(ss, str) and len(ss) >= 16 else None
+        return sr_out, ss_out
+    except Exception:
+        return None, None
+
+def _uvi_label(u: Optional[float]) -> str:
+    if not isinstance(u, (int, float)):
+        return "н/д"
+    x = float(u)
+    if x <= 2: return "низкий"
+    if x <= 5: return "умеренный"
+    if x <= 7: return "высокий"
+    if x <= 10: return "очень высокий"
+    return "экстремальный"
+
+def get_uv_index(
+    lat: float,
+    lon: float,
+    tz: str | None = "UTC",
+    day_offset: int = 0,
+) -> Dict[str, Optional[float | str]]:
+    """
+    Возвращает оценку УФ на указанный день:
+      {"uvi": ..., "uvi_max": ..., "label": "...", "source": "hourly|daily|clear_sky"}
+    • uvi — ближайший к «сейчас» (или полдню для offset>0).
+    • uvi_max — максимум за день (daily uv_index_max либо max(hourly)).
+    """
+    tz_name = tz or "UTC"
+    date_str = _date_for_offset(tz_name, day_offset)
+    j = _openmeteo_hourly_daily(lat, lon, tz_name, date_str, date_str, need_sun=False)
+    if not j:
+        return {"uvi": None, "uvi_max": None, "label": "н/д", "source": None}
+
+    hr = j.get("hourly", {}) or {}
+    dl = j.get("daily", {}) or {}
+    times: List[str] = hr.get("time", []) or []
+    uvi_arr = hr.get("uv_index", []) or []
+    uvi_clear = hr.get("uv_index_clear_sky", []) or []
+
+    # точка для выборки: «сейчас» (или полдень, если прогноз не на сегодня)
+    target = (pendulum.now(tz_name)
+              if day_offset == 0
+              else pendulum.datetime(*map(int, (date_str.split("-"))), 12, 0, tz=tz_name))
+
+    idx = _nearest_index(times, target)
+    uvi_now = None
+    source = None
+    try:
+        if idx is not None and idx < len(uvi_arr) and isinstance(uvi_arr[idx], (int, float)):
+            uvi_now = float(uvi_arr[idx]); source = "hourly"
+        elif idx is not None and idx < len(uvi_clear) and isinstance(uvi_clear[idx], (int, float)):
+            uvi_now = float(uvi_clear[idx]); source = "clear_sky"
+    except Exception:
+        pass
+
+    # максимум за день
+    uvi_max = None
+    try:
+        if dl.get("uv_index_max"):
+            uvi_max = float((dl["uv_index_max"] or [None])[0])
+        else:
+            # если daily нет, посчитаем по часовым
+            day_vals = [float(v) for t, v in zip(times, uvi_arr) if isinstance(v, (int, float)) and t and t.startswith(date_str)]
+            if day_vals:
+                uvi_max = max(day_vals)
+    except Exception:
+        pass
+
+    return {
+        "uvi": uvi_now,
+        "uvi_max": uvi_max,
+        "label": _uvi_label(uvi_now if uvi_now is not None else uvi_max),
+        "source": source or ("daily" if uvi_max is not None else None),
+    }
