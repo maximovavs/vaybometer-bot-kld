@@ -262,7 +262,8 @@ def _nearest_index_for_day(times: List[pendulum.DateTime], date_obj: pendulum.Da
     if not times: return None
     target = pendulum.datetime(date_obj.year, date_obj.month, date_obj.day, prefer_hour, 0, tz=tz)
     best_i, best_diff = None, None
-    for i, dt in enumerate(times):
+    for i, dt in enumerate(times:
+        ):
         try: dt_local = dt.in_tz(tz)
         except Exception: dt_local = dt
         if dt_local.date() != date_obj: continue
@@ -303,7 +304,7 @@ def pick_header_metrics_for_offset(wm: Dict[str, Any], tz: pendulum.Timezone, of
         except Exception: spd = None
         try: wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
         except Exception: wdir = None
-        try: p_noon = float(prs_arr[idx_noon]) if idx_noon < len(prs_arr) else None
+        try: p_noon = float(prs_arr[idx_noon]) if idx_noон < len(prs_arr) else None
         except Exception: p_noon = None
         try: p_morn = float(prs_arr[idx_morn]) if (idx_morn is not None and idx_morn < len(prs_arr)) else None
         except Exception: p_morn = None
@@ -759,7 +760,10 @@ def build_message(region_name: str,
         air = get_air(KLD_LAT, KLD_LON) or {}
         lvl = air.get("lvl", "н/д")
         P.append(f"{AIR_EMOJI.get(lvl,'⚪')} {lvl} (AQI {air.get('aqi','н/д')}) | PM₂.₅: {pm_color(air.get('pm25'))} | PM₁₀: {pm_color(air.get('pm10'))}")
-        P.extend(safecast_block_lines())
+
+        # ОДНА фиксированная строка Safecast — всегда в утреннем посте
+        P.append(safecast_line_always())
+
         em_sm, lbl_sm = smoke_index(air.get("pm25"), air.get("pm10"))
         if lbl_sm and str(lbl_sm).lower() not in ("низкое", "низкий", "нет", "н/д"):
             P.append(f"🔥 Задымление: {em_sm} {lbl_sm}")
@@ -1015,7 +1019,41 @@ def safecast_pm_level(pm25: Optional[float], pm10: Optional[float]) -> Tuple[str
     return (["🟢","🟡","🟠","🔴"][worst],
             ["низкий","умеренный","высокий","очень высокий"][worst])
 
+def safecast_line_always() -> str:
+    """Одна строка Safecast, всегда возвращается (с 'н/д' / '—', если данных нет)."""
+    sc = load_safecast()
+
+    # Значения по умолчанию — если нет данных, всё равно показываем строку
+    em, lbl = "⚪", "н/д"
+    pm25_s, pm10_s = "—", "—"
+    cpm_s, usvh_s  = "—", "—"
+    risk = "н/д"
+
+    if sc:
+        pm25, pm10 = sc.get("pm25"), sc.get("pm10")
+        em, lbl = safecast_pm_level(pm25, pm10)
+
+        if isinstance(pm25, (int, float)): pm25_s = f"{pm25:.0f}"
+        if isinstance(pm10, (int, float)): pm10_s = f"{pm10:.0f}"
+
+        cpm  = sc.get("cpm")
+        usvh = sc.get("radiation_usvh")
+        if not isinstance(usvh, (int, float)) and isinstance(cpm, (int, float)):
+            usvh = float(cpm) * CPM_TO_USVH
+
+        if isinstance(cpm, (int, float)):  cpm_s  = f"{cpm:.0f}"
+        if isinstance(usvh, (int, float)):
+            usvh_s = f"{usvh:.3f}"
+            _, risk_lbl = safecast_usvh_risk(float(usvh))
+            risk = risk_lbl
+        else:
+            # если дозы нет — используем «риск» по пыли как общий ярлык
+            risk = lbl
+
+    return f"🧪 Safecast: {em} {lbl} · PM₂.₅ {pm25_s} | PM₁₀ {pm10_s} · {cpm_s} CPM ≈ {usvh_s} μSv/h — {risk}"
+
 def safecast_block_lines() -> List[str]:
+    # оставлено для совместимости; больше не используется в сборке текста
     sc = load_safecast()
     if not sc: return []
     lines: List[str] = []
