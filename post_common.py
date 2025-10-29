@@ -359,12 +359,12 @@ def wetsuit_hint_by_sst(sst: Optional[float]) -> Optional[str]:
     if not isinstance(sst,(int,float)): return None
     t=float(sst)
     if t >= WSUIT_NONE:   return None
-    if t >= WSUIT_SHORTY: return "гидрокостюм шорти 2 мм"
-    if t >= WSUIT_32:     return "гидрокостюм 3/2 мм"
-    if t >= WSUIT_43:     return "гидрокостюм 4/3 мм (боты)"
-    if t >= WSUIT_54:     return "гидрокостюм 5/4 мм (боты, перчатки)"
-    if t >= WSUIT_65:     return "гидрокостюм 5/4 мм + капюшон (боты, перчатки)"
-    return "гидрокостюм 6/5 мм + капюшон (боты, перчатки)"
+    if t >= WSUIT_SHORTY: return "гидрик шорти 2 мм"
+    if t >= WSUIT_32:     return "гидрик 3/2 мм"
+    if t >= WSUIT_43:     return "гидрик 4/3 мм (боты)"
+    if t >= WSUIT_54:     return "гидрик 5/4 мм (боты, перчатки)"
+    if t >= WSUIT_65:     return "гидрик 5/4 мм + капюшон (боты, перчатки)"
+    return "гидрик 6/5 мм + капюшон (боты, перчатки)"
 
 # ────────────────────────── FX (утро) ──────────────────────────
 def fx_morning_line(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Optional[str]:
