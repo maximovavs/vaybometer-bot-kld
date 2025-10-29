@@ -12,7 +12,7 @@ post_common.py — Kaliningrad (VayboMeter).
 
 ENV:
   POST_MODE (morning/evening), DAY_OFFSET, ASTRO_OFFSET,
-  SHOW_AIR, SHOW_SPACE, SHOW_SCHUMANN.
+  SHOW_AIR, SHOW_SPACE, SHOW_SCHUMANN, HASHTAGS_KLD.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Tuple, Optional, Union
 import pendulum
 from telegram import Bot, constants
 
-from utils   import compass, get_fact, kp_emoji, kmh_to_ms
+from utils   import compass, get_fact
 from weather import get_weather
 from air     import get_air, get_sst, get_kp, get_solar_wind
 from pollen  import get_pollen
@@ -63,6 +63,9 @@ RUB  = "\u20BD"  # принудительный символ рубля
 
 KLD_LAT, KLD_LON = 54.710426, 20.452214
 CACHE_DIR = Path(".cache"); CACHE_DIR.mkdir(exist_ok=True, parents=True)
+
+# Хэштеги на конец поста (настраиваемые через ENV)
+HASHTAGS = os.getenv("HASHTAGS_KLD", "#Калининград #погода #здоровье #сегодня #море")
 
 # ────────────────────────── WMO → эмодзи/текст ──────────────────────────
 WMO_DESC = {
@@ -211,7 +214,7 @@ def _fetch_temps_for_offset(lat: float, lon: float, tz_name: str, offset_days: i
     return tmax, tmin, wc
 
 # ────────────────────────── Шуман (показываем, если не зелёный) ──────────────────────────
-def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+def _read_json(path: Path) -> Optional[Dict[str, Any] | List[Dict[str, Any]]]:
     try:
         if not path.exists(): return None
         return json.loads(path.read_text("utf-8"))
@@ -237,8 +240,14 @@ def get_schumann_with_fallback() -> Dict[str, Any]:
         pass
     here = Path(__file__).parent
     js = _read_json(here / "data" / "schumann_hourly.json") or {}
-    st, code = _schu_freq_status(js.get("freq"))
-    return {"freq": js.get("freq"), "status": st, "status_code": code}
+    # поддержка формата-списка (история): берём последний валидный dict
+    if isinstance(js, list):
+        last: Dict[str, Any] = next((x for x in reversed(js) if isinstance(x, dict)), {})
+        freq = last.get("freq")
+    else:
+        freq = (js or {}).get("freq")
+    st, code = _schu_freq_status(freq)
+    return {"freq": freq, "status": st, "status_code": code}
 
 def schumann_line(s: Dict[str, Any]) -> Optional[str]:
     if (s or {}).get("status_code") == "green": return None
@@ -256,7 +265,8 @@ def load_safecast() -> Optional[Dict[str, Any]]:
     paths.append(here / "data" / "safecast_kaliningrad.json")
     for p in paths:
         sc = _read_json(p)
-        if not sc: continue
+        if not isinstance(sc, dict):  # ожидаем dict для safecast
+            continue
         ts = sc.get("ts")
         if not isinstance(ts,(int,float)): continue
         now_ts = pendulum.now("UTC").int_timestamp
@@ -319,31 +329,40 @@ def uvi_label(x: float) -> str:
     return "экстремальный"
 
 def uvi_for_offset(wm: Dict[str, Any], tz: pendulum.Timezone, offset_days: int) -> Dict[str, Optional[float | str]]:
-    daily = wm.get("daily") or {}
+    daily  = wm.get("daily")  or {}
     hourly = wm.get("hourly") or {}
     date_obj = pendulum.today(tz).add(days=offset_days).date()
-    times = hourly.get("time") or []
-    uvi_arr = hourly.get("uv_index") or hourly.get("uv_index_clear_sky") or []
-    uvi_now = None
-    try:
-        if times and uvi_arr:
-            uvi_now = float(uvi_arr[0]) if isinstance(uvi_arr[0], (int, float)) else None
-    except Exception:
-        uvi_now = None
 
+    # Часы и UVI на часах
+    times = [pendulum.parse(str(t)) for t in (hourly.get("time") or []) if t]
+    uvi_arr = hourly.get("uv_index") or hourly.get("uv_index_clear_sky") or []
+
+    now = pendulum.now(tz)
+    uvi_now = None
+    if times and uvi_arr:
+        same_day = [(i, dt.in_tz(tz)) for i, dt in enumerate(times) if dt.in_tz(tz).date() == date_obj]
+        if same_day:
+            i_best = min(same_day, key=lambda p: abs((p[1] - now).total_seconds()))[0]
+            try:
+                val = uvi_arr[i_best]
+                if isinstance(val, (int, float)):
+                    uvi_now = float(val)
+            except Exception:
+                uvi_now = None
+
+    # Максимум за день (приоритет daily, иначе расчёт по часам)
     uvi_max = None
     try:
-        dts = _daily_times(wm)
+        dts = [pendulum.parse(str(t)).date() for t in (daily.get("time") or []) if t]
         if dts and date_obj in dts:
             idx = dts.index(date_obj)
-            uvi_max = float((daily.get("uv_index_max") or [None])[idx])  # type: ignore
+            v = (daily.get("uv_index_max") or [None])[idx]
+            if isinstance(v, (int, float)): uvi_max = float(v)
     except Exception:
         pass
     if uvi_max is None and times and uvi_arr:
-        vals=[]
-        for t, v in zip(times, uvi_arr):
-            if t and str(t).startswith(date_obj.to_date_string()) and isinstance(v,(int,float)):
-                vals.append(float(v))
+        vals = [float(v) for i, v in enumerate(uvi_arr)
+                if i < len(times) and times[i].in_tz(tz).date() == date_obj and isinstance(v, (int, float))]
         if vals: uvi_max = max(vals)
     return {"uvi": uvi_now, "uvi_max": uvi_max}
 
@@ -470,12 +489,16 @@ def build_message_morning_compact(region_name: str,
     suit = wetsuit_hint_by_sst(sst_hint)
     sea_txt = f"Море: {suit}." if suit else "Море: н/д."
 
-    # Закат — как на Кипре
+    # Закат — связка по дате
     sunset = None
     try:
         daily = wm_klg.get("daily") or {}
-        ss = (daily.get("sunset") or [None])[0]
-        if ss: sunset = pendulum.parse(ss).in_tz(tz_obj).format("HH:mm")
+        times_d = daily.get("time") or []
+        ss_arr  = daily.get("sunset") or []
+        idx = next((i for i, t in enumerate(times_d)
+                    if str(t).startswith(date_local.to_date_string())), None)
+        if idx is not None and idx < len(ss_arr):
+            sunset = pendulum.parse(ss_arr[idx]).in_tz(tz_obj).format("HH:mm")
     except Exception:
         pass
     sunset_line = f"🌇 Закат сегодня: {sunset}" if sunset else "🌇 Закат: н/д"
@@ -575,9 +598,12 @@ def build_message_morning_compact(region_name: str,
         sunset_line,
     ]
     if fx_line: P.append(fx_line)
-    P.append(air_line)
-    if uvi_line: P.append(uvi_line)
-    if SHOW_SPACE: P.append(space_line)
+    if SHOW_AIR:
+        P.append(air_line)
+        if uvi_line:
+            P.append(uvi_line)
+    if SHOW_SPACE: 
+        P.append(space_line)
     sc_block_parts = [x for x in (sc_line, official_rad) if x]
     if sc_block_parts:
         P.append(" • ".join(sc_block_parts))
@@ -587,7 +613,7 @@ def build_message_morning_compact(region_name: str,
     P.append(today_line)
     P.append("")
     P.append(footer)
-    P.append("#Калининград #погода #здоровье #сегодня #море")
+    P.append(HASHTAGS)
     return "\n".join(P)
 
 # ────────────────────────── Evening (legacy, кратко) ──────────────────────────
