@@ -23,8 +23,8 @@ post_kld.py  •  Запуск «Kaliningrad daily post» для Telegram-кан
   MODE                — дефолт для --mode (morning/evening). CLI приоритетнее.
 
 Примечание:
-  Флаги показа блоков теперь задаются здесь жёстко (SHOW_AIR/SHOW_SPACE/SHOW_SCHUMANN),
-  чтобы утренний и вечерний посты гарантированно отличались по структуре.
+  Флаги показа блоков задаются здесь (через ENV), а затем импортируется post_common.
+  Это важно: post_common читает ENV на этапе импорта.
 """
 
 from __future__ import annotations
@@ -39,8 +39,6 @@ from pathlib import Path
 
 import pendulum
 from telegram import Bot
-
-from post_common import main_common  # основной сборщик сообщения
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -302,33 +300,37 @@ async def main_kld() -> None:
     mode = (args.mode or "evening").lower().strip()
     logging.info("Режим поста: %s", mode)
 
-    # ── Прокинем флаги в post_common (жёстко для каждого режима)
+    # ── Прокинем флаги в post_common (строго до его импорта!)
     # DAY_OFFSET/ASTRO_OFFSET: 0 для morning, 1 для evening
     day_offset = 0 if mode == "morning" else 1
     os.environ["POST_MODE"] = mode
     os.environ["DAY_OFFSET"] = str(day_offset)
     os.environ["ASTRO_OFFSET"] = str(day_offset)
 
-    # Показ блоков
+    # Показ блоков: утром включены AIR/SPACE/SCHUMANN, вечером — выключены
     if mode == "morning":
         os.environ["SHOW_AIR"] = "1"
         os.environ["SHOW_SPACE"] = "1"
-        # учитываем глобальный DISABLE_SCHUMANN (если был "1", то ниже блок всё равно не покажется)
         os.environ["SHOW_SCHUMANN"] = "1"
     else:  # evening
         os.environ["SHOW_AIR"] = "0"
         os.environ["SHOW_SPACE"] = "0"
         os.environ["SHOW_SCHUMANN"] = "0"
 
-    logging.info("Флаги выводa: DAY_OFFSET=%s, ASTRO_OFFSET=%s, AIR=%s, SPACE=%s, SCHUMANN=%s",
+    logging.info("Флаги вывода: DAY_OFFSET=%s, ASTRO_OFFSET=%s, AIR=%s, SPACE=%s, SCHUMANN=%s",
                  os.environ.get("DAY_OFFSET"), os.environ.get("ASTRO_OFFSET"),
                  os.environ.get("SHOW_AIR"), os.environ.get("SHOW_SPACE"), os.environ.get("SHOW_SCHUMANN"))
 
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN_KLG)
 
-    # Подменяем pendulum.today/now, чтобы весь импортируемый код видел нужную дату
+    # Подменяем pendulum.today/now и только после этого импортируем post_common,
+    # чтобы и ENV, и «фиктивная дата» гарантированно влияли на сборку поста.
     with _TodayPatch(base_date):
+        # Ленивая загрузка модуля после установки ENV
+        import importlib
+        pc = importlib.import_module("post_common")
+
         if args.fx_only:
             await _send_fx_only(bot, chat_id, base_date, tz, dry_run=args.dry_run)
             return
@@ -338,7 +340,7 @@ async def main_kld() -> None:
             return
 
         # Обычный ежедневный пост (формат/контент различается внутри post_common по ENV выше)
-        await main_common(
+        await pc.main_common(
             bot=bot,
             chat_id=chat_id,
             region_name="Калининградская область",
