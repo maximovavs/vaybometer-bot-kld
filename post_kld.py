@@ -4,21 +4,27 @@
 post_kld.py  •  Запуск «Kaliningrad daily post» для Telegram-канала.
 
 Режимы:
-  1) Обычный ежедневный пост (по умолчанию) — вызывает post_common.main_common().
-  2) --fx-only           — отправляет только блок «Курсы валют».
-  3) --dry-run           — ничего не отправляет (полезно для теста workflow).
-  4) --date YYYY-MM-DD   — дата для заголовков/FX (по умолчанию — сегодня в TZ).
-  5) --for-tomorrow      — сдвиг даты +1 день (удобно для «поста на завтра»).
-  6) --to-test           — публиковать в тестовый канал (CHANNEL_ID_TEST).
-  7) --chat-id ID        — явный chat_id канала (перебивает всё остальное).
+  1) --mode evening      — вечерний пост (анонс «на завтра») — по умолчанию.
+  2) --mode morning      — утренний пост («на сегодня»), структура как в Кипре.
+  3) --fx-only           — отправляет только блок «Курсы валют».
+  4) --dry-run           — ничего не отправляет (лог вместо публикации).
+  5) --date YYYY-MM-DD   — базовая дата (если не указана, берём WORK_DATE или сегодня в TZ).
+  6) --for-tomorrow      — сдвиг базовой даты +1 день (удобно для ручного запуска).
+  7) --to-test           — публиковать в тестовый канал (CHANNEL_ID_TEST).
+  8) --chat-id ID        — явный chat_id канала (перебивает всё остальное).
 
 Переменные окружения:
-  TELEGRAM_TOKEN_KLG — обязательно.
-  CHANNEL_ID_KLG     — ID основного канала (если не задан --chat-id/--to-test).
-  CHANNEL_ID_TEST    — ID тестового канала (для --to-test).
+  TELEGRAM_TOKEN_KLG  — обязательно.
+  CHANNEL_ID_KLG      — ID основного канала (если не задан --chat-id/--to-test).
+  CHANNEL_ID_TEST     — ID тестового канала (для --to-test).
   CHANNEL_ID_OVERRIDE — явный chat_id (перебивает всё; удобно в Actions inputs).
-  DISABLE_LLM_DAILY  — если "1"/"true" → ежедневный LLM отключён (читает post_common).
-  TZ (опц.)          — таймзона, по умолчанию Europe/Kaliningrad.
+  TZ                  — таймзона, по умолчанию Europe/Kaliningrad.
+  WORK_DATE           — альтернативный способ задать базовую дату (YYYY-MM-DD).
+  MODE                — дефолт для --mode (morning/evening). CLI приоритетнее.
+
+Примечание:
+  Флаги показа блоков задаются здесь (через ENV), а затем импортируется post_common.
+  Это важно: post_common читает ENV на этапе импорта.
 """
 
 from __future__ import annotations
@@ -33,8 +39,6 @@ from pathlib import Path
 
 import pendulum
 from telegram import Bot
-
-from post_common import main_common  # основной сборщик сообщения
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -91,7 +95,7 @@ def _fmt_delta(x: float | int | None) -> str:
         x = float(x)
     except Exception:
         return "0.00"
-    # знак минуса — узкий (–)
+    # знак минуса — узкий (−)
     sign = "−" if x < 0 else ""
     return f"{sign}{abs(x):.2f}"
 
@@ -154,8 +158,7 @@ def _normalize_cbr_date(raw) -> str | None:
         s = str(raw).strip()
         if "T" in s or " " in s:
             return pendulum.parse(s, tz="Europe/Moscow").to_date_string()
-        # возможно уже YYYY-MM-DD
-        pendulum.parse(s, tz="Europe/Moscow")
+        pendulum.parse(s, tz="Europe/Moscow")  # валидация
         return s
     except Exception:
         return None
@@ -167,14 +170,11 @@ async def _send_fx_only(
     tz: pendulum.Timezone,
     dry_run: bool
 ) -> None:
-    # формируем текст и получаем полные rates
     text, rates = _build_fx_message(date_local, tz)
 
-    # достаём дату ЦБ (учитываем разные ключи)
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
 
-    # если есть should_publish_again — проверим кэш и, при необходимости, пропустим публикацию
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -184,7 +184,6 @@ async def _send_fx_only(
                 logging.info("Курсы ЦБ не обновились — пост пропущен.")
                 return
     except Exception as e:
-        # не считаем ошибкой — просто публикуем
         logging.warning("FX: skip-check failed (продолжаем отправку): %s", e)
 
     if dry_run:
@@ -193,7 +192,6 @@ async def _send_fx_only(
 
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
-    # после успешной отправки обновим кэш
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -211,7 +209,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
       2) --to-test  → CHANNEL_ID_TEST
       3) CHANNEL_ID_KLG
     """
-    # 1) явный аргумент или ENV override
     chat_override = (args_chat or "").strip() or os.getenv("CHANNEL_ID_OVERRIDE", "").strip()
     if chat_override:
         try:
@@ -220,7 +217,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
             logging.error("Неверный chat_id (override): %r", chat_override)
             sys.exit(1)
 
-    # 2) тестовый канал
     if to_test:
         ch_test = os.getenv("CHANNEL_ID_TEST", "").strip()
         if not ch_test:
@@ -232,7 +228,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> int:
             logging.error("CHANNEL_ID_TEST должен быть числом, получено: %r", ch_test)
             sys.exit(1)
 
-    # 3) основной канал
     ch_main = os.getenv("CHANNEL_ID_KLG", "").strip()
     if not ch_main:
         logging.error("CHANNEL_ID_KLG не задан и не указан --chat-id/override")
@@ -275,14 +270,17 @@ class _TodayPatch:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
             pendulum.now = self._orig_now  # type: ignore[assignment]
-        # не подавляем исключения
-        return False
+        return False  # не подавляем исключения
 
 # ───────────────────────────────── Main ─────────────────────────────────────
 
 async def main_kld() -> None:
     parser = argparse.ArgumentParser(description="Kaliningrad daily post runner")
-    parser.add_argument("--date", type=str, default="", help="Дата в формате YYYY-MM-DD (по умолчанию — сегодня в TZ)")
+    parser.add_argument("--mode",
+                        choices=["morning", "evening"],
+                        default=(os.getenv("MODE") or "evening"),
+                        help="Режим поста: morning — на сегодня, evening — анонс на завтра (по умолчанию).")
+    parser.add_argument("--date", type=str, default="", help="Дата в формате YYYY-MM-DD (по умолчанию — WORK_DATE или сегодня в TZ)")
     parser.add_argument("--for-tomorrow", action="store_true", help="Использовать дату +1 день")
     parser.add_argument("--dry-run", action="store_true", help="Не отправлять сообщение, только лог")
     parser.add_argument("--fx-only", action="store_true", help="Отправить только блок «Курсы валют»")
@@ -291,15 +289,48 @@ async def main_kld() -> None:
     args = parser.parse_args()
 
     tz = pendulum.timezone(TZ_STR)
-    base_date = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
+
+    # Базовая дата: CLI > WORK_DATE > now(tz)
+    raw_date = args.date.strip() or os.getenv("WORK_DATE", "").strip()
+    base_date = pendulum.parse(raw_date).in_tz(tz) if raw_date else pendulum.now(tz)
     if args.for_tomorrow:
         base_date = base_date.add(days=1)
+
+    # Выбранный режим
+    mode = (args.mode or "evening").lower().strip()
+    logging.info("Режим поста: %s", mode)
+
+    # ── Прокинем флаги в post_common (строго до его импорта!)
+    # DAY_OFFSET/ASTRO_OFFSET: 0 для morning, 1 для evening
+    day_offset = 0 if mode == "morning" else 1
+    os.environ["POST_MODE"] = mode
+    os.environ["DAY_OFFSET"] = str(day_offset)
+    os.environ["ASTRO_OFFSET"] = str(day_offset)
+
+    # Показ блоков: утром включены AIR/SPACE/SCHUMANN, вечером — выключены
+    if mode == "morning":
+        os.environ["SHOW_AIR"] = "1"
+        os.environ["SHOW_SPACE"] = "1"
+        os.environ["SHOW_SCHUMANN"] = "1"
+    else:  # evening
+        os.environ["SHOW_AIR"] = "0"
+        os.environ["SHOW_SPACE"] = "0"
+        os.environ["SHOW_SCHUMANN"] = "0"
+
+    logging.info("Флаги вывода: DAY_OFFSET=%s, ASTRO_OFFSET=%s, AIR=%s, SPACE=%s, SCHUMANN=%s",
+                 os.environ.get("DAY_OFFSET"), os.environ.get("ASTRO_OFFSET"),
+                 os.environ.get("SHOW_AIR"), os.environ.get("SHOW_SPACE"), os.environ.get("SHOW_SCHUMANN"))
 
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
     bot = Bot(token=TOKEN_KLG)
 
-    # Подменяем pendulum.today, чтобы весь импортируемый код видел нужную дату
+    # Подменяем pendulum.today/now и только после этого импортируем post_common,
+    # чтобы и ENV, и «фиктивная дата» гарантированно влияли на сборку поста.
     with _TodayPatch(base_date):
+        # Ленивая загрузка модуля после установки ENV
+        import importlib
+        pc = importlib.import_module("post_common")
+
         if args.fx_only:
             await _send_fx_only(bot, chat_id, base_date, tz, dry_run=args.dry_run)
             return
@@ -308,8 +339,8 @@ async def main_kld() -> None:
             logging.info("DRY-RUN: пропускаем отправку основного ежедневного поста")
             return
 
-        # Обычный ежедневный пост
-        await main_common(
+        # Обычный ежедневный пост (формат/контент различается внутри post_common по ENV выше)
+        await pc.main_common(
             bot=bot,
             chat_id=chat_id,
             region_name="Калининградская область",
