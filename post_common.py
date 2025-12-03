@@ -127,59 +127,84 @@ def _kp_from_swpc_http() -> Tuple[Optional[float], Optional[int], str]:
 
 def _kp_global_swpc() -> Tuple[Optional[float], str, Optional[int], str]:
     """
-    Возвращает (kp, status, age_minutes, src). Строго SWPC; fallback — air.get_kp().
-    Засечка свежести: > 6ч → «н/д».
+    Возвращает (kp, status, age_minutes, src).
+
+    Приоритет:
+      1) прямой HTTP на SWPC (planetary_k_index.json),
+      2) fallback через air.get_kp(...),
+      3) если вообще ничего — (None, "н/д", None, "kp:nodata").
+
+    Для SWPC считаем «старым» бар > 6 часов.
+    Для fallback через air.get_kp допускаем возраст до 24 часов,
+    чтобы не было вечного «Кр н/д», но при этом отсекать совсем древние значения.
     """
+    # ── 1. Прямой HTTP к SWPC ─────────────────────────────────────────────
     kp, age, src = _kp_from_swpc_http()
-    if kp is None:
-        # пробуем совместимость через air.get_kp(...)
-        tup = None; src2 = "air.default"
-        for arg in ("swpc_closed", "global", "swpc"):
+    if isinstance(kp, (int, float)):
+        if isinstance(age, int) and age > 6 * 60:
+            logging.warning("Kp SWPC stale (%s min, src=%s)", age, src)
+        else:
+            k = max(0.0, min(9.0, float(kp)))
+            status = _kp_status_by_value(k)
+            logging.info("Kp SWPC used: %.1f, age=%s min, src=%s", k, age, src)
+            return k, status, age, src or "swpc/http"
+
+    # ── 2. Fallback через air.get_kp(...) ─────────────────────────────────
+    tup = None
+    src2 = "kp:nodata"
+
+    # сначала пробуем явно глобальные источники
+    for arg in ("swpc_closed", "global", "swpc"):
+        try:
+            tup = get_kp(source=arg)  # type: ignore[arg-type]
+            src2 = f"air.{arg}"
+            break
+        except TypeError:
             try:
-                tup = get_kp(source=arg)  # type: ignore[arg-type]
+                tup = get_kp(arg)  # type: ignore[misc]
                 src2 = f"air.{arg}"
                 break
-            except TypeError:
-                try:
-                    tup = get_kp(arg)  # type: ignore[misc]
-                    src2 = f"air.{arg}"
-                    break
-                except Exception:
-                    tup = None
             except Exception:
                 tup = None
-        if tup is None:
-            try:
-                tup = get_kp()
-            except Exception:
-                return None, "н/д", None, "kp:nodata"
-
-        kp = tup[0] if isinstance(tup, (list, tuple)) and len(tup) > 0 else None
-        ts = tup[2] if isinstance(tup, (list, tuple)) and len(tup) > 2 else None
-        try:
-            age = int((pendulum.now("UTC").int_timestamp - int(ts)) / 60) if ts else None
         except Exception:
-            age = None
-        src = src2
+            tup = None
 
-    # отбрасываем слишком старое
-    if isinstance(age, int) and age > 6*60:
-        return None, "н/д", None, f"{src}-stale"
+    # если не получилось — совсем дефолтный get_kp()
+    if tup is None:
+        try:
+            tup = get_kp()
+            src2 = "air.default"
+        except Exception:
+            logging.warning("Kp fallback via air.get_kp() failed")
+            return None, "н/д", None, "kp:nodata"
 
-    status = _kp_status_by_value(kp)
-    # иногда библиотеки возвращают «локальный K» — распознаём по названию источника
-    if isinstance(src, str) and not re.search(r"(swpc|global)", src, re.I):
-        return None, "н/д", age, f"{src}-rejected"
+    kp_val = None
+    ts = None
+    if isinstance(tup, (list, tuple)):
+        if len(tup) > 0 and isinstance(tup[0], (int, float)):
+            kp_val = float(tup[0])
+        if len(tup) > 2 and isinstance(tup[2], (int, float)):
+            ts = int(tup[2])
 
-    # приведение в диапазон
-    try:
-        if isinstance(kp, (int, float)):
-            kp = max(0.0, min(9.0, float(kp)))
-    except Exception:
-        kp = None
-        status = "н/д"
+    age_min: Optional[int] = None
+    if ts is not None:
+        try:
+            age_min = int((pendulum.now("UTC").int_timestamp - ts) / 60)
+        except Exception:
+            age_min = None
 
-    return kp, status, age, src
+    # для fallback считаем приемлемым до 24 часов
+    if isinstance(age_min, int) and age_min > 24 * 60:
+        logging.warning("Kp fallback stale (%s min, src=%s)", age_min, src2)
+        return None, "н/д", age_min, f"{src2}-stale"
+
+    if not isinstance(kp_val, (int, float)):
+        return None, "н/д", age_min, src2
+
+    k = max(0.0, min(9.0, float(kp_val)))
+    status = _kp_status_by_value(k)
+    logging.info("Kp fallback used: %.1f, age=%s min, src=%s", k, age_min, src2)
+    return k, status, age_min, src2
 
 # ────────────────────────── Open-Meteo helpers ──────────────────────────
 def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
