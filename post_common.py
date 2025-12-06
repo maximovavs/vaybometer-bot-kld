@@ -1058,7 +1058,6 @@ def build_message_legacy_evening(region_name: str,
     P.append("#Калининград #погода #здоровье #море")
 
     return "\n".join(P)
-
 # ────────────────────────── Внешний интерфейс ──────────────────────────
 def build_message(region_name: str,
                   sea_label: str, sea_cities,
