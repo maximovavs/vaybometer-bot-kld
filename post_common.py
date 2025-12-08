@@ -59,6 +59,100 @@ SHOW_AIR      = _env_on("SHOW_AIR",      POST_MODE != "evening")
 SHOW_SPACE    = _env_on("SHOW_SPACE",    POST_MODE != "evening")
 SHOW_SCHUMANN = _env_on("SHOW_SCHUMANN", POST_MODE != "evening")
 
+# ────────────────────────── ENV TUNABLES (водные активности) ──────────────────────────
+# KITE — м/с
+KITE_WIND_MIN        = float(os.getenv("KITE_WIND_MIN",        "6"))
+KITE_WIND_GOOD_MIN   = float(os.getenv("KITE_WIND_GOOD_MIN",   "7"))
+KITE_WIND_GOOD_MAX   = float(os.getenv("KITE_WIND_GOOD_MAX",   "12"))
+KITE_WIND_STRONG_MAX = float(os.getenv("KITE_WIND_STRONG_MAX", "18"))
+KITE_GUST_RATIO_BAD  = float(os.getenv("KITE_GUST_RATIO_BAD",  "1.5"))
+KITE_WAVE_WARN       = float(os.getenv("KITE_WAVE_WARN",       "2.5"))
+
+# SUP — м/с и м
+SUP_WIND_GOOD_MAX     = float(os.getenv("SUP_WIND_GOOD_MAX",     "4"))
+SUP_WIND_OK_MAX       = float(os.getenv("SUP_WIND_OK_MAX",       "6"))
+SUP_WIND_EDGE_MAX     = float(os.getenv("SUP_WIND_EDGE_MAX",     "8"))
+SUP_WAVE_GOOD_MAX     = float(os.getenv("SUP_WAVE_GOOD_MAX",     "0.6"))
+SUP_WAVE_OK_MAX       = float(os.getenv("SUP_WAVE_OK_MAX",       "0.8"))
+SUP_WAVE_BAD_MIN      = float(os.getenv("SUP_WAVE_BAD_MIN",      "1.5"))
+OFFSHORE_SUP_WIND_MIN = float(os.getenv("OFFSHORE_SUP_WIND_MIN", "5"))
+
+# SURF — волна (м) и ветер (м/с)
+SURF_WAVE_GOOD_MIN   = float(os.getenv("SURF_WAVE_GOOD_MIN",   "0.9"))
+SURF_WAVE_GOOD_MAX   = float(os.getenv("SURF_WAVE_GOOD_MAX",   "2.5"))
+SURF_WIND_MAX        = float(os.getenv("SURF_WIND_MAX",        "10"))
+
+# Wetsuit thresholds (°C)
+WSUIT_NONE   = float(os.getenv("WSUIT_NONE",   "22"))  # ≥22 — можно без гидрика/лайкра
+WSUIT_SHORTY = float(os.getenv("WSUIT_SHORTY", "20"))
+WSUIT_32     = float(os.getenv("WSUIT_32",     "17"))
+WSUIT_43     = float(os.getenv("WSUIT_43",     "14"))
+WSUIT_54     = float(os.getenv("WSUIT_54",     "12"))
+WSUIT_65     = float(os.getenv("WSUIT_65",     "10"))
+
+# ────────────────────────── споты и профиль береговой линии ──────────────────────────
+# face = направление «к морю» (куда смотрит берег). Для оншора ветер дует примерно с этого курса.
+SHORE_PROFILE: Dict[str, float] = {
+    "Kaliningrad": 270.0,   # для консистентности, хотя не морской
+    "Zelenogradsk": 285.0,
+    "Svetlogorsk":  300.0,
+    "Pionersky":    300.0,
+    "Yantarny":     300.0,
+    "Baltiysk":     270.0,
+    "Primorsk":     265.0,
+}
+
+SPOT_SHORE_PROFILE: Dict[str, float] = {
+    "Zelenogradsk":           285.0,
+    "Svetlogorsk":            300.0,
+    "Pionersky":              300.0,
+    "Yantarny":               300.0,
+    "Baltiysk (Spit)":        270.0,
+    "Baltiysk (North beach)": 280.0,
+    "Primorsk":               265.0,
+    "Donskoye":               300.0,
+}
+
+def _norm_key(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+_SPOT_INDEX = {_norm_key(k): k for k in SPOT_SHORE_PROFILE.keys()}
+
+def _parse_deg(val: Optional[str]) -> Optional[float]:
+    if not val: return None
+    try: return float(str(val).strip())
+    except Exception: return None
+
+def _env_city_key(city: str) -> str:
+    return city.upper().replace(" ", "_")
+
+def _spot_from_env(name: Optional[str]) -> Optional[Tuple[str, float]]:
+    if not name: return None
+    key = _norm_key(name)
+    real = _SPOT_INDEX.get(key)
+    if real: return real, SPOT_SHORE_PROFILE[real]
+    return None
+
+def _shore_face_for_city(city: str) -> Tuple[Optional[float], Optional[str]]:
+    # 1) прямой override углом
+    face_env = _parse_deg(os.getenv(f"SHORE_FACE_{_env_city_key(city)}"))
+    if face_env is not None:
+        return face_env, f"ENV:SHORE_FACE_{_env_city_key(city)}"
+    # 2) спот для города
+    spot_env = os.getenv(f"SPOT_{_env_city_key(city)}")
+    sp = _spot_from_env(spot_env) if spot_env else None
+    # 3) глобальный активный спот
+    if not sp:
+        sp = _spot_from_env(os.getenv("ACTIVE_SPOT"))
+    if sp:
+        label, deg = sp
+        return deg, label
+    # 4) дефолт
+    if city in SHORE_PROFILE:
+        return SHORE_PROFILE[city], city
+    return None, None
+
+
 # ────────────────────────── базовые константы ──────────────────────────
 NBSP = "\u00A0"
 RUB  = "\u20BD"
