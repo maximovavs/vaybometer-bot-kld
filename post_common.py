@@ -77,6 +77,39 @@ def build_message_legacy_evening(region_name: str,
         P.append(storm["warning_text"])
         P.append("———")
 
+    # ────────────────────────── ENV TUNABLES (водные активности) ──────────────────────────
+    # KITE — м/с
+    KITE_WIND_MIN        = float(os.getenv("KITE_WIND_MIN",        "6"))
+    KITE_WIND_GOOD_MIN   = float(os.getenv("KITE_WIND_GOOD_MIN",   "7"))
+    KITE_WIND_GOOD_MAX   = float(os.getenv("KITE_WIND_GOOD_MAX",   "12"))
+    KITE_WIND_STRONG_MAX = float(os.getenv("KITE_WIND_STRONG_MAX", "18"))
+    KITE_GUST_RATIO_BAD  = float(os.getenv("KITE_GUST_RATIO_BAD",  "1.5"))
+    KITE_WAVE_WARN       = float(os.getenv("KITE_WAVE_WARN",       "2.5"))
+    
+    # SUP — м/с и м
+    SUP_WIND_GOOD_MAX     = float(os.getenv("SUP_WIND_GOOD_MAX",     "4"))
+    SUP_WIND_OK_MAX       = float(os.getenv("SUP_WIND_OK_MAX",       "6"))
+    SUP_WIND_EDGE_MAX     = float(os.getenv("SUP_WIND_EDGE_MAX",     "8"))
+    SUP_WAVE_GOOD_MAX     = float(os.getenv("SUP_WAVE_GOOD_MAX",     "0.6"))
+    SUP_WAVE_OK_MAX       = float(os.getenv("SUP_WAVE_OK_MAX",       "0.8"))
+    SUP_WAVE_BAD_MIN      = float(os.getenv("SUP_WAVE_BAD_MIN",      "1.5"))
+    OFFSHORE_SUP_WIND_MIN = float(os.getenv("OFFSHORE_SUP_WIND_MIN", "5"))
+    
+    # SURF — волна (м) и ветер (м/с)
+    SURF_WAVE_GOOD_MIN   = float(os.getenv("SURF_WAVE_GOOD_MIN",   "0.9"))
+    SURF_WAVE_GOOD_MAX   = float(os.getenv("SURF_WAVE_GOOD_MAX",   "2.5"))
+    SURF_WIND_MAX        = float(os.getenv("SURF_WIND_MAX",        "10"))
+    
+    # Wetsuit thresholds (°C)
+    WSUIT_NONE   = float(os.getenv("WSUIT_NONE",   "22"))  # ≥22 — можно без гидрика/лайкра
+    WSUIT_SHORTY = float(os.getenv("WSUIT_SHORTY", "20"))
+    WSUIT_32     = float(os.getenv("WSUIT_32",     "17"))
+    WSUIT_43     = float(os.getenv("WSUIT_43",     "14"))
+    WSUIT_54     = float(os.getenv("WSUIT_54",     "12"))
+    WSUIT_65     = float(os.getenv("WSUIT_65",     "10"))
+    
+    # ────────────────────────── споты и профиль береговой линии ──────────────────────────
+
     # ==================== МОРСКИЕ ГОРОДА ====================
     temps_sea: Dict[str, Tuple[float, float, int, float | None]] = {}
     sea_lookup: Dict[str, Tuple[float, float]] = {}
