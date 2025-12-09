@@ -948,78 +948,35 @@ def _load_lunar_calendar_json() -> Optional[Dict[str, Any]]:
             logging.warning("Не удалось прочитать %s", p, exc_info=True)
     return None
 
-def build_astro_section(date_local: pendulum.DateTime, tz_local: str) -> str:
-    """
-    Компактный астроблок на дату (2–3 маркера + VoC).
-    Если данных на дату нет — возвращает пустую строку.
-    """
-    cal = _load_lunar_calendar_json()
-    if not cal:
-        return ""
-
-    days = cal.get("days") or {}
-    key = date_local.to_date_string()
-    day = days.get(key)
-    if not isinstance(day, dict):
-        return ""
-
-    header = "🌌 <b>Астрособытия</b>"
-    bullets: List[str] = []
-
-    phase = day.get("phase")
-    long_desc = day.get("long_desc")
-    if phase or long_desc:
-        text = (str(phase) if phase else "").strip()
-        if long_desc:
-            if text:
-                text += " – "
-            text += str(long_desc).strip()
-        if text:
-            bullets.append(text)
-
-    voc = day.get("void_of_course") or {}
-    vs, ve = voc.get("start"), voc.get("end")
-    if vs and ve:
-        bullets.append(f"⏳ VoC {vs}–{ve} — без новых стартов.")
-
-    fav_days = day.get("favorable_days") or {}
-    dom = date_local.day
-
-    cat_meta = {
-        "general": ("✨", "общие дела"),
-        "shopping": ("💰", "покупки"),
-        "travel": ("✈️", "поездки"),
-        "haircut": ("💇‍♀️", "стрижки"),
-        "health": ("💊", "здоровье"),
-    }
-
-    fav_tokens: List[str] = []
-    for cat_key, (emo, label) in cat_meta.items():
-        cfg = fav_days.get(cat_key) or {}
-        arr = cfg.get("favorable") or []
-        try:
-            if dom in [int(x) for x in arr]:
-                fav_tokens.append(f"{emo} {label}")
-        except Exception:
-            continue
-
-    if fav_tokens:
-        bullets.append("✅ Благоприятно для: " + ", ".join(fav_tokens) + ".")
-    else:
-        gen_cfg = fav_days.get("general") or {}
-        arr = gen_cfg.get("unfavorable") or []
-        try:
-            if dom in [int(x) for x in arr]:
-                bullets.append("⚠️ Неблагоприятный день.")
-        except Exception:
-            pass
-
+def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: str = "Asia/Nicosia") -> str:
+    tz = pendulum.timezone(tz_local)
+    date_local = date_local or pendulum.today(tz)
+    date_key = date_local.format("YYYY-MM-DD")
+    cal = load_calendar("lunar_calendar.json")
+    rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+    phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
+    phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
+    percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
+    try: percent = int(round(float(percent)))
+    except Exception: percent = 0
+    sign = rec.get("sign") or rec.get("zodiac") or ""
+    voc_text = ""
+    voc = voc_interval_for_date(rec, tz_local=tz_local)
+    if voc:
+        t1, t2 = voc; voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
+    bullets = _astro_llm_bullets(date_local.format("DD.MM.YYYY"), phase_name, int(percent or 0), sign, voc_text)
     if not bullets:
-        return ""
-
-    lines = [header]
-    # максимум 3 строки, чтобы не раздувать блок
-    lines.extend(f"• {b}" for b in bullets[:3])
+        adv = rec.get("advice") or []
+        bullets = [f"• {a}" for a in adv[:3]] if adv else []
+    if not bullets:
+        base = f"🌙 Фаза: {phase_name}" if phase_name else "🌙 Лунный день в норме"
+        prm  = f" ({percent}%)" if isinstance(percent, int) and percent else ""
+        bullets = [base + prm, (f"♒ Знак: {sign}" if sign else "— знак Луны н/д")]
+    lines = ["🌌 <b>Астрособытия</b>"]
+    lines += [zsym(x) for x in bullets[:3]]
+    llm_used = bool(bullets) and USE_DAILY_LLM
+    if voc_text and not llm_used:
+        lines.append(f"⚫️ VoC: {voc_text}")
     return "\n".join(lines)
 
 # ────────────────────────── Morning (compact) ──────────────────────────
@@ -1329,10 +1286,11 @@ def build_message_legacy_evening(region_name: str,
         
         P.append("———")
 
-    astro_section = build_astro_section(date_local=date_astro, tz_local=tz_name)
-    if astro_section:
-        P.append(astro_section)
-        P.append("———")
+     # Астрособытия (на завтра по Asia/Nicosia — как в старом формате)
+    tz_nic = pendulum.timezone("Asia/Nicosia")
+    date_for_astro = pendulum.today(tz_nic).add(days=1)
+    P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
+    P.append("———")
 
     kp_tuple = get_kp() or (None, "н/д", None, "n/d")
     try:
@@ -1347,7 +1305,8 @@ def build_message_legacy_evening(region_name: str,
 
     P.append("📜 <b>Завтра: главное и забота о себе</b>")
     
-    conclusion_lines = build_conclusion(kp, ks, air, storm, schu_state)
+    #conclusion_lines = build_conclusion(kp, ks, air, storm, schu_state)
+    conclusion_lines = build_conclusion(ks, air, storm, schu_state)
     P.extend(conclusion_lines)
     
     P.append("———")
