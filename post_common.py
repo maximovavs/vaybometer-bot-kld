@@ -80,6 +80,7 @@ STORM_GUST_MS        = float(os.getenv("STORM_GUST_MS", "15"))
 ALERT_GUST_MS        = float(os.getenv("ALERT_GUST_MS", "20"))
 ALERT_RAIN_MM_H      = float(os.getenv("ALERT_RAIN_MM_H", "10"))
 ALERT_TSTORM_PROB_PC = float(os.getenv("ALERT_TSTORM_PROB_PC", "70"))
+USE_DAILY_LLM = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
 
 # ────────────────────────── ENV TUNABLES (водные активности) ──────────────────────────
 KITE_WIND_MIN        = float(os.getenv("KITE_WIND_MIN",        "6"))
