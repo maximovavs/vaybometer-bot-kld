@@ -949,17 +949,22 @@ def _load_lunar_calendar_json() -> Optional[Dict[str, Any]]:
     return None
 
 def build_astro_section(date_local: pendulum.DateTime, tz_local: str) -> str:
+    """
+    Компактный астроблок на дату (2–3 маркера + VoC).
+    Если данных на дату нет — возвращает пустую строку.
+    """
     cal = _load_lunar_calendar_json()
     if not cal:
-        return "🌌 <b>Астрособытия</b>\n— нет данных"
+        return ""
 
     days = cal.get("days") or {}
     key = date_local.to_date_string()
     day = days.get(key)
     if not isinstance(day, dict):
-        return "🌌 <b>Астрособытия</b>\n— нет данных для этой даты"
+        return ""
 
-    lines: List[str] = ["🌌 <b>Астрособытия</b>"]
+    header = "🌌 <b>Астрособытия</b>"
+    bullets: List[str] = []
 
     phase = day.get("phase")
     long_desc = day.get("long_desc")
@@ -970,12 +975,12 @@ def build_astro_section(date_local: pendulum.DateTime, tz_local: str) -> str:
                 text += " – "
             text += str(long_desc).strip()
         if text:
-            lines.append(text)
+            bullets.append(text)
 
     voc = day.get("void_of_course") or {}
     vs, ve = voc.get("start"), voc.get("end")
     if vs and ve:
-        lines.append(f"⏳ VoC {vs}–{ve} — без новых стартов.")
+        bullets.append(f"⏳ VoC {vs}–{ve} — без новых стартов.")
 
     fav_days = day.get("favorable_days") or {}
     dom = date_local.day
@@ -999,16 +1004,22 @@ def build_astro_section(date_local: pendulum.DateTime, tz_local: str) -> str:
             continue
 
     if fav_tokens:
-        lines.append("✅ Благоприятно для: " + ", ".join(fav_tokens) + ".")
+        bullets.append("✅ Благоприятно для: " + ", ".join(fav_tokens) + ".")
     else:
         gen_cfg = fav_days.get("general") or {}
         arr = gen_cfg.get("unfavorable") or []
         try:
             if dom in [int(x) for x in arr]:
-                lines.append("⚠️ Неблагоприятный день.")
+                bullets.append("⚠️ Неблагоприятный день.")
         except Exception:
             pass
 
+    if not bullets:
+        return ""
+
+    lines = [header]
+    # максимум 3 строки, чтобы не раздувать блок
+    lines.extend(f"• {b}" for b in bullets[:3])
     return "\n".join(lines)
 
 # ────────────────────────── Morning (compact) ──────────────────────────
@@ -1187,9 +1198,12 @@ def build_message_legacy_evening(region_name: str,
                                  tz: Union[pendulum.Timezone, str]) -> str:
     tz_obj = pendulum.timezone(tz) if isinstance(tz, str) else tz
     tz_name = tz_obj.name
-    date_local = pendulum.today(tz_obj).add(days=DAY_OFFSET)
 
-    header = f"<b>🌅 {region_name}: погода на завтра ({date_local.format('DD.MM.YYYY')})</b>"
+    # День для погоды и день для астроблока могут отличаться (ASTRO_OFFSET)
+    date_weather = pendulum.today(tz_obj).add(days=DAY_OFFSET)
+    date_astro   = pendulum.today(tz_obj).add(days=ASTRO_OFFSET)
+
+    header = f"<b>🌅 {region_name}: погода на завтра ({date_weather.format('DD.MM.YYYY')})</b>"
 
     P: List[str] = [header]
 
@@ -1315,7 +1329,7 @@ def build_message_legacy_evening(region_name: str,
         
         P.append("———")
 
-    astro_section = build_astro_section(date_local=date_local, tz_local=tz_name)
+    astro_section = build_astro_section(date_local=date_astro, tz_local=tz_name)
     if astro_section:
         P.append(astro_section)
         P.append("———")
@@ -1362,7 +1376,7 @@ def build_message_legacy_evening(region_name: str,
 
     P.append("———")
     
-    P.append(f"📚 {get_fact(date_local, region_name)}")
+    P.append(f"📚 {get_fact(date_weather, region_name)}")
     P.append("")
     P.append("#Калининград #погода #здоровье #море")
 
