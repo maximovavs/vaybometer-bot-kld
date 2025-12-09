@@ -932,21 +932,80 @@ def _water_highlights(
 
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
 
-# ────────────────────────── Астроданные ──────────────────────────
-def _load_lunar_calendar_json() -> Optional[Dict[str, Any]]:
-    here = Path(__file__).parent
-    candidates = [
-        here / "lunar_calendar.json",
-        here / "data" / "lunar_calendar.json",
-        here / "data" / "astro_daily.json",
-    ]
-    for p in candidates:
-        try:
-            if p.exists():
-                return json.loads(p.read_text("utf-8"))
-        except Exception:
-            logging.warning("Не удалось прочитать %s", p, exc_info=True)
-    return None
+# ───────────── Астроблок ─────────────
+ZODIAC = {"Овен":"♈","Телец":"♉","Близнецы":"♊","Рак":"♋","Лев":"♌","Дева":"♍","Весы":"♎","Скорпион":"♏","Стрелец":"♐","Козерог":"♑","Водолей":"♒","Рыбы":"♓"}
+def zsym(s: str) -> str:
+    for name,sym in ZODIAC.items(): s = s.replace(name, sym)
+    return s
+
+def load_calendar(path: str = "lunar_calendar.json") -> dict:
+    try: data = json.loads(Path(path).read_text("utf-8"))
+    except Exception: return {}
+    if isinstance(data, dict) and isinstance(data.get("days"), dict): return data["days"]
+    return data if isinstance(data, dict) else {}
+
+def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
+    if not s: return None
+    try: return pendulum.parse(s).in_tz(tz)
+    except Exception: pass
+    try:
+        dmy, hm = s.split(); d,m = map(int,dmy.split(".")); hh,mm = map(int,hm.split(":"))
+        year = pendulum.today(tz).year
+        return pendulum.datetime(year, m, d, hh, mm, tz=tz)
+    except Exception: return None
+
+def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
+    if not isinstance(rec, dict): return None
+    voc = (rec.get("void_of_course") or rec.get("voc") or rec.get("void") or {})
+    if not isinstance(voc, dict): return None
+    s = voc.get("start") or voc.get("from") or voc.get("start_time")
+    e = voc.get("end")   or voc.get("to")   or voc.get("end_time")
+    if not s or not e: return None
+    tz = pendulum.timezone(tz_local)
+    t1 = _parse_voc_dt(s, tz); t2 = _parse_voc_dt(e, tz)
+    if not t1 or not t2: return None
+    return (t1, t2)
+
+def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
+    if not start or not end: return ""
+    return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
+
+def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
+    key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
+    rec = (cal or {}).get(key, {}) or {}
+    adv = rec.get("advice")
+    return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
+
+def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
+    cache_file = CACHE_DIR / f"astro_{date_str}.txt"
+    if cache_file.exists():
+        lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
+        if lines: return lines[:3]
+    if not USE_DAILY_LLM:
+        return []
+    system = ("Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
+              "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
+              "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
+              "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
+              "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи и содержит одну мысль.")
+    prompt = (f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
+              f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}.")
+    try:
+        txt = gpt_complete(prompt=prompt, system=system, temperature=ASTRO_LLM_TEMP, max_tokens=160)
+        raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
+        safe: List[str] = []
+        for l in raw_lines:
+            l = _sanitize_line(l, max_len=120)
+            if not l or _looks_gibberish(l): continue
+            if not re.match(r"^\W", l):
+                l = "• " + l
+            safe.append(l)
+        if safe:
+            cache_file.write_text("\n".join(safe[:3]), "utf-8")
+            return safe[:3]
+    except Exception as e:
+        logging.warning("Astro LLM failed: %s", e)
+    return []
 
 def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: str = "Asia/Nicosia") -> str:
     tz = pendulum.timezone(tz_local)
