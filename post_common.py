@@ -542,6 +542,11 @@ def _is_air_bad(air: Dict[str, Any]) -> Tuple[bool, str, str]:
     reason=", ".join(reason_parts) if reason_parts else "показатели в норме"
     return bad, worst_label, reason
 
+   schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
+    if not DISABLE_SCHUMANN:
+        P.append(schumann_line(schu_state))
+        P.append("———")
+
 def build_conclusion(kp: Any, kp_status: str, air: Dict[str, Any], storm: Dict[str, Any], schu: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     storm_main = bool(storm.get("warning"))
