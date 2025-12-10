@@ -1730,7 +1730,7 @@ def build_message_legacy_evening(
 
     P.append("📜 <b>Завтра: главное и забота о себе</b>")
 
-    conclusion_lines = build_conclusion(kp, ks, air, storm, schu_state)
+    conclusion_lines = build_conclusion(ks, air, storm, schu_state)
     P.extend(conclusion_lines)
 
     P.append("———")
