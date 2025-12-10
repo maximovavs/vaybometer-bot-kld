@@ -701,13 +701,15 @@ def build_conclusion(
     storm: Dict[str, Any],
     schu: Dict[str, Any],
 ) -> List[str]:
+    """Сводка «главное и забота о себе» — БЕЗ рекомендаций про магнитные бури."""
     lines: List[str] = []
+
     storm_main = bool(storm.get("warning"))
     air_bad, air_label, air_reason = _is_air_bad(air)
-    kp_val = float(kp) if isinstance(kp, (int, float)) else None
-    kp_main = bool(kp_val is not None and kp_val >= 5)
     schu_main = (schu or {}).get("status_code") == "red"
+
     gust = storm.get("max_gust_ms")
+
     storm_text = None
     if storm_main:
         parts = []
@@ -717,32 +719,51 @@ def build_conclusion(
             parts.append("ливни")
         if storm.get("thunder"):
             parts.append("гроза")
-        storm_text = "штормовая погода: " + (", ".join(parts) if parts else "возможны неблагоприятные условия")
+        storm_text = "штормовая погода: " + (
+            ", ".join(parts) if parts else "возможны неблагоприятные условия"
+        )
+
     air_text = f"качество воздуха: {air_label} ({air_reason})" if air_bad else None
-    kp_text  = f"магнитная активность: Kp≈{kp_val:.1f} ({kp_status})" if kp_main and kp_val is not None else None
+    # kp вообще не используем
+    kp_text = None
     schu_text = "сильные колебания Шумана (⚠️)" if schu_main else None
 
+    # --- основной фактор (БЕЗ магнитных бурь) ---
     if storm_main:
-        lines.append(f"Основной фактор — {storm_text}. Планируйте дела с учётом погоды.")
+        lines.append(
+            f"Основной фактор — {storm_text}. Планируйте дела с учётом погоды."
+        )
     elif air_bad:
-        lines.append(f"Основной фактор — {air_text}. Сократите время на улице и проветривание по ситуации.")
-    elif kp_main:
-        lines.append(f"Основной фактор — {kp_text}. Возможна чувствительность у метеозависимых.")
+        lines.append(
+            f"Основной фактор — {air_text}. Сократите время на улице и проветривание по ситуации."
+        )
     elif schu_main:
-        lines.append("Основной фактор — волны Шумана: отмечаются сильные отклонения. Берегите режим и нагрузку.")
+        lines.append(
+            "Основной фактор — волны Шумана: отмечаются сильные отклонения. Берегите режим и нагрузку."
+        )
     else:
-        lines.append("Серьёзных факторов риска не видно — ориентируйтесь на текущую погоду и личные планы.")
+        lines.append(
+            "Серьёзных факторов риска не видно — ориентируйтесь на текущую погоду и личные планы."
+        )
 
-    secondary = []
-    for tag, txt in (("storm", storm_text), ("air", air_text), ("kp", kp_text), ("schu", schu_text)):
+    # --- второстепенные факторы (тоже без kp) ---
+    secondary: List[str] = []
+    for tag, txt in (("storm", storm_text), ("air", air_text), ("schu", schu_text)):
         if not txt:
             continue
-        if (tag == "storm" and storm_main) or (tag == "air" and air_bad) or (tag == "kp" and kp_main) or (tag == "schu" and schu_main):
+        if tag == "storm" and storm_main:
+            continue
+        if tag == "air" and air_bad:
+            continue
+        if tag == "schu" and schu_main:
             continue
         secondary.append(txt)
+
     if secondary:
         lines.append("Также обратите внимание: " + "; ".join(secondary[:2]) + ".")
+
     return lines
+
 
 SAFE_TIPS_FALLBACKS = {
     "здоровый день": [
@@ -1726,7 +1747,7 @@ def build_message_legacy_evening(
 
     P.append("📜 <b>Завтра: главное и забота о себе</b>")
 
-    conclusion_lines = build_conclusion(ks, air, storm, schu_state)
+    conclusion_lines = build_conclusion(kp, ks, air, storm, schu_state)
     P.extend(conclusion_lines)
 
     P.append("———")
