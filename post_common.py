@@ -1233,74 +1233,44 @@ def _water_highlights(
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
 
 # ───────────── Астроблок ─────────────
-ZODIAC = {
-    "Овен": "♈",
-    "Телец": "♉",
-    "Близнецы": "♊",
-    "Рак": "♋",
-    "Лев": "♌",
-    "Дева": "♍",
-    "Весы": "♎",
-    "Скорпион": "♏",
-    "Стрелец": "♐",
-    "Козерог": "♑",
-    "Водолей": "♒",
-    "Рыбы": "♓",
-}
-
+ZODIAC = {"Овен":"♈","Телец":"♉","Близнецы":"♊","Рак":"♋","Лев":"♌","Дева":"♍","Весы":"♎","Скорпион":"♏","Стрелец":"♐","Козерог":"♑","Водолей":"♒","Рыбы":"♓"}
 def zsym(s: str) -> str:
-    for name, sym in ZODIAC.items():
-        s = s.replace(name, sym)
+    for name,sym in ZODIAC.items(): s = s.replace(name, sym)
     return s
 
 def load_calendar(path: str = "lunar_calendar.json") -> dict:
-    try:
-        data = json.loads(Path(path).read_text("utf-8"))
-    except Exception:
-        return {}
-    if isinstance(data, dict) and isinstance(data.get("days"), dict):
-        return data["days"]
+    try: data = json.loads(Path(path).read_text("utf-8"))
+    except Exception: return {}
+    if isinstance(data, dict) and isinstance(data.get("days"), dict): return data["days"]
     return data if isinstance(data, dict) else {}
 
 def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
-    if not s:
-        return None
+    if not s: return None
+    try: return pendulum.parse(s).in_tz(tz)
+    except Exception: pass
     try:
-        return pendulum.parse(s).in_tz(tz)
-    except Exception:
-        pass
-    try:
-        dmy, hm = s.split()
-        d, m = map(int, dmy.split("."))
-        hh, mm = map(int, hm.split(":"))
+        dmy, hm = s.split(); d,m = map(int,dmy.split(".")); hh,mm = map(int,hm.split(":"))
         year = pendulum.today(tz).year
         return pendulum.datetime(year, m, d, hh, mm, tz=tz)
-    except Exception:
-        return None
+    except Exception: return None
 
 def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
-    if not isinstance(rec, dict):
-        return None
+    if not isinstance(rec, dict): return None
     voc = (rec.get("void_of_course") or rec.get("voc") or rec.get("void") or {})
-    if not isinstance(voc, dict):
-        return None
+    if not isinstance(voc, dict): return None
     s = voc.get("start") or voc.get("from") or voc.get("start_time")
     e = voc.get("end")   or voc.get("to")   or voc.get("end_time")
-    if not s or not e:
-        return None
+    if not s or not e: return None
     tz = pendulum.timezone(tz_local)
-    t1 = _parse_voc_dt(s, tz)
-    t2 = _parse_voc_dt(e, tz)
-    if not t1 or not t2:
-        return None
+    t1 = _parse_voc_dt(s, tz); t2 = _parse_voc_dt(e, tz)
+    if not t1 or not t2: return None
     return (t1, t2)
 
 def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
-    if not start or not end:
-        return ""
+    if not start or not end: return ""
     return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
 
-def lunar_advice_for_date(cal: dict, date_obj) -> List[str]:
+def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
     key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
     rec = (cal or {}).get(key, {}) or {}
     adv = rec.get("advice")
@@ -1310,13 +1280,10 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
     cache_file = CACHE_DIR / f"astro_{date_str}.txt"
     if cache_file.exists():
         lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
-        if lines:
-            return lines[:3]
-
-    if not USE_DAILY_LLM or gpt_complete is None:
+        if lines: return lines[:3]
+    if not USE_DAILY_LLM:
         return []
-
-     system = ("Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
+    system = ("Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
               "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
               "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
               "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
@@ -1324,18 +1291,12 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
     prompt = (f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
               f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}.")
     try:
-        txt = gpt_complete(
-            prompt=prompt,
-            system=system,
-            temperature=ASTRO_LLM_TEMP,
-            max_tokens=160,
-        )
+        txt = gpt_complete(prompt=prompt, system=system, temperature=ASTRO_LLM_TEMP, max_tokens=160)
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
         safe: List[str] = []
         for l in raw_lines:
             l = _sanitize_line(l, max_len=120)
-            if not l or _looks_gibberish(l):
-                continue
+            if not l or _looks_gibberish(l): continue
             if not re.match(r"^\W", l):
                 l = "• " + l
             safe.append(l)
@@ -1346,10 +1307,7 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
         logging.warning("Astro LLM failed: %s", e)
     return []
 
-def build_astro_section(
-    date_local: Optional[pendulum.Date] = None,
-    tz_local: str = "Asia/Nicosia",
-) -> str:
+def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: str = "Asia/Nicosia") -> str:
     tz = pendulum.timezone(tz_local)
     date_local = date_local or pendulum.today(tz)
     date_key = date_local.format("YYYY-MM-DD")
@@ -1358,23 +1316,14 @@ def build_astro_section(
     phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
     phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
     percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
-    try:
-        percent = int(round(float(percent)))
-    except Exception:
-        percent = 0
+    try: percent = int(round(float(percent)))
+    except Exception: percent = 0
     sign = rec.get("sign") or rec.get("zodiac") or ""
     voc_text = ""
     voc = voc_interval_for_date(rec, tz_local=tz_local)
     if voc:
-        t1, t2 = voc
-        voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
-    bullets = _astro_llm_bullets(
-        date_local.format("DD.MM.YYYY"),
-        phase_name,
-        int(percent or 0),
-        sign,
-        voc_text,
-    )
+        t1, t2 = voc; voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
+    bullets = _astro_llm_bullets(date_local.format("DD.MM.YYYY"), phase_name, int(percent or 0), sign, voc_text)
     if not bullets:
         adv = rec.get("advice") or []
         bullets = [f"• {a}" for a in adv[:3]] if adv else []
@@ -1388,6 +1337,7 @@ def build_astro_section(
     if voc_text and not llm_used:
         lines.append(f"⚫️ VoC: {voc_text}")
     return "\n".join(lines)
+
 
 # ────────────────────────── Morning (compact) ──────────────────────────
 def build_message_morning_compact(
