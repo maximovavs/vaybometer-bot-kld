@@ -1695,12 +1695,12 @@ def build_message_legacy_evening(
     air = get_air(KLD_LAT, KLD_LON) or {}
     schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
 
-    P.append("📜 <b>Завтра: главное и забота о себе</b>")
+   # P.append("📜 <b>Завтра: главное и забота о себе</b>")
 
-    conclusion_lines = build_conclusion(kp, ks, air, storm, schu_state)
-    P.extend(conclusion_lines)
+   # conclusion_lines = build_conclusion(kp, ks, air, storm, schu_state)
+   # P.extend(conclusion_lines)
 
-    P.append("———")
+   # P.append("———")
 
     P.append("✅ <b>Рекомендации</b>")
 
@@ -1726,8 +1726,8 @@ def build_message_legacy_evening(
 
     P.append("———")
 
-    P.append(f"📚 {get_fact(date_weather, region_name)}")
-    P.append("")
+    # P.append(f"📚 {get_fact(date_weather, region_name)}")
+    # P.append("")
     P.append("#Калининград #погода #здоровье #море")
 
     return "\n".join(P)
