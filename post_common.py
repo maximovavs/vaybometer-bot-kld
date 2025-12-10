@@ -1233,44 +1233,84 @@ def _water_highlights(
     return "🧜‍♂️ Отлично: " + "; ".join(goods) + spot_part + env_mark + dir_part + suit_part
 
 # ───────────── Астроблок ─────────────
-ZODIAC = {"Овен":"♈","Телец":"♉","Близнецы":"♊","Рак":"♋","Лев":"♌","Дева":"♍","Весы":"♎","Скорпион":"♏","Стрелец":"♐","Козерог":"♑","Водолей":"♒","Рыбы":"♓"}
+ZODIAC = {
+    "Овен": "♈", "Телец": "♉", "Близнецы": "♊", "Рак": "♋",
+    "Лев": "♌", "Дева": "♍", "Весы": "♎", "Скорпион": "♏",
+    "Стрелец": "♐", "Козерог": "♑", "Водолей": "♒", "Рыбы": "♓"
+}
+
 def zsym(s: str) -> str:
-    for name,sym in ZODIAC.items(): s = s.replace(name, sym)
+    for name, sym in ZODIAC.items():
+        s = s.replace(name, sym)
     return s
 
 def load_calendar(path: str = "lunar_calendar.json") -> dict:
-    try: data = json.loads(Path(path).read_text("utf-8"))
-    except Exception: return {}
-    if isinstance(data, dict) and isinstance(data.get("days"), dict): return data["days"]
-    return data if isinstance(data, dict) else {}
+    """
+    Ищем лунный календарь:
+      - по относительному пути (рабочая директория),
+      - рядом со скриптом,
+      - в подкаталоге data/ рядом со скриптом.
+    Структура:
+      { "days": { "YYYY-MM-DD": {...} } } или { "YYYY-MM-DD": {...} }.
+    """
+    here = Path(__file__).parent
+    candidates = [
+        Path(path),
+        here / path,
+        here / "data" / path,
+    ]
+    for p in candidates:
+        try:
+            if not p.exists():
+                continue
+            data = json.loads(p.read_text("utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("days"), dict):
+                return data["days"]
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            logging.warning("load_calendar: failed to read %s: %s", p, e)
+    return {}
 
 def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
-    if not s: return None
-    try: return pendulum.parse(s).in_tz(tz)
-    except Exception: pass
+    if not s:
+        return None
     try:
-        dmy, hm = s.split(); d,m = map(int,dmy.split(".")); hh,mm = map(int,hm.split(":"))
+        return pendulum.parse(s).in_tz(tz)
+    except Exception:
+        pass
+    try:
+        dmy, hm = s.split()
+        d, m = map(int, dmy.split("."))
+        hh, mm = map(int, hm.split(":"))
         year = pendulum.today(tz).year
         return pendulum.datetime(year, m, d, hh, mm, tz=tz)
-    except Exception: return None
+    except Exception:
+        return None
 
 def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
-    if not isinstance(rec, dict): return None
+    if not isinstance(rec, dict):
+        return None
     voc = (rec.get("void_of_course") or rec.get("voc") or rec.get("void") or {})
-    if not isinstance(voc, dict): return None
+    if not isinstance(voc, dict):
+        return None
     s = voc.get("start") or voc.get("from") or voc.get("start_time")
     e = voc.get("end")   or voc.get("to")   or voc.get("end_time")
-    if not s or not e: return None
+    if not s or not e:
+        return None
     tz = pendulum.timezone(tz_local)
-    t1 = _parse_voc_dt(s, tz); t2 = _parse_voc_dt(e, tz)
-    if not t1 or not t2: return None
+    t1 = _parse_voc_dt(s, tz)
+    t2 = _parse_voc_dt(e, tz)
+    if not t1 or not t2:
+        return None
     return (t1, t2)
 
 def format_voc_for_post(start: pendulum.DateTime, end: pendulum.DateTime, label: str = "сегодня") -> str:
-    if not start or not end: return ""
+    if not start or not end:
+        return ""
     return f"⚫️ VoC {label} {start.format('HH:mm')}–{end.format('HH:mm')}."
 
-def lunar_advice_for_date(cal: dict, date_obj) -> list[str]:
+def lunar_advice_for_date(cal: dict, date_obj) -> List[str]:
     key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
     rec = (cal or {}).get(key, {}) or {}
     adv = rec.get("advice")
@@ -1280,23 +1320,37 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
     cache_file = CACHE_DIR / f"astro_{date_str}.txt"
     if cache_file.exists():
         lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
-        if lines: return lines[:3]
-    if not USE_DAILY_LLM:
+        if lines:
+            return lines[:3]
+
+    # Если LLM отключён или не импортирован — не дергаем его вообще
+    if (not USE_DAILY_LLM) or (gpt_complete is None):
         return []
-    system = ("Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
-              "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
-              "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
-              "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
-              "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи и содержит одну мысль.")
-    prompt = (f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
-              f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}.")
+
+    system = (
+        "Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
+        "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
+        "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
+        "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
+        "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи и содержит одну мысль."
+    )
+    prompt = (
+        f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
+        f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}."
+    )
     try:
-        txt = gpt_complete(prompt=prompt, system=system, temperature=ASTRO_LLM_TEMP, max_tokens=160)
+        txt = gpt_complete(
+            prompt=prompt,
+            system=system,
+            temperature=ASTRO_LLM_TEMP,
+            max_tokens=160,
+        )
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
         safe: List[str] = []
         for l in raw_lines:
             l = _sanitize_line(l, max_len=120)
-            if not l or _looks_gibberish(l): continue
+            if not l or _looks_gibberish(l):
+                continue
             if not re.match(r"^\W", l):
                 l = "• " + l
             safe.append(l)
@@ -1307,37 +1361,69 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
         logging.warning("Astro LLM failed: %s", e)
     return []
 
-def build_astro_section(date_local: Optional[pendulum.Date] = None, tz_local: str = "Asia/Nicosia") -> str:
+def build_astro_section(
+    date_local: Optional[pendulum.Date] = None,
+    tz_local: str = "Asia/Nicosia",
+) -> str:
+    """
+    Собирает блок «Астрособытия»:
+      • читает lunar_calendar.json,
+      • фаза, освещённость, знак,
+      • VoC, если есть,
+      • текст: LLM → advice → заглушка.
+    """
     tz = pendulum.timezone(tz_local)
     date_local = date_local or pendulum.today(tz)
     date_key = date_local.format("YYYY-MM-DD")
+
     cal = load_calendar("lunar_calendar.json")
     rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+
     phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
     phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
+
     percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
-    try: percent = int(round(float(percent)))
-    except Exception: percent = 0
+    try:
+        percent = int(round(float(percent)))
+    except Exception:
+        percent = 0
+
     sign = rec.get("sign") or rec.get("zodiac") or ""
+
     voc_text = ""
     voc = voc_interval_for_date(rec, tz_local=tz_local)
     if voc:
-        t1, t2 = voc; voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
-    bullets = _astro_llm_bullets(date_local.format("DD.MM.YYYY"), phase_name, int(percent or 0), sign, voc_text)
+        t1, t2 = voc
+        voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
+
+    bullets = _astro_llm_bullets(
+        date_local.format("DD.MM.YYYY"),
+        phase_name,
+        int(percent or 0),
+        sign,
+        voc_text,
+    )
+
     if not bullets:
         adv = rec.get("advice") or []
         bullets = [f"• {a}" for a in adv[:3]] if adv else []
+
     if not bullets:
         base = f"🌙 Фаза: {phase_name}" if phase_name else "🌙 Лунный день в норме"
         prm  = f" ({percent}%)" if isinstance(percent, int) and percent else ""
-        bullets = [base + prm, (f"♒ Знак: {sign}" if sign else "— знак Луны н/д")]
+        bullets = [
+            base + prm,
+            (f"♒ Знак: {sign}" if sign else "— знак Луны н/д"),
+        ]
+
     lines = ["🌌 <b>Астрособытия</b>"]
     lines += [zsym(x) for x in bullets[:3]]
-    llm_used = bool(bullets) and USE_DAILY_LLM
+
+    llm_used = bool(bullets) and USE_DAILY_LLM and (gpt_complete is not None)
     if voc_text and not llm_used:
         lines.append(f"⚫️ VoC: {voc_text}")
-    return "\n".join(lines)
 
+    return "\n".join(lines)
 
 # ────────────────────────── Morning (compact) ──────────────────────────
 def build_message_morning_compact(
@@ -1549,7 +1635,6 @@ def build_message_legacy_evening(
 
     # День для погоды и день для астроблока могут отличаться (ASTRO_OFFSET)
     date_weather = pendulum.today(tz_obj).add(days=DAY_OFFSET)
-    # оставляем переменную, если понадобится для факта/ещё чего-то
     date_astro   = pendulum.today(tz_obj).add(days=ASTRO_OFFSET)
 
     header = f"<b>🌅 {region_name}: погода на завтра ({date_weather.format('DD.MM.YYYY')})</b>"
@@ -1678,7 +1763,7 @@ def build_message_legacy_evening(
 
         P.append("———")
 
-    # Астрособытия (на завтра по Asia/Nicosia — с учётом ASTRO_OFFSET)
+    # Астрособытия (по Asia/Nicosia — с учётом ASTRO_OFFSET, как в старом формате)
     tz_nic = pendulum.timezone("Asia/Nicosia")
     date_for_astro = pendulum.today(tz_nic).add(days=ASTRO_OFFSET)
     P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
