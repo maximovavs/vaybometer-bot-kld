@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 import urllib.request
 import urllib.error
+import random
 
 import pendulum
 from telegram import Bot, constants
@@ -87,6 +88,9 @@ STORM_GUST_MS        = float(os.getenv("STORM_GUST_MS", "15"))
 ALERT_GUST_MS        = float(os.getenv("ALERT_GUST_MS", "20"))
 ALERT_RAIN_MM_H      = float(os.getenv("ALERT_RAIN_MM_H", "10"))
 ALERT_TSTORM_PROB_PC = float(os.getenv("ALERT_TSTORM_PROB_PC", "70"))
+
+KLD_LAT_DEFAULT = float(os.getenv("KLD_LAT", "54.71"))
+KLD_LON_DEFAULT = float(os.getenv("KLD_LON", "20.51"))
 
 # ────────────────────────── ENV TUNABLES (водные активности) ──────────────────────────
 KITE_WIND_MIN        = float(os.getenv("KITE_WIND_MIN",        "6"))
@@ -1843,6 +1847,131 @@ def build_message(
         other_cities,
         tz,
     )
+def _pick_ref_coords(
+    pairs: list[tuple[str, tuple[float, float]]],
+    default: tuple[float, float],
+) -> tuple[float, float]:
+    """
+    Берём первую точку из списка городов, если есть,
+    иначе — дефолтные координаты региона.
+    """
+    pairs = list(pairs or [])
+    if pairs:
+        return pairs[0][1]
+    return default
+
+
+def _build_kld_image_moods_for_evening(
+    tz_obj: pendulum.Timezone,
+    sea_pairs: list[tuple[str, tuple[float, float]]],
+    other_pairs: list[tuple[str, tuple[float, float]]],
+) -> tuple[str, str, str]:
+    """
+    Строим 3 строки:
+      - marine_mood  — настроение Балтики (шторм / спокойно / тепло / холодно),
+      - inland_mood  — настроение «суши» (Калининград, леса),
+      - astro_mood_en — общий космический вайб на завтра (очень коротко).
+    """
+
+    # Выбираем референс-точки: одна ближе к морю, другая — к суше
+    la_sea, lo_sea = _pick_ref_coords(sea_pairs, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT))
+    la_inland, lo_inland = _pick_ref_coords(other_pairs, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT))
+
+    # Дефолтные значения на случай, если API не ответит
+    marine_mood = "cool Baltic seaside evening with long sandy beaches and fresh wind from the sea"
+    inland_mood = "quieter inland forests, lakes and the city of Kaliningrad with grounded, slower energy"
+
+    # Температуры на завтра
+    try:
+        stats_sea = day_night_stats(la_sea, lo_sea, tz=tz_obj.name) or {}
+    except Exception:
+        stats_sea = {}
+
+    try:
+        stats_inland = day_night_stats(la_inland, lo_inland, tz=tz_obj.name) or {}
+    except Exception:
+        stats_inland = {}
+
+    tmax_sea = stats_sea.get("t_day_max")
+    tmin_sea = stats_sea.get("t_night_min")
+    tmax_inland = stats_inland.get("t_day_max")
+    tmin_inland = stats_inland.get("t_night_min")
+
+    # Шторм/ветер по морю
+    try:
+        wm_sea = get_weather(la_sea, lo_sea) or {}
+    except Exception:
+        wm_sea = {}
+
+    try:
+        storm_sea = storm_flags_for_tomorrow(wm_sea, tz_obj)
+    except Exception:
+        storm_sea = {"warning": False}
+
+    # --- Море / побережье ---
+    if storm_sea.get("warning"):
+        marine_variants = [
+            "stormy Baltic evening with strong onshore wind, high waves and dramatic clouds over the sea",
+            "very windy Baltic coastline, restless waves, blowing sand and low heavy clouds above the water",
+            "rough Baltic sea with powerful gusts, whitecaps and wild sky — more for watching from shelter than walking on the pier",
+        ]
+    else:
+        if isinstance(tmax_sea, (int, float)) and tmax_sea >= 22:
+            marine_variants = [
+                "rarely warm Baltic seaside evening with almost summer air, gentle waves and long golden light over the horizon",
+                "unusually warm Baltic evening, people stay outside longer, the sea looks softer and friendlier than usual",
+            ]
+        elif isinstance(tmax_sea, (int, float)) and tmax_sea >= 17:
+            marine_variants = [
+                "mild Baltic evening with noticeable but pleasant wind, fresh air and soft, steady waves along the long beaches",
+                "cool-but-comfortable seaside evening, good for a long walk along the promenade with a hood or light jacket",
+            ]
+        elif isinstance(tmax_sea, (int, float)) and tmax_sea >= 10:
+            marine_variants = [
+                "cool Baltic shoreline with brisk wind, choppy waves and a feeling of early autumn even if the calendar says otherwise",
+                "fresh, slightly harsh seaside evening — good for a short walk and hot tea afterwards",
+            ]
+        else:
+            marine_variants = [
+                "cold Baltic evening with dark restless water, strong wind and air that bites your cheeks — better with a scarf and hood",
+                "very chilly Baltic coastline, almost winter-like mood: rough sea, cold wind and a desire to warm hands on a mug of tea indoors",
+            ]
+
+    marine_mood = random.choice(marine_variants)
+
+    # --- Суша / города ---
+    if isinstance(tmin_inland, (int, float)) and tmin_inland <= -5:
+        inland_variants = [
+            "frosty inland night with crunchy snow, very clear air and glowing windows in quiet streets of Kaliningrad and small towns",
+            "freezing cold evening inland, still air, frost on branches and bright moonlight over hidden lakes and forests",
+        ]
+    elif isinstance(tmin_inland, (int, float)) and tmin_inland <= 0:
+        inland_variants = [
+            "cold inland evening around zero with damp air, bare branches and glistening roads, the city lights reflecting in wet asphalt",
+            "chilly, slightly wet inland mood, more about quick walks and then hot tea at home",
+        ]
+    elif isinstance(tmax_inland, (int, float)) and tmax_inland >= 20:
+        inland_variants = [
+            "warm inland evening with soft air, slow walks along rivers and lakes and a relaxed city rhythm",
+            "rare warm night in Kaliningrad: open windows, slow conversations and air that still keeps some heat from the day",
+        ]
+    else:
+        inland_variants = [
+            "typical mixed northern inland evening: cool but calmer than the sea, more about forests, courtyards and quiet streets",
+            "balanced inland mood with fresher air than in summer, softer wind than at the coast and a slower, grounded rhythm",
+        ]
+
+    inland_mood = random.choice(inland_variants)
+
+    # Краткий космический вайб: остальное (фаза+знак) подмешает image_prompt_kld из lunar_calendar.json
+    astro_mood_en = (
+        "calm, grounded northern sky energy supporting rest, reflection and simple practical planning for tomorrow"
+        if not storm_sea.get("warning")
+        else "more intense, restless sky mood that favours flexibility, backing up plans and gentle self-care after a long day"
+    )
+
+    return marine_mood, inland_mood, astro_mood_en
+
 
 async def send_common_post(
     bot: Bot,
@@ -1852,15 +1981,105 @@ async def send_common_post(
     sea_cities,
     other_label: str,
     other_cities,
-    tz: Union[pendulum.Timezone, str],
+    tz,
+    mode: Optional[str] = None,
 ) -> None:
-    msg = build_message(region_name, sea_label, sea_cities, other_label, other_cities, tz)
+    # 1) Текст сообщения — как раньше
+    msg = build_message(
+        region_name=region_name,
+        sea_label=sea_label,
+        sea_cities=sea_cities,
+        other_label=other_label,
+        other_cities=other_cities,
+        tz=tz,
+        mode=mode,
+    )
+
+    # 2) Понимаем режим (утро/вечер)
+    try:
+        effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
+    except Exception:
+        effective_mode = "evening"
+
+    kld_img_env = os.getenv("KLD_IMG_ENABLED", "1")
+    enable_img = kld_img_env.strip().lower() not in ("0", "false", "no", "off")
+
+    logging.info(
+        "KLD_IMG: mode=%s, KLD_IMG_ENABLED=%s -> enable_img=%s",
+        effective_mode,
+        kld_img_env,
+        enable_img,
+    )
+
+    img_path: Optional[str] = None
+
+    # 3) Только для вечернего поста — генерим картинку
+    if enable_img and effective_mode.startswith("evening"):
+        try:
+            tz_obj = _as_tz(tz)
+
+            # Берём реальные города/координаты из входных списков
+            sea_pairs = _iter_city_pairs(sea_cities)
+            other_pairs = _iter_city_pairs(other_cities)
+
+            marine_mood, inland_mood, astro_mood_en = _build_kld_image_moods_for_evening(
+                tz_obj=tz_obj,
+                sea_pairs=sea_pairs,
+                other_pairs=other_pairs,
+            )
+
+            today = dt.date.today()
+
+            # Собираем промт и стиль для Балтики
+            prompt, style_name = build_kld_evening_prompt(
+                date=today,
+                marine_mood=marine_mood,
+                inland_mood=inland_mood,
+                astro_mood_en=astro_mood_en,
+            )
+
+            img_dir = Path("kld_images")
+            img_dir.mkdir(parents=True, exist_ok=True)
+
+            safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default")
+            img_file = img_dir / f"kld_evening_{today.isoformat()}_{safe_style}.jpg"
+
+            logging.info("KLD_IMG: calling generate_astro_image -> %s", img_file)
+            img_path = generate_astro_image(prompt, str(img_file))
+            logging.info(
+                "KLD_IMG: generate_astro_image returned %r, exists=%s",
+                img_path,
+                bool(img_path and Path(img_path).exists()),
+            )
+        except Exception as exc:
+            logging.exception("KLD_IMG: image generation failed: %s", exc)
+            img_path = None
+
+    # 4) Отправка: если картинка есть — как фото, иначе обычный текст
+    if img_path and Path(img_path).exists():
+        caption = msg
+        if len(caption) > 1000:
+            caption = caption[:1000]
+        try:
+            logging.info("KLD_IMG: sending photo %s", img_path)
+            with open(img_path, "rb") as f:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=f,
+                    caption=caption,
+                    parse_mode=constants.ParseMode.HTML,
+                )
+            return
+        except Exception as exc:
+            logging.exception("KLD_IMG: sending photo failed, fallback to text: %s", exc)
+
     await bot.send_message(
         chat_id=chat_id,
         text=msg,
         parse_mode=constants.ParseMode.HTML,
         disable_web_page_preview=True,
     )
+
 
 async def main_common(
     bot: Bot,
