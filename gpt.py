@@ -132,8 +132,9 @@ def gpt_complete(
         try:
             # Простой способ: склеиваем system + prompt
             full_prompt = f"{system.strip()}\n\n{prompt}" if system else prompt
+            # ВАЖНО: используем v1, а не v1beta
             url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"https://generativelanguage.googleapis.com/v1/models/"
                 f"{GEMINI_MODEL}:generateContent"
             )
             params = {"key": GEMINI_KEY}
