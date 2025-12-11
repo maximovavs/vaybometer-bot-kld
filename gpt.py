@@ -37,14 +37,15 @@ except Exception:
 # ── ключи и порядок провайдеров ───────────────────────────────────────────
 OPENAI_KEY = os.getenv("OPENAI_API_KEY") or ""
 GEMINI_KEY = os.getenv("GEMINI_API_KEY") or ""
-GROQ_KEY   = os.getenv("GROQ_API_KEY") or ""
+GROQ_KEY = os.getenv("GROQ_API_KEY") or ""
+
+# модель Gemini; можно переопределить через ENV GEMINI_MODEL при необходимости
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
 
 # порядок провайдеров: OpenAI -> Gemini -> Groq
 PROVIDER_ORDER = [p for p in ("openai", "gemini", "groq")]
 
 # актуальные модели Groq, пробуем по порядку (первая доступная сработает)
-
-# (любой из списка, по порядку)
 GROQ_MODELS = [
     "moonshotai/kimi-k2-instruct-0905",
     "llama-3.3-70b-versatile",   # топ по качеству из доступных
@@ -68,6 +69,7 @@ def _openai_client() -> Optional["OpenAI"]:
         log.warning("OpenAI client init error: %s", e)
         return None
 
+
 def _groq_client() -> Optional["OpenAI"]:
     """
     OpenAI-совместимый клиент для Groq через base_url.
@@ -75,10 +77,15 @@ def _groq_client() -> Optional["OpenAI"]:
     if not GROQ_KEY or not OpenAI:
         return None
     try:
-        return OpenAI(api_key=GROQ_KEY, base_url="https://api.groq.com/openai/v1", timeout=25.0)
+        return OpenAI(
+            api_key=GROQ_KEY,
+            base_url="https://api.groq.com/openai/v1",
+            timeout=25.0,
+        )
     except Exception as e:
         log.warning("Groq client init error: %s", e)
         return None
+
 
 # ── общая обёртка ─────────────────────────────────────────────────────────
 def gpt_complete(
@@ -123,16 +130,19 @@ def gpt_complete(
     # 2) Gemini (HTTP API)
     if "gemini" in PROVIDER_ORDER and not text and GEMINI_KEY and requests:
         try:
-            # Простой и совместимый способ: склеиваем system + prompt
+            # Простой способ: склеиваем system + prompt
             full_prompt = f"{system.strip()}\n\n{prompt}" if system else prompt
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{GEMINI_MODEL}:generateContent"
+            )
             params = {"key": GEMINI_KEY}
             payload = {
                 "contents": [{"parts": [{"text": full_prompt}]}],
                 "generationConfig": {
                     "temperature": temperature,
-                    "maxOutputTokens": max_tokens
-                }
+                    "maxOutputTokens": max_tokens,
+                },
             }
             resp = requests.post(url, params=params, json=payload, timeout=25)
             if resp.status_code == 200:
@@ -141,6 +151,8 @@ def gpt_complete(
                 cand = (data.get("candidates") or [{}])[0]
                 parts = ((cand.get("content") or {}).get("parts") or [])
                 text = "".join(p.get("text", "") for p in parts).strip()
+                if not text:
+                    log.warning("Gemini: empty response body")
             else:
                 log.warning("Gemini error %s: %s", resp.status_code, resp.text[:300])
         except Exception as e:
@@ -165,7 +177,10 @@ def gpt_complete(
                     msg = str(e).lower()
                     # модель снята/не найдена → пробуем следующую
                     if "decommissioned" in msg or ("model" in msg and "not found" in msg):
-                        log.warning("Groq model %s decommissioned/not found, trying next.", mdl)
+                        log.warning(
+                            "Groq model %s decommissioned/not found, trying next.",
+                            mdl,
+                        )
                         continue
                     # rate limit — тоже пробуем следующую модель
                     if "rate limit" in msg or "429" in msg:
@@ -271,7 +286,6 @@ def gpt_blurb(culprit: str) -> Tuple[str, List[str]]:
          + 3 случайных совета из словаря;
        • при ответе LLM: первая строка — summary, следующие 3 — советы.
 
-
     2) Если culprit содержит «луна/новолуние/полнолуние/четверть»:
        • без ответа LLM → 3 из ASTRO_HEALTH_FALLBACK,
        • иначе — берём из модели.
@@ -284,28 +298,31 @@ def gpt_blurb(culprit: str) -> Tuple[str, List[str]]:
     def _make_prompt(cul: str, astro: bool) -> str:
         if astro:
             return (
-                f"Действуй как экспертный health coach со знаниями функциональной медицины, который постоянно изучает что-то новое, но пишет грамотно"
-                f"Напишите одной строкой: «Если завтра что-то пойдёт не так, вините {culprit}!». "
-                f"После точки — короткий позитив ≤12 слов для подписчиков.  Не пиши само слово совет."
-                f"Затем дай ровно 3 совета (сон, питание, дыхание/лёгкая активность) "
-                f"≤12 слов с эмодзи. Ответ — по строкам."
+                "Действуй как экспертный health coach со знаниями функциональной медицины, "
+                "который постоянно изучает что-то новое, но пишет грамотно. "
+                f"Напиши одной строкой: «Если завтра что-то пойдёт не так, вините {cul}!». "
+                "После точки — короткий позитив ≤12 слов для подписчиков. Не пиши само слово «совет». "
+                "Затем дай ровно 3 совета (сон, питание, дыхание/лёгкая активность) "
+                "≤12 слов с эмодзи. Ответ — по строкам."
             )
         else:
             return (
-                f"Действуй как экспертный health coach со знаниями функциональной медицины. , который постоянно изучает что-то новое, но пишет грамотно"
-                f"Напиши одной строкой: «Если завтра что-то пойдёт не так, вините {culprit}!». "
-                f"После точки — короткий позитив ≤12 слов для подписчиков. "
-                f"Затем дай ровно 3 совета по функциональной медицине "
-                f"(питание, сон, лёгкая физическая активность) ≤12 слов с эмодзи. Не пиши само слово совет. "
-                f"Ответ — по строкам."
+                "Действуй как экспертный health coach со знаниями функциональной медицины, "
+                "который постоянно изучает что-то новое, но пишет грамотно. "
+                f"Напиши одной строкой: «Если завтра что-то пойдёт не так, вините {cul}!». "
+                "После точки — короткий позитив ≤12 слов для подписчиков. "
+                "Затем дай ровно 3 совета по функциональной медицине "
+                "(питание, сон, лёгкая физическая активность) ≤12 слов с эмодзи. "
+                "Не пиши само слово «совет». Ответ — по строкам."
             )
 
     def _from_lines(cul: str, lines: List[str], fallback_pool: List[str]) -> Tuple[str, List[str]]:
-        summary = lines[0] if lines else f"Если завтра что-то пойдёт не так, вините {culprit}! 😉"
+        summary = lines[0] if lines else f"Если завтра что-то пойдёт не так, вините {cul}! 😉"
         tips = [ln for ln in lines[1:] if ln][:3]
         if len(tips) < 2:
             remaining = [t for t in fallback_pool if t not in tips]
-            tips += random.sample(remaining, min(3 - len(tips), len(remaining))) if remaining else []
+            if remaining:
+                tips += random.sample(remaining, min(3 - len(tips), len(remaining)))
         return summary, tips[:3]
 
     # 1) «Погодный» фактор из словаря CULPRITS
