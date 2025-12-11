@@ -46,9 +46,9 @@ concurrency:
 
 # Базовые ENV (общие)
 env:
-  TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
-  CHANNEL_ID_KLG:     ${{ secrets.CHANNEL_ID_KLG }}
-  CHANNEL_ID_TEST:    ${{ secrets.CHANNEL_ID_TEST }}
+  TELEGRAM_TOKEN_KLG:  ${{ secrets.TELEGRAM_TOKEN_KLG }}
+  CHANNEL_ID_KLG:      ${{ secrets.CHANNEL_ID_KLG }}
+  CHANNEL_ID_TEST:     ${{ secrets.CHANNEL_ID_TEST }}
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
 
   TZ: Europe/Kaliningrad
@@ -61,9 +61,12 @@ env:
   PYTHONUNBUFFERED: "1"
 
   # LLM ключи (опционально)
-  OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
-  GEMINI_API_KEY:  ${{ secrets.GEMINI_API_KEY }}
-  GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+
+  # Ключ для генерации изображений (Stable Horde)
+  STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY }}
 
   # Флаг публикации в тест-канал
   TO_TEST: ${{ github.event.inputs.to_test }}
