@@ -1984,7 +1984,7 @@ async def send_common_post(
     tz,
     mode: Optional[str] = None,
 ) -> None:
-    # 1) Текст сообщения — как раньше
+    # 1) Собираем текст сообщения (как раньше)
     msg = build_message(
         region_name=region_name,
         sea_label=sea_label,
@@ -2005,22 +2005,28 @@ async def send_common_post(
     enable_img = kld_img_env.strip().lower() not in ("0", "false", "no", "off")
 
     logging.info(
-        "KLD_IMG: mode=%s, KLD_IMG_ENABLED=%s -> enable_img=%s",
+        "KLD_IMG: send_common_post called, mode=%s, tz=%s, KLD_IMG_ENABLED=%s -> enable_img=%s",
         effective_mode,
+        tz if isinstance(tz, str) else getattr(tz, "name", "obj"),
         kld_img_env,
         enable_img,
     )
 
     img_path: Optional[str] = None
 
-    # 3) Только для вечернего поста — генерим картинку
+    # 3) Только для вечернего поста пытаемся сгенерировать картинку
     if enable_img and effective_mode.startswith("evening"):
         try:
             tz_obj = _as_tz(tz)
 
-            # Берём реальные города/координаты из входных списков
             sea_pairs = _iter_city_pairs(sea_cities)
             other_pairs = _iter_city_pairs(other_cities)
+
+            logging.info(
+                "KLD_IMG: evening image, sea_pairs=%d, other_pairs=%d",
+                len(sea_pairs),
+                len(other_pairs),
+            )
 
             marine_mood, inland_mood, astro_mood_en = _build_kld_image_moods_for_evening(
                 tz_obj=tz_obj,
@@ -2030,12 +2036,18 @@ async def send_common_post(
 
             today = dt.date.today()
 
-            # Собираем промт и стиль для Балтики
             prompt, style_name = build_kld_evening_prompt(
                 date=today,
                 marine_mood=marine_mood,
                 inland_mood=inland_mood,
                 astro_mood_en=astro_mood_en,
+            )
+
+            logging.info(
+                "KLD_IMG: built prompt, style=%s, date=%s, prompt_len=%d",
+                style_name,
+                today.isoformat(),
+                len(prompt),
             )
 
             img_dir = Path("kld_images")
@@ -2054,8 +2066,14 @@ async def send_common_post(
         except Exception as exc:
             logging.exception("KLD_IMG: image generation failed: %s", exc)
             img_path = None
+    else:
+        logging.info(
+            "KLD_IMG: skip image (enable_img=%s, effective_mode=%s)",
+            enable_img,
+            effective_mode,
+        )
 
-    # 4) Отправка: если картинка есть — как фото, иначе обычный текст
+    # 4) Отправка в Telegram
     if img_path and Path(img_path).exists():
         caption = msg
         if len(caption) > 1000:
@@ -2073,6 +2091,7 @@ async def send_common_post(
         except Exception as exc:
             logging.exception("KLD_IMG: sending photo failed, fallback to text: %s", exc)
 
+    logging.info("KLD_IMG: sending plain text message")
     await bot.send_message(
         chat_id=chat_id,
         text=msg,
