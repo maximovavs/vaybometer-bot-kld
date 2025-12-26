@@ -125,7 +125,7 @@ def gpt_complete(
         try:
             # Простой и совместимый способ: склеиваем system + prompt
             full_prompt = f"{system.strip()}\n\n{prompt}" if system else prompt
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
             params = {"key": GEMINI_KEY}
             payload = {
                 "contents": [{"parts": [{"text": full_prompt}]}],
