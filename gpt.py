@@ -40,7 +40,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY") or ""
 GROQ_KEY = os.getenv("GROQ_API_KEY") or ""
 
 # модель Gemini; можно переопределить через ENV GEMINI_MODEL при необходимости
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash")
 
 # порядок провайдеров: OpenAI -> Gemini -> Groq
 PROVIDER_ORDER = [p for p in ("openai", "gemini", "groq")]
