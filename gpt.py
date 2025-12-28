@@ -16,31 +16,33 @@ gpt.py
 """
 
 from __future__ import annotations
+
+import logging
 import os
 import random
-import logging
-from typing import Tuple, List, Optional
+from typing import List, Optional, Tuple
 
-# ── setup ──────────────────────────────────────────────────────────────────
 log = logging.getLogger(__name__)
 
 try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
+    from openai import OpenAI  # type: ignore
+except Exception:  # ImportError, RuntimeError и т.п.
+    OpenAI = None  # type: ignore
 
 try:
-    import requests  # для Gemini через HTTP API
+    import requests  # type: ignore
 except Exception:
-    requests = None
+    requests = None  # type: ignore
 
 # ── ключи и порядок провайдеров ───────────────────────────────────────────
 OPENAI_KEY = os.getenv("OPENAI_API_KEY") or ""
 GEMINI_KEY = os.getenv("GEMINI_API_KEY") or ""
 GROQ_KEY = os.getenv("GROQ_API_KEY") or ""
 
-# модель Gemini; можно переопределить через ENV GEMINI_MODEL при необходимости
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash")
+# модель Gemini и версия API; можно переопределить через ENV
+# ВАЖНО: для REST сейчас используется v1beta, а не v1.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_API_VERSION = os.getenv("GEMINI_API_VERSION", "v1beta")
 
 # порядок провайдеров: OpenAI -> Gemini -> Groq
 PROVIDER_ORDER = [p for p in ("openai", "gemini", "groq")]
@@ -48,10 +50,10 @@ PROVIDER_ORDER = [p for p in ("openai", "gemini", "groq")]
 # актуальные модели Groq, пробуем по порядку (первая доступная сработает)
 GROQ_MODELS = [
     "moonshotai/kimi-k2-instruct-0905",
-    "llama-3.3-70b-versatile",   # топ по качеству из доступных
-    "llama-3.1-8b-instant",      # дешёвый/быстрый
-    "gemma2-9b-it",              # аккуратный, стабильный
-    "qwen/qwen3-32b",            # сильный баланс
+    "llama-3.3-70b-versatile",        # топ по качеству из доступных
+    "llama-3.1-8b-instant",           # дешёвый/быстрый
+    "gemma2-9b-it",                   # аккуратный, стабильный
+    "qwen/qwen3-32b",                 # сильный баланс
     "deepseek-r1-distill-llama-70b",  # мощный, но даёт <think>…</think>
 ]
 
@@ -130,11 +132,10 @@ def gpt_complete(
     # 2) Gemini (HTTP API)
     if "gemini" in PROVIDER_ORDER and not text and GEMINI_KEY and requests:
         try:
-            # Простой способ: склеиваем system + prompt
             full_prompt = f"{system.strip()}\n\n{prompt}" if system else prompt
-            # ВАЖНО: используем v1, а не v1beta
+
             url = (
-                f"https://generativelanguage.googleapis.com/v1/models/"
+                f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/"
                 f"{GEMINI_MODEL}:generateContent"
             )
             params = {"key": GEMINI_KEY}
@@ -155,7 +156,12 @@ def gpt_complete(
                 if not text:
                     log.warning("Gemini: empty response body")
             else:
-                log.warning("Gemini error %s: %s", resp.status_code, resp.text[:300])
+                # Логируем первые ~300 символов body, чтобы видеть 404/400 и причину
+                log.warning(
+                    "Gemini error %s: %s",
+                    resp.status_code,
+                    resp.text[:300].replace("\n", " "),
+                )
         except Exception as e:
             log.warning("Gemini exception: %s", e)
 
@@ -277,6 +283,7 @@ ASTRO_HEALTH_FALLBACK: List[str] = [
     "🚶 Прогуливайтесь 20 минут на свежем воздухе",
 ]
 
+
 # ── публичная функция для «Вывод/Рекомендации» ────────────────────────────
 def gpt_blurb(culprit: str) -> Tuple[str, List[str]]:
     """
@@ -295,7 +302,6 @@ def gpt_blurb(culprit: str) -> Tuple[str, List[str]]:
     """
     culprit_lower = culprit.lower().strip()
 
-    # подготовка промпта — единообразная для всех случаев
     def _make_prompt(cul: str, astro: bool) -> str:
         if astro:
             return (
