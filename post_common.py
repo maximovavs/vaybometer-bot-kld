@@ -10,7 +10,7 @@ post_common.py — Kaliningrad (VayboMeter).
   ⚠️ Штормовое предупреждение (если порывы/ливни/гроза сильные)
   🔎 Итого … • ✅ Сегодня: советы
 
-Вечерний пост (legacy) сохранён.
+Вечерний пост (legacy) + теперь генерация картинки для KLD.
 
 ENV:
   POST_MODE (morning/evening), DAY_OFFSET, ASTRO_OFFSET,
@@ -25,6 +25,7 @@ import json
 import html
 import math
 import logging
+import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Union
 import urllib.request
@@ -50,6 +51,22 @@ try:
     import requests  # type: ignore
 except Exception:
     requests = None  # type: ignore
+
+# Картинки для KLD
+try:
+    # основной вариант — как в кипрском боте
+    from world_en.imagegen import generate_astro_image  # type: ignore
+except Exception:
+    try:
+        # запасной вариант — локальный модуль
+        from imagegen import generate_astro_image  # type: ignore
+    except Exception:
+        generate_astro_image = None  # type: ignore
+
+try:
+    from image_prompt_kld import build_kld_evening_prompt  # type: ignore
+except Exception:
+    build_kld_evening_prompt = None  # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -264,8 +281,8 @@ def _kp_from_swpc_http() -> Tuple[Optional[float], Optional[int], str]:
         last = data[-1]
         kp = float(last.get("kp_index"))
         t  = str(last.get("time_tag"))
-        dt = pendulum.parse(t, tz="UTC")
-        age_min = int((pendulum.now("UTC") - dt).in_minutes())
+        dt_utc = pendulum.parse(t, tz="UTC")
+        age_min = int((pendulum.now("UTC") - dt_utc).in_minutes())
         return kp, age_min, "swpc/http"
     except Exception as e:
         logging.warning("SWPC HTTP Kp failed: %s", e)
@@ -370,11 +387,11 @@ def _nearest_index_for_day(
         date_obj.year, date_obj.month, date_obj.day, prefer_hour, 0, tz=tz
     )
     best_i, best_diff = None, None
-    for i, dt in enumerate(times):
+    for i, dt_ in enumerate(times):
         try:
-            dl = dt.in_tz(tz)
+            dl = dt_.in_tz(tz)
         except Exception:
-            dl = dt
+            dl = dt_
         if dl.date() != date_obj:
             continue
         diff = abs((dl - target).total_seconds())
@@ -604,9 +621,9 @@ def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[
     times = _hourly_times(wm)
     tom = pendulum.now(tz).add(days=1).date()
     idxs: List[int] = []
-    for i, dt in enumerate(times):
+    for i, dt_ in enumerate(times):
         try:
-            if dt.in_tz(tz).date() == tom:
+            if dt_.in_tz(tz).date() == tom:
                 idxs.append(i)
         except Exception:
             pass
@@ -728,8 +745,7 @@ def build_conclusion(
         )
 
     air_text = f"качество воздуха: {air_label} ({air_reason})" if air_bad else None
-    # kp вообще не используем
-    kp_text = None
+    kp_text = None  # kp вообще не используем
     schu_text = "сильные колебания Шумана (⚠️)" if schu_main else None
 
     # --- основной фактор (БЕЗ магнитных бурь) ---
@@ -1024,9 +1040,9 @@ def _day_indices(wm: Dict[str, Any], tz: pendulum.Timezone, offset: int) -> List
     times = _hourly_times(wm)
     date_obj = pendulum.today(tz).add(days=offset).date()
     idxs = []
-    for i, dt in enumerate(times):
+    for i, dt_ in enumerate(times):
         try:
-            if dt.in_tz(tz).date() == date_obj:
+            if dt_.in_tz(tz).date() == date_obj:
                 idxs.append(i)
         except Exception:
             pass
@@ -1154,14 +1170,14 @@ def _water_highlights(
     wind_ms, wind_dir, _, _ = pick_tomorrow_header_metrics(wm, tz_obj)
     wave_h, _ = _fetch_wave_for_tomorrow(la, lo, tz_obj)
 
-    def _gust_at_noon(wm: Dict[str, Any], tz: pendulum.Timezone) -> Optional[float]:
-        hourly = wm.get("hourly") or {}
-        times = _hourly_times(wm)
+    def _gust_at_noon(wm_: Dict[str, Any], tz_: pendulum.Timezone) -> Optional[float]:
+        hourly = wm_.get("hourly") or {}
+        times = _hourly_times(wm_)
         idx = _nearest_index_for_day(
             times,
-            pendulum.now(tz).add(days=1).date(),
+            pendulum.now(tz_).add(days=1).date(),
             12,
-            tz,
+            tz_,
         )
         arr = _pick(hourly, "windgusts_10m", "wind_gusts_10m", "wind_gusts", default=[])
         if idx is not None and idx < len(arr):
@@ -1350,6 +1366,7 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
             max_tokens=160,
         )
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
+
         safe: List[str] = []
         for l in raw_lines:
             l = _sanitize_line(l, max_len=120)
@@ -1784,13 +1801,6 @@ def build_message_legacy_evening(
     air = get_air(KLD_LAT, KLD_LON) or {}
     schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
 
-   # P.append("📜 <b>Завтра: главное и забота о себе</b>")
-
-   # conclusion_lines = build_conclusion(kp, ks, air, storm, schu_state)
-   # P.extend(conclusion_lines)
-
-   # P.append("———")
-
     P.append("✅ <b>Рекомендации</b>")
 
     air_bad, air_label, air_reason = _is_air_bad(air)
@@ -1814,9 +1824,6 @@ def build_message_legacy_evening(
         P.append(tip)
 
     P.append("———")
-
-    # P.append(f"📚 {get_fact(date_weather, region_name)}")
-    # P.append("")
     P.append("#Калининград #погода #здоровье #море")
 
     return "\n".join(P)
@@ -1829,8 +1836,14 @@ def build_message(
     other_label: str,
     other_cities,
     tz: Union[pendulum.Timezone, str],
+    mode: Optional[str] = None,
 ) -> str:
-    if POST_MODE == "morning":
+    """
+    Единая точка входа для текста поста.
+    mode может переопределить POST_MODE из ENV.
+    """
+    effective_mode = (mode or POST_MODE or "evening").strip().lower()
+    if effective_mode == "morning":
         return build_message_morning_compact(
             region_name,
             sea_label,
@@ -1847,6 +1860,8 @@ def build_message(
         other_cities,
         tz,
     )
+
+# ────────────────────────── Mood для KLD-картинки ──────────────────────────
 def _pick_ref_coords(
     pairs: list[tuple[str, tuple[float, float]]],
     default: tuple[float, float],
@@ -1860,6 +1875,25 @@ def _pick_ref_coords(
         return pairs[0][1]
     return default
 
+def _iter_city_pairs(cities: Any) -> list[tuple[str, tuple[float, float]]]:
+    """
+    Приводим sea_cities / other_cities к нормальному списку (name, (lat, lon)).
+    Ожидается формат [(name, (lat, lon)), ...], как в твоём коде.
+    """
+    out: list[tuple[str, tuple[float, float]]] = []
+    try:
+        for item in cities or []:
+            try:
+                name, coords = item
+                if not coords:
+                    continue
+                la, lo = coords
+                out.append((str(name), (float(la), float(lo))))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
 
 def _build_kld_image_moods_for_evening(
     tz_obj: pendulum.Timezone,
@@ -1972,6 +2006,14 @@ def _build_kld_image_moods_for_evening(
 
     return marine_mood, inland_mood, astro_mood_en
 
+# ────────────────────────── Общий send + картинка ──────────────────────────
+def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
+    if isinstance(tz, pendulum.Timezone):
+        return tz
+    try:
+        return pendulum.timezone(str(tz))
+    except Exception:
+        return pendulum.timezone("Europe/Kaliningrad")
 
 async def send_common_post(
     bot: Bot,
@@ -1984,7 +2026,7 @@ async def send_common_post(
     tz,
     mode: Optional[str] = None,
 ) -> None:
-    # 1) Собираем текст сообщения (как и раньше)
+    # 1) Собираем текст сообщения
     msg = build_message(
         region_name=region_name,
         sea_label=sea_label,
@@ -2015,7 +2057,12 @@ async def send_common_post(
     img_path: Optional[str] = None
 
     # 3) Для вечернего поста пробуем сгенерировать картинку
-    if enable_img and effective_mode.startswith("evening"):
+    if (
+        enable_img
+        and effective_mode.startswith("evening")
+        and generate_astro_image is not None
+        and build_kld_evening_prompt is not None
+    ):
         try:
             tz_obj = _as_tz(tz)
 
@@ -2057,7 +2104,7 @@ async def send_common_post(
             img_file = img_dir / f"kld_evening_{today.isoformat()}_{safe_style}.jpg"
 
             logging.info("KLD_IMG: calling generate_astro_image -> %s", img_file)
-            img_path = generate_astro_image(prompt, str(img_file))
+            img_path = generate_astro_image(prompt, str(img_file))  # type: ignore[call-arg]
             logging.info(
                 "KLD_IMG: generate_astro_image returned %r, exists=%s",
                 img_path,
@@ -2068,9 +2115,11 @@ async def send_common_post(
             img_path = None
     else:
         logging.info(
-            "KLD_IMG: skip image (enable_img=%s, effective_mode=%s)",
+            "KLD_IMG: skip image (enable_img=%s, effective_mode=%s, gen=%s, prompt_fn=%s)",
             enable_img,
             effective_mode,
+            bool(generate_astro_image),
+            bool(build_kld_evening_prompt),
         )
 
     # 4) Отправка в Telegram
@@ -2098,7 +2147,6 @@ async def send_common_post(
         parse_mode=constants.ParseMode.HTML,
         disable_web_page_preview=True,
     )
-
 
 async def main_common(
     bot: Bot,
