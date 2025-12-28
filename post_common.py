@@ -1984,7 +1984,7 @@ async def send_common_post(
     tz,
     mode: Optional[str] = None,
 ) -> None:
-    # 1) Собираем текст сообщения (как раньше)
+    # 1) Собираем текст сообщения (как и раньше)
     msg = build_message(
         region_name=region_name,
         sea_label=sea_label,
@@ -1995,7 +1995,7 @@ async def send_common_post(
         mode=mode,
     )
 
-    # 2) Понимаем режим (утро/вечер)
+    # 2) Определяем режим и флаг картинок
     try:
         effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
     except Exception:
@@ -2014,7 +2014,7 @@ async def send_common_post(
 
     img_path: Optional[str] = None
 
-    # 3) Только для вечернего поста пытаемся сгенерировать картинку
+    # 3) Для вечернего поста пробуем сгенерировать картинку
     if enable_img and effective_mode.startswith("evening"):
         try:
             tz_obj = _as_tz(tz)
@@ -2108,7 +2108,8 @@ async def main_common(
     sea_cities,
     other_label: str,
     other_cities,
-    tz: Union[pendulum.Timezone, str],
+    tz,
+    mode: Optional[str] = None,
 ) -> None:
     await send_common_post(
         bot=bot,
@@ -2119,6 +2120,7 @@ async def main_common(
         other_label=other_label,
         other_cities=other_cities,
         tz=tz,
+        mode=mode,
     )
 
 __all__ = [
