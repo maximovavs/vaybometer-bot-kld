@@ -41,7 +41,7 @@ GROQ_KEY = os.getenv("GROQ_API_KEY") or ""
 
 # модель Gemini и версия API; можно переопределить через ENV
 # ВАЖНО: для REST сейчас используется v1beta, а не v1.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_API_VERSION = os.getenv("GEMINI_API_VERSION", "v1beta")
 
 # порядок провайдеров: OpenAI -> Gemini -> Groq
