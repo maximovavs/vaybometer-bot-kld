@@ -29,9 +29,9 @@ import sys
 import argparse
 import asyncio
 import logging
-import inspect
-from typing import Dict, Any, Tuple, Union
+from typing import Dict, Any, Tuple, Union, Optional
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import pendulum
 from telegram import Bot, constants
@@ -40,18 +40,6 @@ from telegram import Bot, constants
 from post_common import build_message, fx_morning_line  # type: ignore
 # (оставляем импорт main_common на случай обратной совместимости)
 # from post_common import main_common  # noqa: F401
-
-# Опциональные модули для генерации вечерней картинки по Калининграду
-try:  # промпт для картинки
-    from image_prompt_kld import build_kld_evening_prompt
-except Exception:  # pragma: no cover - необязательный модуль
-    build_kld_evening_prompt = None
-
-try:  # общий генератор изображений
-    from imagegen import generate_astro_image
-except Exception:  # pragma: no cover
-    generate_astro_image = None
-
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -127,8 +115,7 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> T
 
     def token(code: str, name: str) -> str:
         r = rates.get(code) or {}
-        val = r.get("value")
-        dlt = r.get("delta")
+        val = r.get("value"); dlt = r.get("delta")
         if val is None:
             return f"{name}: — ₽ (—)"
         try:
@@ -137,34 +124,24 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> T
             val_s = "—"
         return f"{name}: {val_s} ₽ ({_fmt_delta(dlt)})"
 
-    line = " • ".join([
-        token("USD", "USD"),
-        token("EUR", "EUR"),
-        token("CNY", "CNY"),
-    ])
+    line = " • ".join([token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")])
     title = "💱 <b>Курсы валют</b>"
     return f"{title}\n{line}", rates
 
 
-def _normalize_cbr_date(raw) -> str | None:
+def _normalize_cbr_date(raw) -> Optional[str]:
     if raw is None:
         return None
-
-    # pendulum Date/DateTime
     if hasattr(raw, "to_date_string"):
         try:
             return raw.to_date_string()
         except Exception:
             pass
-
-    # timestamp
     if isinstance(raw, (int, float)):
         try:
             return pendulum.from_timestamp(int(raw), tz="Europe/Moscow").to_date_string()
         except Exception:
             return None
-
-    # строка
     try:
         s = str(raw).strip()
         if "T" in s or " " in s:
@@ -186,7 +163,6 @@ async def _send_fx_only(
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
 
-    # Проверяем, не публиковали ли уже эти же курсы (через fx.should_publish_again)
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -218,7 +194,6 @@ async def _send_fx_only(
         logging.exception("FX send failed")
         raise
 
-    # Сохраняем кеш, если fx.save_fx_cache доступен
     try:
         import importlib
         fx = importlib.import_module("fx")
@@ -227,93 +202,8 @@ async def _send_fx_only(
     except Exception as e:
         logging.warning("FX: save cache failed: %s", e)
 
-
-# ───────────────────────────── Картинка для вечернего поста ─────────────────────
-
-def _kld_image_enabled() -> bool:
-    """
-    Нужно ли пытаться генерировать изображение для поста.
-
-    По умолчанию включено. Для отключения установите KLD_IMG=0/false/off.
-    """
-    flag = os.getenv("KLD_IMG", "").strip().lower()
-    if not flag:
-        # Явно ничего не задано — считаем, что картинки разрешены
-        return True
-    return flag not in ("0", "no", "false", "off")
-
-
-async def _maybe_send_kld_image(
-    bot: Bot,
-    chat_id: Union[int, str],
-    msg_text: str,
-    base_date: pendulum.DateTime,
-    tz: pendulum.Timezone,
-    mode: str,
-    dry_run: bool,
-) -> None:
-    """
-    Дополнительная картинка для вечернего поста.
-
-    • Работает только в режиме evening.
-    • Учитывает ENV KLD_IMG (чтобы можно было быстро выключить).
-    • Аккуратно гасит все ошибки, чтобы не ломать основной сценарий.
-    """
-    if mode != "evening":
-        return
-    if not _kld_image_enabled():
-        logging.info("KLD image: отключено через KLD_IMG")
-        return
-    if dry_run:
-        logging.info("KLD image: DRY-RUN — генерация пропущена")
-        return
-    if build_kld_evening_prompt is None or generate_astro_image is None:
-        logging.info(
-            "KLD image: build_kld_evening_prompt/imagegen недоступны — картинка пропущена"
-        )
-        return
-
-    try:
-        # Промпт по дате; если отдельные «муды» не заданы, build_kld_evening_prompt
-        # сам подберёт красивые дефолтные формулировки.
-        prompt, label = build_kld_evening_prompt(
-            date=base_date.date(),
-            marine_mood="",
-            inland_mood="",
-            astro_mood_en="",
-        )
-    except Exception:
-        logging.exception("KLD image: не удалось построить промпт")
-        return
-
-    try:
-        # Аккуратно подберём аргументы под реальную сигнатуру generate_astro_image
-        sig = inspect.signature(generate_astro_image)
-        kwargs = {
-            "label": label,
-            "tz": tz.name if hasattr(tz, "name") else str(tz),
-            "base_date": base_date,
-            "region_name": "Калининградская область",
-            "city_name_primary": "Калининград",
-            "city_name_secondary": None,
-            "sea_side": True,
-            "bot": bot,
-            "chat_id": chat_id,
-            "message_text": msg_text,
-        }
-        usable_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-
-        if inspect.iscoroutinefunction(generate_astro_image):
-            await generate_astro_image(prompt, **usable_kwargs)
-        else:
-            generate_astro_image(prompt, **usable_kwargs)
-
-        logging.info("KLD image: запрос на генерацию отправлен")
-    except Exception:
-        logging.exception("KLD image: ошибка при вызове generate_astro_image")
-
-
 # ───────────────────────────── Chat selection ────────────────────────────────
+
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
     """
@@ -324,7 +214,10 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
         try:
             return int(chat_override)
         except Exception:
-            logging.warning("CHAT_ID override не число — используем как строку: %r", chat_override)
+            logging.warning(
+                "CHAT_ID override не число — используем как строку: %r",
+                chat_override,
+            )
             return chat_override
 
     if to_test:
@@ -335,7 +228,10 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
         try:
             return int(ch_test)
         except Exception:
-            logging.info("CHANNEL_ID_TEST не число — используем как строку: %r", ch_test)
+            logging.info(
+                "CHANNEL_ID_TEST не число — используем как строку: %r",
+                ch_test,
+            )
             return ch_test
 
     ch_main = os.getenv("CHANNEL_ID_KLG", "").strip()
@@ -345,11 +241,82 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
     try:
         return int(ch_main)
     except Exception:
-        logging.info("CHANNEL_ID_KLG не число — используем как строку: %r", ch_main)
+        logging.info(
+            "CHANNEL_ID_KLG не число — используем как строку: %r",
+            ch_main,
+        )
         return ch_main
 
 
+# ─────────────────────────── Картинка для вечернего поста ────────────────────
+
+
+async def _maybe_send_kld_image(
+    bot: Bot,
+    chat_id: Union[int, str],
+    base_date: "pendulum.DateTime",
+    mode: str,
+    dry_run: bool,
+) -> None:
+    """
+    Пытается сгенерировать и отправить атмосферную картинку для вечернего поста.
+
+    Сейчас:
+      • используем build_kld_evening_prompt из image_prompt_kld.py;
+      • отдаём prompt прямо в Pollinations как URL;
+      • Telegram сам подтягивает картинку по этому URL.
+    """
+    # Картинка есть только для вечернего анонса
+    if mode != "evening":
+        return
+
+    try:
+        from image_prompt_kld import build_kld_evening_prompt  # type: ignore
+    except Exception as e:
+        logging.info(
+            "KLD image: build_kld_evening_prompt недоступен — картинка пропущена (%s)",
+            e,
+        )
+        return
+
+    try:
+        # Пока mood'ы не прокидываем — используем дефолтные описания внутри image_prompt_kld
+        prompt, style_name = build_kld_evening_prompt(
+            date=base_date.date(),
+            marine_mood="",
+            inland_mood="",
+            astro_mood_en="",
+        )
+
+        # Детерминированный seed от даты и выбранного стиля
+        seed = hash((base_date.to_date_string(), style_name)) & 0xFFFFFFFF
+
+        # Собираем Pollinations URL
+        encoded_prompt = quote_plus(prompt)
+        img_url = (
+            "https://image.pollinations.ai/prompt/"
+            + encoded_prompt
+            + f"?width=1024&height=1024&seed={seed}&nologo=true&enhance=true"
+        )
+        logging.info("imagegen: built Pollinations URL: %s", img_url)
+
+        if dry_run:
+            logging.info("KLD image: DRY-RUN — отправка картинки пропущена")
+            return
+
+        caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊🌕"
+        msg = await bot.send_photo(chat_id=chat_id, photo=img_url, caption=caption)
+        logging.info(
+            "KLD image: photo sent: chat=%s message_id=%s",
+            getattr(msg.chat, "id", "?"),
+            getattr(msg, "message_id", "?"),
+        )
+    except Exception:
+        logging.exception("KLD image: ошибка при отправке картинки")
+
+
 # ─────────────────────────── Патч даты для всего поста ──────────────────────
+
 
 class _TodayPatch:
     def __init__(self, base_date: pendulum.DateTime):
@@ -365,7 +332,7 @@ class _TodayPatch:
             return dt.in_tz(tz_arg) if tz_arg else dt
 
         pendulum.today = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
-        pendulum.now   = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
+        pendulum.now = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
 
         logging.info(
             "Дата для поста зафиксирована как %s (TZ %s)",
@@ -378,11 +345,12 @@ class _TodayPatch:
         if self._orig_today:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
-            pendulum.now   = self._orig_now    # type: ignore[assignment]
+            pendulum.now = self._orig_now  # type: ignore[assignment]
         return False
 
 
 # ───────────────────────────────── Main ─────────────────────────────────────
+
 
 async def main_kld() -> None:
     parser = argparse.ArgumentParser(description="Kaliningrad daily post runner")
@@ -446,17 +414,14 @@ async def main_kld() -> None:
     os.environ["POST_MODE"]    = mode
     os.environ["DAY_OFFSET"]   = str(day_offset)
     os.environ["ASTRO_OFFSET"] = str(day_offset)
-
     if mode == "morning":
         os.environ["SHOW_AIR"] = "1"
         os.environ["SHOW_SPACE"] = "1"
-        disable_sch = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
+        os.environ["SHOW_SCHUMANN"] = (
+            os.getenv("DISABLE_SCHUMANN", "0").lower() in ("1", "true", "yes", "on")
+            and "0"
+            or "1"
         )
-        os.environ["SHOW_SCHUMANN"] = "0" if disable_sch else "1"
     else:
         os.environ["SHOW_AIR"] = "0"
         os.environ["SHOW_SPACE"] = "0"
@@ -526,22 +491,13 @@ async def main_kld() -> None:
                 getattr(m, "message_id", "?"),
             )
         except Exception:
-            logging.exception("send_message failed — проверь права бота в канале и chat_id")
+            logging.exception(
+                "send_message failed — проверь права бота в канале и chat_id",
+            )
             raise
 
-        # Попробуем дополнительно сгенерировать картинку для вечернего поста
-        try:
-            await _maybe_send_kld_image(
-                bot=bot,
-                chat_id=chat_id,
-                msg_text=msg,
-                base_date=base_date,
-                tz=tz,
-                mode=mode,
-                dry_run=args.dry_run,
-            )
-        except Exception:
-            logging.exception("KLD image: необработанная ошибка в _maybe_send_kld_image")
+        # Попробуем дополнительно отправить иллюстрацию для вечернего поста
+        await _maybe_send_kld_image(bot, chat_id, base_date, mode, args.dry_run)
 
 
 if __name__ == "__main__":
