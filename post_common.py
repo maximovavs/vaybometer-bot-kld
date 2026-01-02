@@ -1334,7 +1334,17 @@ def lunar_advice_for_date(cal: dict, date_obj) -> List[str]:
     key = date_obj.to_date_string() if hasattr(date_obj, "to_date_string") else str(date_obj)
     rec = (cal or {}).get(key, {}) or {}
     adv = rec.get("advice")
-    return [str(x).strip() for x in adv][:3] if isinstance(adv, list) and adv else []
+    # advice может быть list[str] или строкой (или др. типом) — нормализуем к list[str]
+    if isinstance(adv, str):
+        items = [adv]
+    elif isinstance(adv, list):
+        items = adv
+    elif adv is None:
+        items = []
+    else:
+        items = [str(adv)]
+
+    return [str(x).strip() for x in items if str(x).strip()][:3]
 
 def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
     cache_file = CACHE_DIR / f"astro_{date_str}.txt"
