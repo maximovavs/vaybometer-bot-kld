@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import sys
+import re
 import argparse
 import asyncio
 import logging
@@ -39,6 +40,8 @@ from telegram import Bot, constants
 from post_common import build_message, fx_morning_line  # type: ignore
 # (оставляем импорт main_common на случай обратной совместимости)
 # from post_common import main_common  # noqa: F401
+
+import imagegen  # локальный генератор картинки (Pollinations download → файл)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -262,7 +265,7 @@ async def _maybe_send_kld_image(
 
     Теперь:
       • используем build_kld_evening_prompt из image_prompt_kld.py;
-      • генерируем/скачиваем картинку локальным файлом через imagegen.py;
+      • генерируем картинку локальным файлом через imagegen.py (Pollinations, без API-ключа);
       • отправляем в Telegram как файл (не URL), чтобы превью работало стабильнее.
     """
     # Картинка есть только для вечернего анонса
@@ -279,15 +282,6 @@ async def _maybe_send_kld_image(
         return
 
     try:
-        import imagegen  # локальный модуль (imagegen.py в репозитории)
-    except Exception as e:
-        logging.info(
-            "KLD image: imagegen.py недоступен — картинка пропущена (%s)",
-            e,
-        )
-        return
-
-    try:
         # Пока mood'ы не прокидываем — используем дефолтные описания внутри image_prompt_kld
         prompt, style_name = build_kld_evening_prompt(
             date=base_date.date(),
@@ -296,16 +290,26 @@ async def _maybe_send_kld_image(
             astro_mood_en="",
         )
 
-        # Генерация локального файла (кэшируется)
-        img_path = imagegen.generate_kld_evening_image(prompt=prompt, style_name=style_name)
-        logging.info("KLD image: local image ready: %s", img_path)
+        # Путь для файла
+        out_dir = Path(".cache") / "kld_images"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", (style_name or "default")).strip("_") or "default"
+        out_path = out_dir / f"kld_{base_date.to_date_string()}_{safe_style}.jpg"
+
+        # Генерируем (скачиваем) картинку локально
+        local_path = imagegen.generate_kld_evening_image(
+            prompt=prompt,
+            style_name=style_name,
+            out_path=str(out_path),
+        )
 
         if dry_run:
-            logging.info("KLD image: DRY-RUN — отправка картинки пропущена")
+            logging.info("KLD image: DRY-RUN — картинка сгенерирована, отправка пропущена: %s", local_path)
             return
 
         caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊🌕"
-        with open(img_path, "rb") as f:
+        with open(local_path, "rb") as f:
             msg = await bot.send_photo(chat_id=chat_id, photo=f, caption=caption)
 
         logging.info(
@@ -315,6 +319,7 @@ async def _maybe_send_kld_image(
         )
     except Exception:
         logging.exception("KLD image: ошибка при генерации/отправке картинки")
+        # Не валим весь пост из-за картинки
 
 
 # ─────────────────────────── Патч даты для всего поста ──────────────────────
