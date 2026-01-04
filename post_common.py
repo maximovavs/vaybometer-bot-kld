@@ -91,6 +91,8 @@ DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1", "t
 ALERT_GUST_MS        = float(os.getenv("ALERT_GUST_MS", "20"))
 ALERT_RAIN_MM_H      = float(os.getenv("ALERT_RAIN_MM_H", "10"))
 ALERT_TSTORM_PROB_PC = float(os.getenv("ALERT_TSTORM_PROB_PC", "70"))
+# UVI: показываем только когда реально нужны меры (по умолчанию с "высокого")
+UVI_WARN_FROM = float(os.getenv("UVI_WARN_FROM", "6"))
 
 # LLM-параметры
 USE_DAILY_LLM    = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
@@ -1569,21 +1571,45 @@ def build_astro_section(astro_date=None, tz_obj=None, *, date_local=None, tz_loc
         percent = None
 
     sign = str(rec.get("sign") or rec.get("zodiac") or rec.get("moon_sign") or "").strip() or None
-    voc_text = voc_interval_for_date(rec, tz_local=tz_local)
+    voc_interval = voc_interval_for_date(rec, tz_local=tz_local)
+    voc_text: Optional[str] = None
+    voc_line: Optional[str] = None
+    if voc_interval:
+        try:
+            v1, v2 = voc_interval
+            voc_text = f"{v1.format('HH:mm')}–{v2.format('HH:mm')}"
+            # коротко и без таймзоны, чтобы не засорять пост
+            voc_line = f"⚫️ VoC: {voc_text}."
+        except Exception:
+            voc_text = None
+            voc_line = None
 
     # markers (покупки/поездки/и т.п.)
     marker_items = _astro_markers_from_rec(rec)
     marker_line = "✅ " + " • ".join(marker_items) if marker_items else ""
 
     # Always show a short deterministic line about Moon
-    moon_bits = []
-    if phase_name:
-        moon_bits.append(f"🌙 {phase_name}{(' ('+str(percent)+'%)') if isinstance(percent,int) and percent else ''}")
-    elif isinstance(percent, int) and percent:
-        moon_bits.append(f"🌙 Освещённость: {percent}%")
-    if sign:
-        moon_bits.append(zsym(sign))
-    moon_line = " • ".join(moon_bits).strip()
+    # Луна: избегаем дубля знака/процента
+    moon_line = ""
+    phase_clean = zsym(phase_name).strip() if phase_name else ""
+    sign_sym = zsym(sign).strip() if sign else ""
+    pct_txt = f"{percent}%" if isinstance(percent, int) and percent else ""
+
+    parts = []
+    if phase_clean:
+        s = phase_clean
+        # если в phase уже встречается "91%" — не добавляем повторно
+        if pct_txt and pct_txt not in s:
+            s = f"{s} ({pct_txt})"
+        parts.append(f"🌙 {s}")
+    elif pct_txt:
+        parts.append(f"🌙 Освещённость: {pct_txt}")
+
+    # добавляем знак только если его нет в фазе
+    if sign_sym and (sign_sym not in phase_clean):
+        parts.append(sign_sym)
+
+    moon_line = " • ".join([p for p in parts if p]).strip()
 
     bullets = _astro_llm_bullets(date_key, phase_name, percent, sign, voc_text)
 
@@ -1612,8 +1638,8 @@ def build_astro_section(astro_date=None, tz_obj=None, *, date_local=None, tz_loc
             b = "• " + b
         lines.append(zsym(b))
 
-    if voc_text:
-        lines.append(f"⚫️ VoC: {voc_text}")
+    if voc_line:
+        lines.append(voc_line)
 
     return "\n".join(lines)
 
@@ -2271,7 +2297,8 @@ async def send_common_post(
                 other_pairs=other_pairs,
             )
 
-            today = dt.date.today()
+            # Дата картинки должна совпадать с датой поста (на "завтра" в TZ региона)
+            today = pendulum.today(tz_obj).add(days=DAY_OFFSET).date()
 
             prompt, style_name = build_kld_evening_prompt(
                 date=today,
