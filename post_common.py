@@ -1040,45 +1040,58 @@ def _vals(arr, idxs):
                 pass
     return out
 
-def storm_short_text(wm: Dict[str, Any], tz: pendulum.Timezone) -> str:
-    hourly = wm.get("hourly") or {}
-    idxs = _day_indices(wm, tz, DAY_OFFSET)
-    if not idxs:
-        return "без шторма"
-    gusts = _vals(hourly.get("wind_gusts_10m") or hourly.get("windgusts_10m") or [], idxs)
-    rain  = _vals(hourly.get("rain") or [], idxs)
-    thp   = _vals(hourly.get("thunderstorm_probability") or [], idxs)
-    if (
-        (max(gusts, default=0) / 3.6 >= STORM_GUST_MS)
-        or (max(rain, default=0) >= ALERT_RAIN_MM_H)
-        or (max(thp, default=0) >= ALERT_TSTORM_PROB_PC)
-    ):
-        return "шторм"
-    return "без шторма"
+def storm_short_text(wm: dict, tz_obj, offset_days: int | None = None) -> str:
+    """Return a compact storm description for the requested day.
 
-def storm_alert_line(wm: Dict[str, Any], tz: pendulum.Timezone) -> Optional[str]:
-    hourly = wm.get("hourly") or {}
-    idxs = _day_indices(wm, tz, DAY_OFFSET)
-    if not idxs:
-        return None
-    gust_kmh = _vals(hourly.get("wind_gusts_10m") or hourly.get("windgusts_10m") or [], idxs)
-    rain     = _vals(hourly.get("rain") or [], idxs)
-    thp      = _vals(hourly.get("thunderstorm_probability") or [], idxs)
-    g_max = max(gust_kmh, default=0) / 3.6
-    r_max = max(rain, default=0)
-    t_max = max(thp, default=0)
-    parts = []
-    if g_max >= ALERT_GUST_MS:
-        parts.append(f"ветер: порывы до {int(round(g_max))} м/с")
-    if r_max >= ALERT_RAIN_MM_H:
-        parts.append(f"дождь до {int(round(r_max))} мм/ч")
-    if t_max >= ALERT_TSTORM_PROB_PC:
-        parts.append(f"гроза до {int(round(t_max))}%")
-    if parts:
-        return "⚠️ Штормовое предупреждение: " + "; ".join(parts)
-    return None
+    offset_days=None means: use global DAY_OFFSET (legacy behavior).
+    """
+    off = DAY_OFFSET if offset_days is None else int(offset_days)
+    d0, d1, i0, i1 = _day_indices(wm, tz_obj, offset_days=off)
+    if i0 is None:
+        return ""
 
-# ────────────────────────── водные активности ──────────────────────────
+    gust = _max_slice(wm.get("hourly", {}).get("wind_gusts_10m", []), i0, i1)
+    precip = _sum_slice(wm.get("hourly", {}).get("precipitation", []), i0, i1)
+    th = _any_slice(wm.get("hourly", {}).get("thunderstorm", []), i0, i1)
+
+    if gust >= 18:
+        return "сильные порывы ветра"
+    if th:
+        return "риск грозы"
+    if precip >= 20:
+        return "обильные осадки"
+    if gust >= 14:
+        return "порывистый ветер"
+    if precip >= 10:
+        return "дождь/снег"
+    return ""
+
+def storm_alert_line(wm: dict, tz_obj, offset_days: int | None = None) -> str:
+    """Build a warning line if severe weather is expected for the requested day.
+
+    offset_days=None means: use global DAY_OFFSET (legacy behavior).
+    """
+    off = DAY_OFFSET if offset_days is None else int(offset_days)
+    d0, d1, i0, i1 = _day_indices(wm, tz_obj, offset_days=off)
+    if i0 is None:
+        return ""
+
+    gust = _max_slice(wm.get("hourly", {}).get("wind_gusts_10m", []), i0, i1)
+    precip = _sum_slice(wm.get("hourly", {}).get("precipitation", []), i0, i1)
+    th = _any_slice(wm.get("hourly", {}).get("thunderstorm", []), i0, i1)
+
+    reasons: list[str] = []
+    if gust >= 18:
+        reasons.append(f"порывы до {int(round(gust))} м/с")
+    if precip >= 20:
+        reasons.append(f"осадки ~{int(round(precip))} мм")
+    if th:
+        reasons.append("гроза")
+
+    if not reasons:
+        return ""
+    return "⚠️ Штормовое предупреждение: " + ", ".join(reasons)
+
 def _deg_diff(a: float, b: float) -> float:
     return abs((a - b + 180) % 360 - 180)
 
@@ -1328,209 +1341,266 @@ def lunar_advice_for_date(cal: dict, date_obj) -> List[str]:
 
     return [str(x).strip() for x in items if str(x).strip()][:3]
 
-def _astro_markers_from_rec(rec: dict) -> List[str]:
+def _astro_markers_from_rec(rec: dict) -> list[str]:
+    """Heuristically extract simple astro 'markers' from a calendar record.
+
+    Different generators store these flags under different keys; sometimes they live only inside
+    free-form text like 'advice'. We keep this intentionally permissive and non-breaking.
     """
-    Пытаемся восстановить "отметки" вида:
-      - благоприятный день
-      - день для покупок
-      - день для путешествий
-    Поддерживаем разные возможные ключи и форматы (bool/list/str).
-    """
-    if not isinstance(rec, dict):
-        return []
 
-    markers_raw: List[str] = []
+    keys = [
+        # explicit boolean-ish flags
+        "good_day",
+        "is_good",
+        "favorable",
+        "auspicious",
+        "lucky",
+        "unlucky",
+        "bad_day",
+        # domains
+        "shopping",
+        "shopping_day",
+        "buy",
+        "purchases",
+        "travel",
+        "travel_day",
+        "trip",
+        "journey",
+        "beauty",
+        "beauty_day",
+        # free-form buckets
+        "note",
+        "notes",
+        "comment",
+        "comments",
+        "markers",
+        "tags",
+        "summary",
+        "recommendations",
+        "advice",
+        "advice_text",
+    ]
 
-    # 1) Явные списки/строки
-    for key in ("markers", "marks", "labels", "tags", "good_for", "favorable_for", "notes", "note"):
-        v = rec.get(key)
-        if isinstance(v, str):
-            markers_raw.append(v)
-        elif isinstance(v, list):
-            markers_raw += [str(x) for x in v if str(x).strip()]
-        elif isinstance(v, dict):
-            # иногда good_for может быть dict {'travel': true, ...}
-            for kk, vv in v.items():
-                if vv in (True, 1, "1", "true", "yes", "on"):
-                    markers_raw.append(str(kk))
-
-    # 2) Булевы флаги
-    bool_map = {
-        "favorable_day": "благоприятный день",
-        "good_day": "благоприятный день",
-        "is_favorable": "благоприятный день",
-        "favorable": "благоприятный день",
-        "shopping_day": "покупки",
-        "for_shopping": "покупки",
-        "shopping": "покупки",
-        "travel_day": "путешествия",
-        "for_travel": "путешествия",
-        "travel": "путешествия",
-    }
-    for k, label in bool_map.items():
+    raw: list[str] = []
+    for k in keys:
         v = rec.get(k)
-        if v is True or (isinstance(v, (int, float)) and float(v) == 1.0) or (isinstance(v, str) and v.strip().lower() in ("1", "true", "yes", "on")):
-            markers_raw.append(label)
-
-    # Нормализация по подстрокам
-    out: List[str] = []
-    for s in markers_raw:
-        t = str(s).strip().lower()
-        if not t:
+        if not v:
             continue
+        if isinstance(v, list):
+            raw.extend([str(x) for x in v if x])
+        else:
+            raw.append(str(v))
 
-        def add(x: str):
-            if x not in out:
-                out.append(x)
+    blob = " ".join(raw).lower()
 
-        if any(w in t for w in ("благоприят", "удачн", "favorable", "good day", "lucky")):
-            add("благоприятный день")
-        if any(w in t for w in ("покуп", "шоп", "shopping", "buy")):
-            add("покупки")
-        if any(w in t for w in ("путеше", "поезд", "travel", "trip")):
-            add("путешествия")
+    markers: list[str] = []
 
+    # Favorable
+    if any(w in blob for w in [
+        "благоприят",
+        "удачн",
+        "хорош",
+        "good",
+        "favorable",
+        "auspicious",
+        "lucky",
+    ]):
+        markers.append("🟢 Благоприятный")
+
+    # Shopping / purchases
+    if any(w in blob for w in [
+        "покуп",
+        "шоп",
+        "shopping",
+        "buy",
+        "purchase",
+    ]):
+        markers.append("🛍 Покупки")
+
+    # Travel
+    if any(w in blob for w in [
+        "путеше",
+        "поезд",
+        "дорог",
+        "travel",
+        "trip",
+        "journey",
+    ]):
+        markers.append("✈️ Путешествия")
+
+    # De-dup while preserving order
+    out: list[str] = []
+    for m in markers:
+        if m not in out:
+            out.append(m)
     return out
 
-def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> tuple[List[str], bool]:
+def _astro_llm_bullets(date_str: str, sys_prompt: str, prompt: str) -> list[str]:
+    """Ask the LLM for 2–3 short astro bullets and cache the result.
+
+    If a cached file exists but contains fewer than 2 usable lines, we treat it as stale and
+    regenerate. This prevents a "half-empty" astro block from sticking forever.
     """
-    Возвращает (bullets, used_llm_or_cache).
-    used_llm_or_cache=True, если:
-      - взяли из кеша, или
-      - реально сгенерировали через LLM.
-    """
-    cache_file = CACHE_DIR / f"astro_{date_str}.txt"
-    if cache_file.exists():
-        lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
-        if lines:
-            return lines[:3], True
 
-    # Если LLM отключён или не импортирован — не дергаем его вообще
-    if (not USE_DAILY_LLM) or (gpt_complete is None):
-        return [], False
+    cache_path = Path(f".cache/astro_{date_str}.txt")
 
-    system = (
-        "Действуй как АстроЭксперт. Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
-        "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
-        "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
-        "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи и содержит одну мысль."
-    )
-    prompt = (
-        f"Дата: {date_str}. Фаза Луны: {phase or 'н/д'} ({percent}% освещённости). "
-        f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}."
-    )
-    try:
-        txt = None
-        try:
-            txt = gpt_complete(
-                prompt=prompt,
-                system=system,
-                temperature=ASTRO_LLM_TEMP,
-                max_tokens=160,
-            )
-        except TypeError:
-            # Совместимость с различными обёртками.
-            try:
-                txt = gpt_complete(prompt, system)
-            except TypeError:
-                txt = gpt_complete(prompt)
-        raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
-
-        safe: List[str] = []
-        for l in raw_lines:
-            l = _sanitize_line(l, max_len=120)
-            if not l or _looks_gibberish(l):
+    def _parse(raw: str) -> list[str]:
+        out: list[str] = []
+        for x in (raw or "").splitlines():
+            x = x.strip()
+            if not x:
                 continue
-            if not re.match(r"^\W", l):
-                l = "• " + l
-            safe.append(l)
-        if safe:
-            cache_file.write_text("\n".join(safe[:3]), "utf-8")
-            return safe[:3], True
-    except Exception as e:
-        logging.warning("Astro LLM failed: %s", e)
-    return [], False
+            # strip simple numbering / bullets
+            x = re.sub(r"^[-•\*]+\s*", "", x)
+            x = re.sub(r"^\d+[\).]\s*", "", x)
+            x = _sanitize_line(x, max_len=140)
+            if len(x) < 4:
+                continue
+            out.append(x)
 
-def build_astro_section(
-    date_local: Optional[pendulum.Date] = None,
-    tz_local: str = DEFAULT_TZ_NAME,
-) -> str:
-    """
-    Собирает блок «Астрособытия»:
-      • читает lunar_calendar.json,
-      • фаза, освещённость, знак,
-      • VoC, если есть,
-      • "отметки" (покупки/путешествия/благоприятный день) — не теряем,
-      • текст: LLM → advice → заглушка.
-    """
-    tz = pendulum.timezone(tz_local)
-    date_local = date_local or pendulum.today(tz)
-    date_key = date_local.format("YYYY-MM-DD")
+        # keep unique, preserve order
+        uniq: list[str] = []
+        for x in out:
+            if x not in uniq:
+                uniq.append(x)
+        return uniq[:3]
 
-    cal = load_calendar("lunar_calendar.json")
-    rec = cal.get(date_key, {}) if isinstance(cal, dict) else {}
+    if cache_path.exists():
+        try:
+            cached = _parse(cache_path.read_text("utf-8", errors="ignore"))
+            if len(cached) >= 2:
+                return cached
+        except Exception:
+            pass
 
-    phase_raw = (rec.get("phase_name") or rec.get("phase") or "").strip()
-    phase_name = re.sub(r"^[^\wА-Яа-яЁё]+", "", phase_raw).split(",")[0].strip()
-
-    percent = rec.get("percent") or rec.get("illumination") or rec.get("illum") or 0
+    txt = ""
     try:
-        percent = int(round(float(percent)))
+        txt = gpt_complete(prompt, system=sys_prompt, max_tokens=220)
     except Exception:
-        percent = 0
+        txt = ""
 
-    sign = (rec.get("sign") or rec.get("zodiac") or "").strip()
+    bullets = _parse(txt)
 
-    voc_text = ""
-    voc = voc_interval_for_date(rec, tz_local=tz_local)
-    if voc:
-        t1, t2 = voc
-        voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
+    # only cache if we got at least 2 useful lines
+    if len(bullets) >= 2:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("\n".join(bullets), "utf-8")
+
+    return bullets
+
+def build_astro_section(astro_date: pendulum.Date, tz_obj) -> str:
+    """Astro section, based on lunar_calendar.json.
+
+    Requirements:
+      - Keep VoC line if present.
+      - Preserve markers like: благоприятный день / покупки / путешествия.
+      - Use LLM bullets when available, but always fall back to calendar data.
+    """
+
+    rec = find_day_record(load_calendar("lunar_calendar.json"), astro_date)
+    if not rec:
+        return ""
+
+    phase_name = str(rec.get("phase") or "").strip()
+    illum_pct = rec.get("illum_pct")
+    sign = str(rec.get("sign") or "").strip()
+
+    voc = rec.get("voc") or rec.get("void_of_course") or rec.get("voc_interval")
+    voc_line = f"🕓 VoC: {voc}" if voc else ""
 
     markers = _astro_markers_from_rec(rec)
-    marker_line = None
-    if markers:
-        rest = [m for m in markers if m != "благоприятный день"]
-        if "благоприятный день" in markers and rest:
-            marker_line = "✅ Благоприятный день • Хорошо для: " + ", ".join(rest) + "."
-        elif "благоприятный день" in markers:
-            marker_line = "✅ Благоприятный день."
+    marker_line = " • ".join(markers) if markers else ""
+
+    # LLM bullets (optional)
+    llm_bullets: list[str] = []
+    if USE_DAILY_LLM:
+        date_str = astro_date.to_date_string()
+        sys_prompt = (
+            "Ты — астрологический ассистент. Пиши кратко, без мистификаций, "
+            "только практичные советы."
+        )
+
+        prompt = (
+            f"Дата: {astro_date.format('DD.MM.YYYY')}\n"
+            f"Фаза Луны: {phase_name or '—'}\n"
+            f"Освещённость: {illum_pct if illum_pct is not None else '—'}%\n"
+            f"Знак: {sign or '—'}\n"
+            f"VoC: {voc or '—'}\n"
+            f"Маркер(ы): {', '.join(markers) if markers else '—'}\n\n"
+            "Сформируй ровно 2–3 строки (каждая — одно короткое предложение). "
+            "Каждая строка начинается с подходящего эмодзи. "
+            "Не используй слова 'возможно', 'может быть'. "
+            "Не добавляй фактов, которых нет во входе."
+        )
+
+        llm_bullets = _astro_llm_bullets(date_str, sys_prompt, prompt)
+
+    # Calendar advice (fallback and/or filler)
+    advice_src = rec.get("advice") or rec.get("recommendations") or []
+    advice_lines: list[str] = []
+    if isinstance(advice_src, list):
+        for a in advice_src:
+            a = _sanitize_line(str(a), max_len=140)
+            if a:
+                advice_lines.append(a)
+    elif isinstance(advice_src, str):
+        a = _sanitize_line(advice_src, max_len=140)
+        if a:
+            advice_lines.append(a)
+
+    # factual fallbacks if everything else is sparse
+    factual_lines: list[str] = []
+    if phase_name:
+        if isinstance(illum_pct, (int, float)):
+            factual_lines.append(f"🌙 {phase_name} ({int(round(float(illum_pct)))}%)")
         else:
-            marker_line = "✅ Хорошо для: " + ", ".join(rest or markers) + "."
+            factual_lines.append(f"🌙 {phase_name}")
+    if sign:
+        factual_lines.append(f"Знак: {sign}")
 
-    bullets, used_llm = _astro_llm_bullets(
-        date_local.format("DD.MM.YYYY"),
-        phase_name,
-        int(percent or 0),
-        sign,
-        voc_text,
-    )
-
-    if not bullets:
-        adv_items = lunar_advice_for_date(cal, date_key)
-        if adv_items:
-            bullets = [f"• {a}" for a in adv_items[:3]]
-        used_llm = False
-
-    if not bullets:
-        base = f"🌙 Фаза: {phase_name}" if phase_name else "🌙 Лунный день: н/д"
-        prm  = f" ({percent}%)" if isinstance(percent, int) and percent else ""
-        bullets = [
-            base + prm,
-            (f"♒ Знак: {sign}" if sign else "— знак Луны: н/д"),
-        ]
-
-    lines = ["🌌 <b>Астрособытия</b>"]
+    body: list[str] = []
     if marker_line:
-        lines.append(zsym(marker_line))
-    lines += [zsym(x) for x in bullets[:3]]
+        body.append(marker_line)
 
-    if voc_text:
-        lines.append(f"⚫️ VoC: {voc_text}")
+    # Prefer LLM bullets
+    for x in llm_bullets:
+        if x and x not in body:
+            body.append(x)
+        if len(body) >= 3:
+            break
+
+    # Fill with calendar advice
+    if len(body) < 3:
+        for x in advice_lines:
+            if x and x not in body:
+                body.append(x)
+            if len(body) >= 3:
+                break
+
+    # Fill with factual lines (phase/sign)
+    if len(body) < 3:
+        for x in factual_lines:
+            if x and x not in body:
+                body.append(x)
+            if len(body) >= 3:
+                break
+
+    lines: list[str] = ["📅 Астрособытия"]
+
+    for l in body[:3]:
+        l = (l or "").strip()
+        if not l:
+            continue
+        # keep emoji-led lines as-is, but add a bullet for plain-text starts
+        if not re.match(r"^\W", l):
+            l = "• " + l
+        lines.append(zsym(l))
+
+    if voc_line:
+        lines.append(voc_line)
 
     return "\n".join(lines)
 
-# ────────────────────────── Morning (compact) ──────────────────────────
 def build_message_morning_compact(
     region_name: str,
     sea_label: str,
@@ -1671,14 +1741,14 @@ def build_message_morning_compact(
     sw_chunk = (" • 🌬️ " + ", ".join(parts) + f" — {sw.get('status', 'н/д')}") if parts else ""
     space_line = "🧲 Космопогода: " + kp_chunk + (sw_chunk or "")
 
-    storm_line_alert = storm_alert_line(wm_klg, tz_obj)
+    storm_line_alert = storm_alert_line(wm_klg, tz_obj, offset_days=0)
 
     sc_line = safecast_summary_line()
     official_rad = radiation_line(KLD_LAT, KLD_LON)
 
     schu_line = schumann_line(get_schumann_with_fallback()) if SHOW_SCHUMANN else None
 
-    storm_short = storm_short_text(wm_klg, tz_obj)
+    storm_short = storm_short_text(wm_klg, tz_obj, offset_days=0)
     kp_short = kp_status if isinstance(kp_val, (int, float)) else "н/д"
     air_emoji = air_emoji_main
     itogo = f"🔎 Итого: воздух {air_emoji} • {storm_short} • Кр {kp_short}"
