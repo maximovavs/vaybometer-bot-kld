@@ -10,7 +10,11 @@ post_common.py — Kaliningrad (VayboMeter).
   ⚠️ Штормовое предупреждение (если порывы/ливни/гроза сильные)
   🔎 Итого … • ✅ Сегодня: советы
 
-Вечерний пост (legacy) + теперь генерация картинки для KLD.
+Вечерний пост (legacy) + генерация картинки для KLD.
+
+Ключевая логика дат:
+  - утро: данные "на сегодня" (дата публикации поста)
+  - вечер: данные "на завтра" (дата публикации поста + 1 день)
 
 ENV:
   POST_MODE (morning/evening), DAY_OFFSET, ASTRO_OFFSET,
@@ -40,6 +44,13 @@ from weather import get_weather
 from air     import get_air, get_sst, get_kp, get_solar_wind
 from pollen  import get_pollen
 from radiation import get_radiation
+
+
+# Задымление (опционально): модуль может отсутствовать.
+try:
+    from smoke import get_smoke  # type: ignore
+except Exception:
+    get_smoke = None  # type: ignore
 
 try:
     from gpt import gpt_blurb, gpt_complete  # type: ignore
@@ -91,6 +102,8 @@ DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1", "t
 # LLM-параметры
 USE_DAILY_LLM    = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
 ASTRO_LLM_TEMP   = float(os.getenv("ASTRO_LLM_TEMP", "0.7"))
+
+DEFAULT_TZ_NAME = (os.getenv("TZ") or "Europe/Kaliningrad").strip() or "Europe/Kaliningrad"
 
 # ────────────────────────── базовые константы ──────────────────────────
 NBSP = "\u00A0"
@@ -259,6 +272,42 @@ def _looks_gibberish(s: str) -> bool:
     if letters < max(3, int(len(s) * 0.15)):
         return True
     return False
+
+def _daily_value_for_date(
+    wm: Dict[str, Any],
+    field: str,
+    date_obj: pendulum.Date,
+) -> Optional[Any]:
+    """Берёт daily[field] по индексу, соответствующему date_obj, если возможно."""
+    daily = wm.get("daily") or {}
+    dates = _daily_times(wm)
+    if not dates:
+        return None
+    try:
+        idx = dates.index(date_obj)
+    except ValueError:
+        return None
+    arr = daily.get(field) or []
+    if isinstance(arr, list) and idx < len(arr):
+        return arr[idx]
+    return None
+
+def _daily_hhmm_for_date(
+    wm: Dict[str, Any],
+    field: str,
+    date_obj: pendulum.Date,
+    tz_obj: pendulum.Timezone,
+) -> Optional[str]:
+    val = _daily_value_for_date(wm, field, date_obj)
+    if not val:
+        return None
+    try:
+        return pendulum.parse(str(val)).in_tz(tz_obj).format("HH:mm")
+    except Exception:
+        try:
+            return pendulum.parse(str(val)).format("HH:mm")
+        except Exception:
+            return None
 
 # ────────────── ЕДИНЫЙ ИСТОЧНИК Kp: SWPC closed 3-hour bar ──────────────
 def _kp_status_by_value(kp: Optional[float]) -> str:
@@ -444,116 +493,10 @@ def pick_header_metrics_for_offset(
 def pick_tomorrow_header_metrics(
     wm: Dict[str, Any], tz: pendulum.Timezone
 ) -> Tuple[Optional[float], Optional[int], Optional[int], str]:
-    """Алиас для совместимости с продакшн-кодом."""
-    hourly = wm.get("hourly") or {}
-    times = _hourly_times(wm)
-    tomorrow = pendulum.now(tz).add(days=1).date()
+    """Алиас для совместимости с продакшн-кодом (берёт +1 день)."""
+    return pick_header_metrics_for_offset(wm, tz, 1)
 
-    spd_arr = _pick(
-        hourly,
-        "windspeed_10m",
-        "windspeed",
-        "wind_speed_10m",
-        "wind_speed",
-        default=[],
-    )
-    dir_arr = _pick(
-        hourly,
-        "winddirection_10m",
-        "winddirection",
-        "wind_dir_10m",
-        "wind_dir",
-        default=[],
-    )
-    prs_arr = hourly.get("surface_pressure", []) or hourly.get("pressure", [])
-
-    if times:
-        idx_noon = _nearest_index_for_day(times, tomorrow, prefer_hour=12, tz=tz)
-        idx_morn = _nearest_index_for_day(times, tomorrow, prefer_hour=6, tz=tz)
-    else:
-        idx_noon = idx_morn = None
-
-    wind_ms = None
-    wind_dir = None
-    press_val = None
-    trend = "→"
-
-    if idx_noon is not None:
-        try:
-            spd = float(spd_arr[idx_noon]) if idx_noon < len(spd_arr) else None
-        except Exception:
-            spd = None
-        try:
-            wdir = float(dir_arr[idx_noon]) if idx_noon < len(dir_arr) else None
-        except Exception:
-            wdir = None
-        try:
-            p_noon = float(prs_arr[idx_noon]) if idx_noon < len(prs_arr) else None
-        except Exception:
-            p_noon = None
-        try:
-            p_morn = float(prs_arr[idx_morn]) if (
-                idx_morn is not None and idx_morn < len(prs_arr)
-            ) else None
-        except Exception:
-            p_morn = None
-
-        wind_ms  = kmh_to_ms(spd) if isinstance(spd,  (int, float)) else None
-        wind_dir = int(round(wdir)) if isinstance(wdir, (int, float)) else None
-        press_val = int(round(p_noon)) if isinstance(p_noon, (int, float)) else None
-        if isinstance(p_noon, (int, float)) and isinstance(p_morn, (int, float)):
-            diff = p_noon - p_morn
-            trend = "↑" if diff >= 0.3 else "↓" if diff <= -0.3 else "→"
-
-    if wind_ms is None and times:
-        idxs = [i for i, t in enumerate(times) if t.in_tz(tz).date() == tomorrow]
-        if idxs:
-            try:
-                speeds = [float(spd_arr[i]) for i in idxs if i < len(spd_arr)]
-            except Exception:
-                speeds = []
-            try:
-                dirs = [float(dir_arr[i]) for i in idxs if i < len(dir_arr)]
-            except Exception:
-                dirs = []
-            try:
-                prs = [float(prs_arr[i]) for i in idxs if i < len(prs_arr)]
-            except Exception:
-                prs = []
-            if speeds:
-                wind_ms = kmh_to_ms(sum(speeds) / len(speeds))
-            mean_dir = _circular_mean_deg(dirs)
-            wind_dir = int(round(mean_dir)) if mean_dir is not None else wind_dir
-            if prs:
-                press_val = int(round(sum(prs) / len(prs)))
-
-    if wind_ms is None or wind_dir is None or press_val is None:
-        cur = (wm.get("current") or wm.get("current_weather") or {})
-        if wind_ms is None:
-            spd = _pick(
-                cur,
-                "windspeed_10m",
-                "windspeed",
-                "wind_speed_10m",
-                "wind_speed",
-            )
-            wind_ms = kmh_to_ms(spd) if isinstance(spd, (int, float)) else wind_ms
-        if wind_dir is None:
-            wdir = _pick(
-                cur,
-                "winddirection_10m",
-                "winddirection",
-                "wind_dir_10m",
-                "wind_dir",
-            )
-            if isinstance(wdir, (int, float)):
-                wind_dir = int(round(float(wdir)))
-        if press_val is None:
-            pcur = _pick(cur, "surface_pressure", "pressure")
-            if isinstance(pcur, (int, float)):
-                press_val = int(round(float(pcur)))
-    return wind_ms, wind_dir, press_val, trend
-
+# ────────────────────────── daily temps helpers ──────────────────────────
 def _fetch_temps_for_offset(
     lat: float, lon: float, tz_name: str, offset_days: int
 ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
@@ -583,13 +526,13 @@ def _fetch_temps_for_offset(
         wc = None
     return tmax, tmin, wc
 
-def day_night_stats(lat: float, lon: float, tz: str = "UTC") -> Dict[str, Optional[float]]:
-    """Возвращает статистику дня/ночи для завтра."""
+def day_night_stats(lat: float, lon: float, tz: str = "UTC", offset_days: int = 1) -> Dict[str, Optional[float]]:
+    """Возвращает статистику дня/ночи для offset_days (по умолчанию: завтра)."""
     wm = get_weather(lat, lon) or {}
     daily = wm.get("daily") or {}
     times = _daily_times(wm)
     tz_obj = pendulum.timezone(tz)
-    target = pendulum.today(tz_obj).add(days=1).date()
+    target = pendulum.today(tz_obj).add(days=offset_days).date()
 
     try:
         idx = times.index(target)
@@ -617,21 +560,21 @@ def fetch_tomorrow_temps(
     return tmax, tmin
 
 # === шторм-флаги ==================
-def _tomorrow_hourly_indices(wm: Dict[str, Any], tz: pendulum.Timezone) -> List[int]:
+def _hourly_indices_for_offset(wm: Dict[str, Any], tz: pendulum.Timezone, offset_days: int) -> List[int]:
     times = _hourly_times(wm)
-    tom = pendulum.now(tz).add(days=1).date()
+    tgt = pendulum.now(tz).add(days=offset_days).date()
     idxs: List[int] = []
     for i, dt_ in enumerate(times):
         try:
-            if dt_.in_tz(tz).date() == tom:
+            if dt_.in_tz(tz).date() == tgt:
                 idxs.append(i)
         except Exception:
             pass
     return idxs
 
-def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone) -> Dict[str, Any]:
+def storm_flags_for_tomorrow(wm: Dict[str, Any], tz: pendulum.Timezone, offset_days: int = 1) -> Dict[str, Any]:
     hourly = wm.get("hourly") or {}
-    idxs = _tomorrow_hourly_indices(wm, tz)
+    idxs = _hourly_indices_for_offset(wm, tz, offset_days)
     if not idxs:
         return {"warning": False}
 
@@ -948,6 +891,54 @@ def radiation_line(lat: float, lon: float) -> Optional[str]:
         return f"{em} Радиация: {float(dose):.3f} μSv/h — {lbl}"
     return None
 
+
+def smoke_line(lat: float, lon: float) -> Optional[str]:
+    '''
+    Универсальная строка про задымление (если в проекте есть модуль smoke.py).
+    Ожидаемые поля (любые из): level/risk/status/text/aerosol_index/pm25/pm10/source.
+    '''
+    if get_smoke is None:
+        return None
+    try:
+        d = get_smoke(lat, lon)  # type: ignore[misc]
+    except Exception:
+        return None
+    if not isinstance(d, dict) or not d:
+        return None
+
+    def _s(v):
+        return str(v).strip() if v is not None else ""
+
+    level = _s(d.get("level") or d.get("risk") or d.get("status"))
+    text_ = _s(d.get("text") or d.get("message") or d.get("desc"))
+    ai = d.get("aerosol_index") or d.get("ai") or d.get("uvi_like_ai")
+    pm25 = d.get("pm25")
+    pm10 = d.get("pm10")
+    src = _s(d.get("source") or d.get("src"))
+
+    parts: list[str] = []
+    if level:
+        parts.append(level)
+    if text_ and (not level or text_.lower() not in level.lower()):
+        parts.append(text_)
+    if isinstance(ai, (int, float)):
+        parts.append(f"AI {float(ai):.1f}")
+    try:
+        if isinstance(pm25, (int, float)):
+            parts.append(f"PM₂.₅ {float(pm25):.0f}")
+        if isinstance(pm10, (int, float)):
+            parts.append(f"PM₁₀ {float(pm10):.0f}")
+    except Exception:
+        pass
+    if src:
+        parts.append(src)
+
+    if not parts:
+        return None
+
+    return "🔥 Задымление: " + " • ".join(parts[:4])
+
+
 # ────────────────────────── UVI ──────────────────────────
 def uvi_label(x: float) -> str:
     if x < 3:
@@ -1037,16 +1028,7 @@ def fx_morning_line(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Opt
 
 # ────────────────────────── «шторм/итого» ──────────────────────────
 def _day_indices(wm: Dict[str, Any], tz: pendulum.Timezone, offset: int) -> List[int]:
-    times = _hourly_times(wm)
-    date_obj = pendulum.today(tz).add(days=offset).date()
-    idxs = []
-    for i, dt_ in enumerate(times):
-        try:
-            if dt_.in_tz(tz).date() == date_obj:
-                idxs.append(i)
-        except Exception:
-            pass
-    return idxs
+    return _hourly_indices_for_offset(wm, tz, offset)
 
 def _vals(arr, idxs):
     out = []
@@ -1292,7 +1274,7 @@ def load_calendar(path: str = "lunar_calendar.json") -> dict:
             logging.warning("load_calendar: failed to read %s: %s", p, e)
     return {}
 
-def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
+def _parse_voc_dt(s: str, tz: pendulum.Timezone):
     if not s:
         return None
     try:
@@ -1308,7 +1290,7 @@ def _parse_voc_dt(s: str, tz: pendulum.tz.timezone.Timezone):
     except Exception:
         return None
 
-def voc_interval_for_date(rec: dict, tz_local: str = "Asia/Nicosia"):
+def voc_interval_for_date(rec: dict, tz_local: str = DEFAULT_TZ_NAME):
     if not isinstance(rec, dict):
         return None
     voc = (rec.get("void_of_course") or rec.get("voc") or rec.get("void") or {})
@@ -1346,20 +1328,89 @@ def lunar_advice_for_date(cal: dict, date_obj) -> List[str]:
 
     return [str(x).strip() for x in items if str(x).strip()][:3]
 
-def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> List[str]:
+def _astro_markers_from_rec(rec: dict) -> List[str]:
+    """
+    Пытаемся восстановить "отметки" вида:
+      - благоприятный день
+      - день для покупок
+      - день для путешествий
+    Поддерживаем разные возможные ключи и форматы (bool/list/str).
+    """
+    if not isinstance(rec, dict):
+        return []
+
+    markers_raw: List[str] = []
+
+    # 1) Явные списки/строки
+    for key in ("markers", "marks", "labels", "tags", "good_for", "favorable_for", "notes", "note"):
+        v = rec.get(key)
+        if isinstance(v, str):
+            markers_raw.append(v)
+        elif isinstance(v, list):
+            markers_raw += [str(x) for x in v if str(x).strip()]
+        elif isinstance(v, dict):
+            # иногда good_for может быть dict {'travel': true, ...}
+            for kk, vv in v.items():
+                if vv in (True, 1, "1", "true", "yes", "on"):
+                    markers_raw.append(str(kk))
+
+    # 2) Булевы флаги
+    bool_map = {
+        "favorable_day": "благоприятный день",
+        "good_day": "благоприятный день",
+        "is_favorable": "благоприятный день",
+        "favorable": "благоприятный день",
+        "shopping_day": "покупки",
+        "for_shopping": "покупки",
+        "shopping": "покупки",
+        "travel_day": "путешествия",
+        "for_travel": "путешествия",
+        "travel": "путешествия",
+    }
+    for k, label in bool_map.items():
+        v = rec.get(k)
+        if v is True or (isinstance(v, (int, float)) and float(v) == 1.0) or (isinstance(v, str) and v.strip().lower() in ("1", "true", "yes", "on")):
+            markers_raw.append(label)
+
+    # Нормализация по подстрокам
+    out: List[str] = []
+    for s in markers_raw:
+        t = str(s).strip().lower()
+        if not t:
+            continue
+
+        def add(x: str):
+            if x not in out:
+                out.append(x)
+
+        if any(w in t for w in ("благоприят", "удачн", "favorable", "good day", "lucky")):
+            add("благоприятный день")
+        if any(w in t for w in ("покуп", "шоп", "shopping", "buy")):
+            add("покупки")
+        if any(w in t for w in ("путеше", "поезд", "travel", "trip")):
+            add("путешествия")
+
+    return out
+
+def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_text: str) -> tuple[List[str], bool]:
+    """
+    Возвращает (bullets, used_llm_or_cache).
+    used_llm_or_cache=True, если:
+      - взяли из кеша, или
+      - реально сгенерировали через LLM.
+    """
     cache_file = CACHE_DIR / f"astro_{date_str}.txt"
     if cache_file.exists():
         lines = [l.strip() for l in cache_file.read_text("utf-8").splitlines() if l.strip()]
         if lines:
-            return lines[:3]
+            return lines[:3], True
 
     # Если LLM отключён или не импортирован — не дергаем его вообще
     if (not USE_DAILY_LLM) or (gpt_complete is None):
-        return []
+        return [], False
 
     system = (
-        "Действуй как АстроЭксперт, ты лучше всех знаешь как энергии луны и звезд влияют на жизнь человека."
-        "Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
+        "Действуй как АстроЭксперт. Ты делаешь очень короткую сводку астрособытий на указанную дату (2–3 строки). "
         "Пиши грамотно по-русски, без клише. Используй ТОЛЬКО данную информацию: "
         "фаза Луны, освещённость, знак Луны и интервал Void-of-Course. "
         "Не придумывай других планет и аспектов. Каждая строка начинается с эмодзи и содержит одну мысль."
@@ -1369,12 +1420,20 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
         f"Знак: {sign or 'н/д'}. VoC: {voc_text or 'нет'}."
     )
     try:
-        txt = gpt_complete(
-            prompt=prompt,
-            system=system,
-            temperature=ASTRO_LLM_TEMP,
-            max_tokens=160,
-        )
+        txt = None
+        try:
+            txt = gpt_complete(
+                prompt=prompt,
+                system=system,
+                temperature=ASTRO_LLM_TEMP,
+                max_tokens=160,
+            )
+        except TypeError:
+            # Совместимость с различными обёртками.
+            try:
+                txt = gpt_complete(prompt, system)
+            except TypeError:
+                txt = gpt_complete(prompt)
         raw_lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
 
         safe: List[str] = []
@@ -1387,20 +1446,21 @@ def _astro_llm_bullets(date_str: str, phase: str, percent: int, sign: str, voc_t
             safe.append(l)
         if safe:
             cache_file.write_text("\n".join(safe[:3]), "utf-8")
-            return safe[:3]
+            return safe[:3], True
     except Exception as e:
         logging.warning("Astro LLM failed: %s", e)
-    return []
+    return [], False
 
 def build_astro_section(
     date_local: Optional[pendulum.Date] = None,
-    tz_local: str = "Asia/Nicosia",
+    tz_local: str = DEFAULT_TZ_NAME,
 ) -> str:
     """
     Собирает блок «Астрособытия»:
       • читает lunar_calendar.json,
       • фаза, освещённость, знак,
       • VoC, если есть,
+      • "отметки" (покупки/путешествия/благоприятный день) — не теряем,
       • текст: LLM → advice → заглушка.
     """
     tz = pendulum.timezone(tz_local)
@@ -1419,7 +1479,7 @@ def build_astro_section(
     except Exception:
         percent = 0
 
-    sign = rec.get("sign") or rec.get("zodiac") or ""
+    sign = (rec.get("sign") or rec.get("zodiac") or "").strip()
 
     voc_text = ""
     voc = voc_interval_for_date(rec, tz_local=tz_local)
@@ -1427,7 +1487,18 @@ def build_astro_section(
         t1, t2 = voc
         voc_text = f"{t1.format('HH:mm')}–{t2.format('HH:mm')}"
 
-    bullets = _astro_llm_bullets(
+    markers = _astro_markers_from_rec(rec)
+    marker_line = None
+    if markers:
+        rest = [m for m in markers if m != "благоприятный день"]
+        if "благоприятный день" in markers and rest:
+            marker_line = "✅ Благоприятный день • Хорошо для: " + ", ".join(rest) + "."
+        elif "благоприятный день" in markers:
+            marker_line = "✅ Благоприятный день."
+        else:
+            marker_line = "✅ Хорошо для: " + ", ".join(rest or markers) + "."
+
+    bullets, used_llm = _astro_llm_bullets(
         date_local.format("DD.MM.YYYY"),
         phase_name,
         int(percent or 0),
@@ -1436,22 +1507,25 @@ def build_astro_section(
     )
 
     if not bullets:
-        adv = rec.get("advice") or []
-        bullets = [f"• {a}" for a in adv[:3]] if adv else []
+        adv_items = lunar_advice_for_date(cal, date_key)
+        if adv_items:
+            bullets = [f"• {a}" for a in adv_items[:3]]
+        used_llm = False
 
     if not bullets:
-        base = f"🌙 Фаза: {phase_name}" if phase_name else "🌙 Лунный день в норме"
+        base = f"🌙 Фаза: {phase_name}" if phase_name else "🌙 Лунный день: н/д"
         prm  = f" ({percent}%)" if isinstance(percent, int) and percent else ""
         bullets = [
             base + prm,
-            (f"♒ Знак: {sign}" if sign else "— знак Луны н/д"),
+            (f"♒ Знак: {sign}" if sign else "— знак Луны: н/д"),
         ]
 
     lines = ["🌌 <b>Астрособытия</b>"]
+    if marker_line:
+        lines.append(zsym(marker_line))
     lines += [zsym(x) for x in bullets[:3]]
 
-    llm_used = bool(bullets) and USE_DAILY_LLM and (gpt_complete is not None)
-    if voc_text and not llm_used:
+    if voc_text:
         lines.append(f"⚫️ VoC: {voc_text}")
 
     return "\n".join(lines)
@@ -1474,8 +1548,8 @@ def build_message_morning_compact(
     fact_line = f"🌾 Доброе утро! {fact_text}" if fact_text else "🌾 Доброе утро!"
 
     wm_klg = get_weather(KLD_LAT, KLD_LON) or {}
-    t_day, t_night, wcode = _fetch_temps_for_offset(KLD_LAT, KLD_LON, tz_obj.name, DAY_OFFSET)
-    wind_ms, wind_dir_deg, press_val, press_trend = pick_header_metrics_for_offset(wm_klg, tz_obj, DAY_OFFSET)
+    t_day, t_night, wcode = _fetch_temps_for_offset(KLD_LAT, KLD_LON, tz_obj.name, 0)
+    wind_ms, wind_dir_deg, press_val, press_trend = pick_header_metrics_for_offset(wm_klg, tz_obj, 0)
 
     gust = None
     try:
@@ -1483,7 +1557,7 @@ def build_message_morning_compact(
         hourly = wm_klg.get("hourly") or {}
         idx_noon = _nearest_index_for_day(
             times,
-            date_local.add(days=DAY_OFFSET).date(),
+            date_local.date(),
             12,
             tz_obj,
         )
@@ -1512,7 +1586,7 @@ def build_message_morning_compact(
     warm_city, warm_vals = None, None
     cold_city, cold_vals = None, None
     for city, (la, lo) in other_cities:
-        tmax, tmin, _ = _fetch_temps_for_offset(la, lo, tz_name, DAY_OFFSET)
+        tmax, tmin, _ = _fetch_temps_for_offset(la, lo, tz_name, 0)
         if tmax is None:
             continue
         if warm_vals is None or tmax > warm_vals[0]:
@@ -1533,14 +1607,7 @@ def build_message_morning_compact(
     suit = wetsuit_hint_by_sst(sst_hint)
     sea_txt = f"Море: {suit}." if suit else "Море: н/д."
 
-    sunset = None
-    try:
-        daily = wm_klg.get("daily") or {}
-        ss = (daily.get("sunset") or [None])[0]
-        if ss:
-            sunset = pendulum.parse(ss).in_tz(tz_obj).format("HH:mm")
-    except Exception:
-        pass
+    sunset = _daily_hhmm_for_date(wm_klg, "sunset", date_local.date(), tz_obj)
     sunset_line = f"🌇 Закат сегодня: {sunset}" if sunset else "🌇 Закат: н/д"
 
     fx_line = fx_morning_line(pendulum.now(tz_obj), tz_obj)
@@ -1574,7 +1641,9 @@ def build_message_morning_compact(
     if pollen_risk:
         air_line += f" • 🌿 пыльца: {pollen_risk}"
 
-    uvi_info = uvi_for_offset(wm_klg, tz_obj, DAY_OFFSET)
+    smoke = smoke_line(KLD_LAT, KLD_LON)
+
+    uvi_info = uvi_for_offset(wm_klg, tz_obj, 0)
     uvi_line = None
     try:
         uvi_val = None
@@ -1633,7 +1702,11 @@ def build_message_morning_compact(
     if fx_line:
         P.append(fx_line)
     P.append("———")
-    P.append(air_line)
+    if SHOW_AIR:
+        P.append(air_line)
+
+        if smoke:
+            P.append(smoke)
     if uvi_line:
         P.append(uvi_line)
     if SHOW_SPACE:
@@ -1664,17 +1737,18 @@ def build_message_legacy_evening(
     tz_obj = pendulum.timezone(tz) if isinstance(tz, str) else tz
     tz_name = tz_obj.name
 
-    # День для погоды и день для астроблока могут отличаться (ASTRO_OFFSET)
-    date_weather = pendulum.today(tz_obj).add(days=DAY_OFFSET)
-    date_astro   = pendulum.today(tz_obj).add(days=ASTRO_OFFSET)
-
+    date_weather = pendulum.today(tz_obj).add(days=1)  # вечер: всегда завтра
     header = f"<b>🌅 {region_name}: погода на завтра ({date_weather.format('DD.MM.YYYY')})</b>"
 
     P: List[str] = [header]
 
     wm_main = get_weather(KLD_LAT, KLD_LON) or {}
 
-    stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz_name)
+    sunrise = _daily_hhmm_for_date(wm_main, "sunrise", date_weather.date(), tz_obj)
+    if sunrise:
+        P.append(f"🌄 Рассвет завтра: {sunrise}")
+
+    stats = day_night_stats(KLD_LAT, KLD_LON, tz=tz_name, offset_days=1)
     t_day_max = stats.get("t_day_max")
     t_night_min = stats.get("t_night_min")
     rh_min = stats.get("rh_min")
@@ -1685,7 +1759,7 @@ def build_message_legacy_evening(
 
     wind_ms, wind_dir_deg, press_val, press_trend = pick_tomorrow_header_metrics(wm_main, tz_obj)
 
-    storm = storm_flags_for_tomorrow(wm_main, tz_obj)
+    storm = storm_flags_for_tomorrow(wm_main, tz_obj, offset_days=1)
     gust = storm.get("max_gust_ms")
 
     desc = code_desc(wcode) or "—"
@@ -1794,10 +1868,8 @@ def build_message_legacy_evening(
 
         P.append("———")
 
-    # Астрособытия (по Asia/Nicosia — с учётом ASTRO_OFFSET, как в старом формате)
-    tz_nic = pendulum.timezone("Asia/Nicosia")
-    date_for_astro = pendulum.today(tz_nic).add(days=ASTRO_OFFSET)
-    P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
+    date_for_astro = pendulum.today(tz_obj).add(days=ASTRO_OFFSET)
+    P.append(build_astro_section(date_local=date_for_astro, tz_local=tz_obj.name))
     P.append("———")
 
     kp_tuple = get_kp() or (None, "н/д", None, "n/d")
@@ -1810,6 +1882,14 @@ def build_message_legacy_evening(
 
     air = get_air(KLD_LAT, KLD_LON) or {}
     schu_state = {} if DISABLE_SCHUMANN else get_schumann_with_fallback()
+
+    sc_line = safecast_summary_line()
+    official_rad = radiation_line(KLD_LAT, KLD_LON)
+    smoke = smoke_line(KLD_LAT, KLD_LON)
+    extra_parts = [x for x in (sc_line, official_rad, smoke) if x]
+    if extra_parts:
+        P.append(" • ".join(extra_parts))
+        P.append("———")
 
     P.append("✅ <b>Рекомендации</b>")
 
@@ -1848,10 +1928,6 @@ def build_message(
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
 ) -> str:
-    """
-    Единая точка входа для текста поста.
-    mode может переопределить POST_MODE из ENV.
-    """
     effective_mode = (mode or POST_MODE or "evening").strip().lower()
     if effective_mode == "morning":
         return build_message_morning_compact(
@@ -1876,20 +1952,12 @@ def _pick_ref_coords(
     pairs: list[tuple[str, tuple[float, float]]],
     default: tuple[float, float],
 ) -> tuple[float, float]:
-    """
-    Берём первую точку из списка городов, если есть,
-    иначе — дефолтные координаты региона.
-    """
     pairs = list(pairs or [])
     if pairs:
         return pairs[0][1]
     return default
 
 def _iter_city_pairs(cities: Any) -> list[tuple[str, tuple[float, float]]]:
-    """
-    Приводим sea_cities / other_cities к нормальному списку (name, (lat, lon)).
-    Ожидается формат [(name, (lat, lon)), ...], как в твоём коде.
-    """
     out: list[tuple[str, tuple[float, float]]] = []
     try:
         for item in cities or []:
@@ -1910,29 +1978,19 @@ def _build_kld_image_moods_for_evening(
     sea_pairs: list[tuple[str, tuple[float, float]]],
     other_pairs: list[tuple[str, tuple[float, float]]],
 ) -> tuple[str, str, str]:
-    """
-    Строим 3 строки:
-      - marine_mood  — настроение Балтики (шторм / спокойно / тепло / холодно),
-      - inland_mood  — настроение «суши» (Калининград, леса),
-      - astro_mood_en — общий космический вайб на завтра (очень коротко).
-    """
-
-    # Выбираем референс-точки: одна ближе к морю, другая — к суше
     la_sea, lo_sea = _pick_ref_coords(sea_pairs, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT))
     la_inland, lo_inland = _pick_ref_coords(other_pairs, (KLD_LAT_DEFAULT, KLD_LON_DEFAULT))
 
-    # Дефолтные значения на случай, если API не ответит
     marine_mood = "cool Baltic seaside evening with long sandy beaches and fresh wind from the sea"
     inland_mood = "quieter inland forests, lakes and the city of Kaliningrad with grounded, slower energy"
 
-    # Температуры на завтра
     try:
-        stats_sea = day_night_stats(la_sea, lo_sea, tz=tz_obj.name) or {}
+        stats_sea = day_night_stats(la_sea, lo_sea, tz=tz_obj.name, offset_days=1) or {}
     except Exception:
         stats_sea = {}
 
     try:
-        stats_inland = day_night_stats(la_inland, lo_inland, tz=tz_obj.name) or {}
+        stats_inland = day_night_stats(la_inland, lo_inland, tz=tz_obj.name, offset_days=1) or {}
     except Exception:
         stats_inland = {}
 
@@ -1941,18 +1999,16 @@ def _build_kld_image_moods_for_evening(
     tmax_inland = stats_inland.get("t_day_max")
     tmin_inland = stats_inland.get("t_night_min")
 
-    # Шторм/ветер по морю
     try:
         wm_sea = get_weather(la_sea, lo_sea) or {}
     except Exception:
         wm_sea = {}
 
     try:
-        storm_sea = storm_flags_for_tomorrow(wm_sea, tz_obj)
+        storm_sea = storm_flags_for_tomorrow(wm_sea, tz_obj, offset_days=1)
     except Exception:
         storm_sea = {"warning": False}
 
-    # --- Море / побережье ---
     if storm_sea.get("warning"):
         marine_variants = [
             "stormy Baltic evening with strong onshore wind, high waves and dramatic clouds over the sea",
@@ -1983,7 +2039,6 @@ def _build_kld_image_moods_for_evening(
 
     marine_mood = random.choice(marine_variants)
 
-    # --- Суша / города ---
     if isinstance(tmin_inland, (int, float)) and tmin_inland <= -5:
         inland_variants = [
             "frosty inland night with crunchy snow, very clear air and glowing windows in quiet streets of Kaliningrad and small towns",
@@ -2007,7 +2062,6 @@ def _build_kld_image_moods_for_evening(
 
     inland_mood = random.choice(inland_variants)
 
-    # Краткий космический вайб: остальное (фаза+знак) подмешает image_prompt_kld из lunar_calendar.json
     astro_mood_en = (
         "calm, grounded northern sky energy supporting rest, reflection and simple practical planning for tomorrow"
         if not storm_sea.get("warning")
@@ -2023,7 +2077,7 @@ def _as_tz(tz: Union[pendulum.Timezone, str]) -> pendulum.Timezone:
     try:
         return pendulum.timezone(str(tz))
     except Exception:
-        return pendulum.timezone("Europe/Kaliningrad")
+        return pendulum.timezone(DEFAULT_TZ_NAME)
 
 async def send_common_post(
     bot: Bot,
@@ -2036,7 +2090,6 @@ async def send_common_post(
     tz,
     mode: Optional[str] = None,
 ) -> None:
-    # 1) Собираем текст сообщения
     msg = build_message(
         region_name=region_name,
         sea_label=sea_label,
@@ -2047,7 +2100,6 @@ async def send_common_post(
         mode=mode,
     )
 
-    # 2) Определяем режим и флаг картинок
     try:
         effective_mode = (mode or os.getenv("POST_MODE") or os.getenv("MODE") or "evening").lower()
     except Exception:
@@ -2064,9 +2116,21 @@ async def send_common_post(
         enable_img,
     )
 
+    if len(msg) > 4090:
+        logging.warning("Telegram message too long (%d), trimming to 4090 chars", len(msg))
+        msg_to_send = msg[:4090] + "…"
+    else:
+        msg_to_send = msg
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text=msg_to_send,
+        parse_mode=constants.ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
     img_path: Optional[str] = None
 
-    # 3) Для вечернего поста пробуем сгенерировать картинку
     if (
         enable_img
         and effective_mode.startswith("evening")
@@ -2091,10 +2155,11 @@ async def send_common_post(
                 other_pairs=other_pairs,
             )
 
-            today = dt.date.today()
+            post_date = pendulum.today(tz_obj).add(days=1).date()
+            post_date_d = dt.date(post_date.year, post_date.month, post_date.day)
 
             prompt, style_name = build_kld_evening_prompt(
-                date=today,
+                date=post_date_d,
                 marine_mood=marine_mood,
                 inland_mood=inland_mood,
                 astro_mood_en=astro_mood_en,
@@ -2103,7 +2168,7 @@ async def send_common_post(
             logging.info(
                 "KLD_IMG: built prompt, style=%s, date=%s, prompt_len=%d",
                 style_name,
-                today.isoformat(),
+                post_date_d.isoformat(),
                 len(prompt),
             )
 
@@ -2111,7 +2176,7 @@ async def send_common_post(
             img_dir.mkdir(parents=True, exist_ok=True)
 
             safe_style = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(style_name) if style_name else "default")
-            img_file = img_dir / f"kld_evening_{today.isoformat()}_{safe_style}.jpg"
+            img_file = img_dir / f"kld_evening_{post_date_d.isoformat()}_{safe_style}.jpg"
 
             logging.info("KLD_IMG: calling generate_astro_image -> %s", img_file)
             img_path = generate_astro_image(prompt, str(img_file))  # type: ignore[call-arg]
@@ -2132,31 +2197,16 @@ async def send_common_post(
             bool(build_kld_evening_prompt),
         )
 
-    # 4) Отправка в Telegram
     if img_path and Path(img_path).exists():
-        caption = msg
-        if len(caption) > 1000:
-            caption = caption[:1000]
         try:
             logging.info("KLD_IMG: sending photo %s", img_path)
             with open(img_path, "rb") as f:
                 await bot.send_photo(
                     chat_id=chat_id,
                     photo=f,
-                    caption=caption,
-                    parse_mode=constants.ParseMode.HTML,
                 )
-            return
         except Exception as exc:
-            logging.exception("KLD_IMG: sending photo failed, fallback to text: %s", exc)
-
-    logging.info("KLD_IMG: sending plain text message")
-    await bot.send_message(
-        chat_id=chat_id,
-        text=msg,
-        parse_mode=constants.ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+            logging.exception("KLD_IMG: sending photo failed: %s", exc)
 
 async def main_common(
     bot: Bot,
