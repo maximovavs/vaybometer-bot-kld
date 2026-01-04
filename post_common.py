@@ -88,6 +88,10 @@ SHOW_SCHUMANN = _env_on("SHOW_SCHUMANN", POST_MODE != "evening")
 DEBUG_WATER = os.getenv("DEBUG_WATER", "").strip().lower() in ("1", "true", "yes", "on")
 DISABLE_SCHUMANN = os.getenv("DISABLE_SCHUMANN", "").strip().lower() in ("1", "true", "yes", "on")
 
+ALERT_GUST_MS        = float(os.getenv("ALERT_GUST_MS", "20"))
+ALERT_RAIN_MM_H      = float(os.getenv("ALERT_RAIN_MM_H", "10"))
+ALERT_TSTORM_PROB_PC = float(os.getenv("ALERT_TSTORM_PROB_PC", "70"))
+
 # LLM-параметры
 USE_DAILY_LLM    = os.getenv("DISABLE_LLM_DAILY", "").strip().lower() not in ("1", "true", "yes", "on")
 ASTRO_LLM_TEMP   = float(os.getenv("ASTRO_LLM_TEMP", "0.7"))
@@ -960,6 +964,20 @@ def uvi_label(x: float) -> str:
         return "очень высокий"
     return "экстремальный"
 
+def uvi_advice(uvi: float) -> str:
+    """Короткий совет для поста. Если мер не нужно — возвращает пустую строку."""
+    try:
+        u = float(uvi)
+    except Exception:
+        return ""
+    if u >= 11:
+        return "Экстремально: тень 11–16, закрытая одежда, SPF 50+"
+    if u >= 8:
+        return "Очень высокий: SPF 50, тень 11–16, очки/кепка"
+    if u >= 6:
+        return "Высокий: SPF 30–50, очки/кепка, тень в полдень"
+    return ""
+
 def uvi_for_offset(
     wm: Dict[str, Any], tz: pendulum.Timezone, offset_days: int
 ) -> Dict[str, Optional[float | str]]:
@@ -1720,12 +1738,15 @@ def build_message_morning_compact(
     uvi_line = None
     try:
         uvi_val = None
-        if isinstance(uvi_info.get("uvi"), (int, float)):
-            uvi_val = float(uvi_info["uvi"])
-        elif isinstance(uvi_info.get("uvi_max"), (int, float)):
+       # Предпочитаем дневной максимум; "текущий" в hourly часто нерелевантен к нужному часу
+        if isinstance(uvi_info.get("uvi_max"), (int, float)):
             uvi_val = float(uvi_info["uvi_max"])
-        if isinstance(uvi_val, (int, float)) and uvi_val >= 3:
-            uvi_line = f"☀️ УФ: {uvi_val:.0f} — {uvi_label(uvi_val)} • SPF 30+ и головной убор"
+        elif isinstance(uvi_info.get("uvi"), (int, float)):
+            uvi_val = float(uvi_info["uvi"])
+        if isinstance(uvi_val, (int, float)) and uvi_val >= UVI_WARN_FROM:
+            adv = uvi_advice(uvi_val)
+            if adv:
+                uvi_line = f"☀️ УФ: {uvi_val:.0f} — {uvi_label(uvi_val)} • {adv}"
     except Exception:
         pass
 
@@ -1859,6 +1880,23 @@ def build_message_legacy_evening(
     )
 
     P.append(kal_line)
+  # УФ (на завтра): показываем только если нужны меры
+    uvi_line = None
+    try:
+        uvi_info = uvi_for_offset(wm_main, tz_obj, DAY_OFFSET)
+        uvi_val = None
+        if isinstance(uvi_info.get("uvi_max"), (int, float)):
+            uvi_val = float(uvi_info["uvi_max"])
+        elif isinstance(uvi_info.get("uvi"), (int, float)):
+            uvi_val = float(uvi_info["uvi"])
+        if isinstance(uvi_val, (int, float)) and uvi_val >= UVI_WARN_FROM:
+            adv = uvi_advice(uvi_val)
+            if adv:
+                uvi_line = f"☀️ УФ: {uvi_val:.0f} — {uvi_label(uvi_val)} • {adv}"
+    except Exception:
+        pass
+    if uvi_line:
+        P.append(uvi_line)
     P.append("———")
 
     if storm.get("warning"):
