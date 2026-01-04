@@ -3,21 +3,22 @@
 """
 imagegen.py — VayboMeter image generator (Pollinations → local file).
 
-Задача:
-- На вход получает prompt (и опционально style_name).
-- Строит URL Pollinations (без API-ключа).
-- Скачивает картинку и сохраняет ЛОКАЛЬНО (JPEG/PNG), возвращая путь к файлу.
-- Бот отправляет файл, а не URL (Telegram больше не "сам" тянет картинку по ссылке).
+Role:
+- Build Pollinations URL (no API key).
+- Download image and save locally (JPEG/PNG/WebP).
+- Return local file path for Telegram upload.
 
-Совместимость (старые вызовы переживаем):
+Compatibility:
   generate_astro_image(prompt, out_path)
   generate_astro_image(prompt, out_path, style_name="...")
   generate_kld_evening_image(prompt, style_name)
   generate_kld_evening_image(prompt, style_name, out_path)
   generate_kld_evening_image(prompt=..., style_name=..., out_path=...)
 
-Примечание:
-- Если out_path не передан, файл будет сохранён в .cache/images/ по seed.
+Extra (new, optional):
+  - seed=... (int) to force variability
+  - width=..., height=...
+  - enhance=..., nologo=...
 """
 
 from __future__ import annotations
@@ -28,16 +29,14 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from urllib.parse import quote
 import urllib.request
 
 log = logging.getLogger(__name__)
 
-# Pollinations endpoint
 BASE_URL = "https://image.pollinations.ai/prompt"
 
-# Defaults (can be overridden by ENV)
 DEFAULT_W = int(os.getenv("IMG_W", "1024"))
 DEFAULT_H = int(os.getenv("IMG_H", "1024"))
 
@@ -67,8 +66,9 @@ def build_pollinations_url(
     """
     Build Pollinations URL.
 
-    - prompt is placed into PATH segment, so we escape everything via quote(..., safe="").
-    - seed defaults to deterministic sha256(prompt+style).
+    Notes:
+    - prompt goes into PATH segment => escape everything via quote(..., safe="").
+    - seed defaults to deterministic sha256(prompt+style) if not provided.
     """
     p = (prompt or "").strip()
     if not p:
@@ -124,8 +124,8 @@ def _sniff_ext(data: bytes, content_type: Optional[str]) -> Optional[str]:
 
 def _to_jpeg_bytes(data: bytes) -> Tuple[bytes, str]:
     """
-    Try to convert any supported image to JPEG bytes (for maximum Telegram send_photo compatibility).
-    Returns: (bytes, mode) where mode is "jpeg" if converted, else "original".
+    Convert supported formats to JPEG bytes (Telegram send_photo friendly).
+    Returns (bytes, mode) where mode is "jpeg" if converted, else "original".
     """
     try:
         from PIL import Image  # type: ignore
@@ -227,10 +227,10 @@ def download_image_to_file(
     raise RuntimeError(f"imagegen: failed to download image after {retries} tries: {last_err}")
 
 
-def _extract_args(args, kwargs) -> Tuple[str, Optional[str], Optional[str]]:
+def _extract_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[str, Optional[str], Optional[str], dict[str, Any]]:
     """
     Universal argument parsing.
-    Returns: (prompt, style_name, out_path)
+    Returns: (prompt, style_name, out_path, extra_kwargs)
     """
     prompt = kwargs.get("prompt")
     style_name = kwargs.get("style_name") or kwargs.get("style") or kwargs.get("theme")
@@ -256,22 +256,70 @@ def _extract_args(args, kwargs) -> Tuple[str, Optional[str], Optional[str]]:
     if not prompt or not str(prompt).strip():
         raise ValueError("imagegen: no prompt passed")
 
-    return str(prompt), (str(style_name) if style_name else None), (str(out_path) if out_path else None)
+    # supported overrides
+    extra = {
+        "seed": kwargs.get("seed"),
+        "width": kwargs.get("width"),
+        "height": kwargs.get("height"),
+        "enhance": kwargs.get("enhance"),
+        "nologo": kwargs.get("nologo"),
+    }
+    # normalize
+    if extra["seed"] is not None:
+        try:
+            extra["seed"] = int(extra["seed"])
+        except Exception:
+            extra["seed"] = None
+    for k in ("width", "height"):
+        if extra[k] is not None:
+            try:
+                extra[k] = int(extra[k])
+            except Exception:
+                extra[k] = None
+    for k in ("enhance", "nologo"):
+        if extra[k] is not None:
+            extra[k] = str(extra[k]).strip().lower() in ("1", "true", "yes", "on")
+
+    return str(prompt), (str(style_name) if style_name else None), (str(out_path) if out_path else None), extra
 
 
 def generate_kld_evening_image(*args, **kwargs) -> str:
     """
     Main entry point. Returns local file path.
+
+    Optional kwargs:
+      seed=int, width=int, height=int, enhance=bool, nologo=bool
     """
-    prompt, style_name, out_path = _extract_args(args, kwargs)
+    prompt, style_name, out_path, extra = _extract_args(args, kwargs)
+
+    final_prompt = (prompt.strip() + (f" style:{style_name}" if style_name else "")).strip()
+
+    seed = extra.get("seed")
+    width = extra.get("width") or DEFAULT_W
+    height = extra.get("height") or DEFAULT_H
+    enhance = extra.get("enhance")
+    nologo = extra.get("nologo")
+
+    if enhance is None:
+        enhance = True
+    if nologo is None:
+        nologo = True
 
     if out_path is None:
-        final_prompt = (prompt.strip() + (f" style:{style_name}" if style_name else "")).strip()
-        seed = _sha_seed(final_prompt)
         DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = str(DEFAULT_DIR / f"kld_{seed}.jpg")
+        if seed is None:
+            seed = _sha_seed(final_prompt)
+        out_path = str(DEFAULT_DIR / f"kld_{int(seed)}.jpg")
 
-    url = build_pollinations_url(prompt, style_name)
+    url = build_pollinations_url(
+        prompt,
+        style_name,
+        width=width,
+        height=height,
+        seed=seed,
+        enhance=bool(enhance),
+        nologo=bool(nologo),
+    )
     log.info("imagegen: Pollinations URL built (len=%d)", len(url))
     return download_image_to_file(url, out_path)
 
