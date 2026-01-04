@@ -371,8 +371,12 @@ def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
     return out
 
 def _daily_times(wm: Dict[str, Any]) -> List[pendulum.Date]:
+    """
+    Важно: некоторые обёртки get_weather возвращают daily.time_local вместо daily.time.
+    Поддерживаем оба варианта, чтобы индексы дня совпадали и не давали "н/д".
+    """
     daily = wm.get("daily") or {}
-    times = daily.get("time") or []
+    times = daily.get("time") or daily.get("time_local") or []
     out: List[pendulum.Date] = []
     for t in times:
         try:
@@ -380,6 +384,32 @@ def _daily_times(wm: Dict[str, Any]) -> List[pendulum.Date]:
         except Exception:
             pass
     return out
+
+def _daily_index_for_offset(
+    wm: Dict[str, Any],
+    tz: pendulum.Timezone,
+    offset_days: int,
+) -> Optional[int]:
+    """
+    Единый способ получить индекс 'нужного дня' в daily-массивах Open-Meteo.
+    Устраняет баг, когда daily.time и target date не совпадают из-за time_local/таймзоны.
+    """
+    times = _daily_times(wm)
+    if not times:
+        return None
+    target = pendulum.today(tz).add(days=offset_days).date()
+    try:
+        return times.index(target)
+    except ValueError:
+        # Мягкий fallback по строкам (на случай разных типов date)
+        tstr = target.to_date_string()
+        for i, d in enumerate(times):
+            try:
+                if getattr(d, "to_date_string", None) and d.to_date_string() == tstr:
+                    return i
+            except Exception:
+                continue
+    return None
 
 def _nearest_index_for_day(
     times: List[pendulum.DateTime],
@@ -565,12 +595,10 @@ def _fetch_temps_for_offset(
 ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
     wm = get_weather(lat, lon) or {}
     daily = wm.get("daily") or {}
-    times = _daily_times(wm)
     tz = pendulum.timezone(tz_name)
-    target = pendulum.today(tz).add(days=offset_days).date()
-    try:
-        idx = times.index(target)
-    except ValueError:
+
+    idx = _daily_index_for_offset(wm, tz, offset_days)
+    if idx is None:
         return None, None, None
 
     def _num(arr, i):
@@ -584,7 +612,9 @@ def _fetch_temps_for_offset(
     tmin = _num(daily.get("temperature_2m_min", []), idx)
     wc   = None
     try:
-        wc = int((daily.get("weathercode") or [None])[idx])
+        arr_wc = daily.get("weathercode") or []
+        if isinstance(arr_wc, list) and idx < len(arr_wc):
+            wc = int(arr_wc[idx]) if arr_wc[idx] is not None else None
     except Exception:
         wc = None
     return tmax, tmin, wc
@@ -593,13 +623,10 @@ def day_night_stats(lat: float, lon: float, tz: str = "UTC") -> Dict[str, Option
     """Возвращает статистику дня/ночи для завтра."""
     wm = get_weather(lat, lon) or {}
     daily = wm.get("daily") or {}
-    times = _daily_times(wm)
     tz_obj = pendulum.timezone(tz)
-    target = pendulum.today(tz_obj).add(days=1).date()
 
-    try:
-        idx = times.index(target)
-    except ValueError:
+    idx = _daily_index_for_offset(wm, tz_obj, 1)
+    if idx is None:
         return {}
 
     def _num(arr, i):
@@ -986,7 +1013,7 @@ def uvi_for_offset(
     daily = wm.get("daily") or {}
     hourly = wm.get("hourly") or {}
     date_obj = pendulum.today(tz).add(days=offset_days).date()
-    times = hourly.get("time") or []
+    times = hourly.get("time") or hourly.get("time_local") or []
     uvi_arr = hourly.get("uv_index") or hourly.get("uv_index_clear_sky") or []
     uvi_now = None
     try:
@@ -1366,8 +1393,6 @@ def lunar_advice_for_date(cal: dict, date_obj) -> List[str]:
         items = [str(adv)]
 
     return [str(x).strip() for x in items if str(x).strip()][:3]
-
-
 
 def _astro_llm_bullets(date_key: str, phase_name: str, percent: int | None, sign: str | None, voc_text: str | None) -> list[str]:
     """2–3 коротких LLM-пункта для блока «Астрособытия» (с кешем).
@@ -1764,7 +1789,7 @@ def build_message_morning_compact(
     uvi_line = None
     try:
         uvi_val = None
-       # Предпочитаем дневной максимум; "текущий" в hourly часто нерелевантен к нужному часу
+        # Предпочитаем дневной максимум; "текущий" в hourly часто нерелевантен к нужному часу
         if isinstance(uvi_info.get("uvi_max"), (int, float)):
             uvi_val = float(uvi_info["uvi_max"])
         elif isinstance(uvi_info.get("uvi"), (int, float)):
@@ -1869,8 +1894,15 @@ def build_message_legacy_evening(
     rh_min = stats.get("rh_min")
     rh_max = stats.get("rh_max")
 
-    wcarr = (wm_main.get("daily", {}) or {}).get("weathercode", [])
-    wcode = wcarr[1] if isinstance(wcarr, list) and len(wcarr) > 1 else None
+    # weathercode для завтрашнего дня — через единый индекс, а не "магический [1]"
+    wcode = None
+    try:
+        didx = _daily_index_for_offset(wm_main, tz_obj, 1)
+        wcarr = (wm_main.get("daily") or {}).get("weathercode") or []
+        if isinstance(didx, int) and isinstance(wcarr, list) and didx < len(wcarr):
+            wcode = int(wcarr[didx]) if wcarr[didx] is not None else None
+    except Exception:
+        wcode = None
 
     wind_ms, wind_dir_deg, press_val, press_trend = pick_tomorrow_header_metrics(wm_main, tz_obj)
 
@@ -1906,7 +1938,7 @@ def build_message_legacy_evening(
     )
 
     P.append(kal_line)
-  # УФ (на завтра): показываем только если нужны меры
+    # УФ (на завтра): показываем только если нужны меры
     uvi_line = None
     try:
         uvi_info = uvi_for_offset(wm_main, tz_obj, DAY_OFFSET)
@@ -1937,8 +1969,18 @@ def build_message_legacy_evening(
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
         if tmax is None:
             continue
-        wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
-        wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
+
+        # weathercode по корректному индексу дня
+        wcx = 0
+        try:
+            wmx = get_weather(la, lo) or {}
+            didx = _daily_index_for_offset(wmx, tz_obj, 1)
+            arr = (wmx.get("daily") or {}).get("weathercode") or []
+            if isinstance(didx, int) and isinstance(arr, list) and didx < len(arr) and arr[didx] is not None:
+                wcx = int(arr[didx])
+        except Exception:
+            wcx = 0
+
         sst_c = get_sst(la, lo)
         temps_sea[city] = (tmax, tmin or tmax, wcx, sst_c)
 
@@ -1983,8 +2025,17 @@ def build_message_legacy_evening(
         tmax, tmin = fetch_tomorrow_temps(la, lo, tz=tz_name)
         if tmax is None:
             continue
-        wcx = (get_weather(la, lo) or {}).get("daily", {}).get("weathercode", [])
-        wcx = wcx[1] if isinstance(wcx, list) and len(wcx) > 1 else 0
+
+        wcx = 0
+        try:
+            wmx = get_weather(la, lo) or {}
+            didx = _daily_index_for_offset(wmx, tz_obj, 1)
+            arr = (wmx.get("daily") or {}).get("weathercode") or []
+            if isinstance(didx, int) and isinstance(arr, list) and didx < len(arr) and arr[didx] is not None:
+                wcx = int(arr[didx])
+        except Exception:
+            wcx = 0
+
         temps_oth[city] = (tmax, tmin or tmax, wcx)
 
     if temps_oth:
