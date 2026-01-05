@@ -1511,7 +1511,7 @@ def _astro_favorable_lines(rec: dict, date_local) -> list[str]:
 
     s_general = _state("general")
     if s_general is False:
-        out.append("⚠️ В целом: неблагоприятный день.")
+        out.append("⛔️ В целом: неблагоприятный день.")
     elif s_general is True:
         out.append("✅ В целом: благоприятный день.")
 
