@@ -1465,6 +1465,76 @@ def _astro_markers_from_rec(rec: dict) -> list[str]:
 
     return markers
 
+
+def _astro_favorable_lines(rec: dict, date_local) -> list[str]:
+    """Return short lines about general/day activities based on lunar_calendar.json lists.
+
+    Supports schema:
+      rec["favorable_days"][category]["favorable"|"unfavorable"] = [day_of_month...]
+    and tolerant to minor spelling variants.
+    """
+    try:
+        day = int(getattr(date_local, "day", None) or 0)
+    except Exception:
+        day = 0
+    if day <= 0:
+        return []
+
+    def _pick_dict(*keys):
+        for k in keys:
+            v = rec.get(k)
+            if isinstance(v, dict):
+                return v
+        return {}
+
+    fav_root = _pick_dict("favorable_days", "favourable_days") or _pick_dict("unfavorable_days", "unfavourable_days")
+    if not isinstance(fav_root, dict) or not fav_root:
+        return []
+
+    def _state(category: str):
+        node = fav_root.get(category)
+        if not isinstance(node, dict):
+            return None
+        fav = node.get("favorable") or node.get("favourable") or []
+        unf = node.get("unfavorable") or node.get("unfavourable") or []
+        # Safer: if a day is in both lists, treat as unfavorable.
+        try:
+            if day in unf or str(day) in unf:
+                return False
+            if day in fav or str(day) in fav:
+                return True
+        except Exception:
+            return None
+        return None
+
+    out: list[str] = []
+
+    s_general = _state("general")
+    if s_general is False:
+        out.append("⛔️ В целом: неблагоприятный день.")
+    elif s_general is True:
+        out.append("✅ В целом: благоприятный день.")
+
+    priorities = [
+        ("haircut", "💇 Стрижка"),
+        ("travel", "✈️ Поездки"),
+        ("shopping", "🛍️ Покупки"),
+    ]
+    for cat, label in priorities:
+        s = _state(cat)
+        # Keep it useful but not gloomy: show haircut both ways; other categories only when favorable.
+        if cat == "haircut":
+            if s is True:
+                out.append(f"{label}: ✅ благоприятно.")
+            elif s is False:
+                out.append(f"{label}: ⛔ лучше перенести.")
+        else:
+            if s is True:
+                out.append(f"{label}: ✅ благоприятно.")
+
+    # Keep section compact
+    return out[:3]
+
 def build_astro_section(astro_date=None, tz_obj=None, *, date_local=None, tz_local: str = "Asia/Nicosia") -> str:
     if date_local is None and astro_date is not None:
         date_local = astro_date
@@ -1508,8 +1578,11 @@ def build_astro_section(astro_date=None, tz_obj=None, *, date_local=None, tz_loc
             voc_text = None
             voc_line = None
 
+    favorable_lines = _astro_favorable_lines(rec, date_local)
     marker_items = _astro_markers_from_rec(rec)
-    marker_line = "✅ " + " • ".join(marker_items) if marker_items else ""
+    marker_line = ""
+    if (not favorable_lines) and marker_items:
+        marker_line = "✅ " + " • ".join(marker_items)
 
     phase_clean = zsym(phase_name).strip() if phase_name else ""
     sign_sym = zsym(sign).strip() if sign else ""
@@ -1543,10 +1616,13 @@ def build_astro_section(astro_date=None, tz_obj=None, *, date_local=None, tz_loc
         ]
 
     lines = ["📻 <b>Астрособытия</b>"]
-    if marker_line:
-        lines.append(zsym(marker_line))
     if moon_line:
         lines.append(zsym(moon_line))
+    if favorable_lines:
+        for ln in favorable_lines:
+            lines.append(zsym(ln))
+    if marker_line:
+        lines.append(zsym(marker_line))
 
     for b in bullets[:3]:
         b = str(b).strip()
