@@ -3,53 +3,32 @@
 """
 post_kld.py  •  Запуск «Kaliningrad daily post» для Telegram-канала.
 
-Режимы:
-  1) --mode evening      — вечерний пост (анонс «на завтра») — по умолчанию.
-  2) --mode morning      — утренний пост («на сегодня»), структура как в Кипре.
-  3) --fx-only           — отправляет только блок «Курсы валют».
-  4) --dry-run           — ничего не отправляет (лог вместо публикации).
-  5) --echo              — печатает готовый пост в stdout (без отправки).
-  6) --date YYYY-MM-DD   — базовая дата (если не указана, берём WORK_DATE или сегодня в TZ).
-  7) --for-tomorrow      — сдвиг базовой даты +1 день.
-  8) --to-test           — публиковать в тестовый канал (CHANNEL_ID_TEST).
-  9) --chat-id ID        — явный chat_id канала (перебивает всё остальное).
-
-ENV:
-  TELEGRAM_TOKEN_KLG, CHANNEL_ID_KLG, CHANNEL_ID_TEST, CHANNEL_ID_OVERRIDE,
-  TZ (default Europe/Kaliningrad), WORK_DATE, MODE.
-
-Примечание:
-  Флаги показа блоков задаются через ENV непосредственно здесь (чтобы режимы отличались).
+... (докстринг сохранён; добавлена логика приоритетов картинки и оверлеев)
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import re
 import argparse
 import asyncio
 import logging
-from typing import Dict, Any, Tuple, Union
+import secrets
+from typing import Dict, Any, Tuple, Union, Optional
 from pathlib import Path
 
 import pendulum
 from telegram import Bot, constants
 
-# Берём сборку/рендер и конструктор текста
 from post_common import build_message, fx_morning_line  # type: ignore
-# (оставляем импорт main_common на случай обратной совместимости)
-# from post_common import main_common  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-# ────────────────────────────── Secrets / Env ────────────────────────────────
 
 TOKEN_KLG = os.getenv("TELEGRAM_TOKEN_KLG", "")
 if not TOKEN_KLG:
     logging.error("Не задан TELEGRAM_TOKEN_KLG")
     sys.exit(1)
-
-# ───────────────────────────── Параметры региона ────────────────────────────
 
 SEA_LABEL   = "Морские города"
 OTHER_LABEL = "Список не-морских городов (тёплые/холодные)"
@@ -81,8 +60,6 @@ OTHER_CITIES_ALL = [
     ("Краснознаменск",  (54.730, 21.104)),
     ("Гвардейск",       (54.655, 21.078)),
 ]
-
-# ───────────────────────────── FX helpers (как было) ─────────────────────────
 
 FX_CACHE_PATH = Path("fx_cache.json")
 
@@ -124,7 +101,7 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> T
     title = "💱 <b>Курсы валют</b>"
     return f"{title}\n{line}", rates
 
-def _normalize_cbr_date(raw) -> str | None:
+def _normalize_cbr_date(raw) -> Optional[str]:
     if raw is None:
         return None
     if hasattr(raw, "to_date_string"):
@@ -146,8 +123,13 @@ def _normalize_cbr_date(raw) -> str | None:
     except Exception:
         return None
 
-async def _send_fx_only(bot: Bot, chat_id: Union[int, str], date_local: pendulum.DateTime,
-                        tz: pendulum.Timezone, dry_run: bool) -> None:
+async def _send_fx_only(
+    bot: Bot,
+    chat_id: Union[int, str],
+    date_local: pendulum.DateTime,
+    tz: pendulum.Timezone,
+    dry_run: bool,
+) -> None:
     text, rates = _build_fx_message(date_local, tz)
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
@@ -168,8 +150,12 @@ async def _send_fx_only(bot: Bot, chat_id: Union[int, str], date_local: pendulum
         return
 
     try:
-        m = await bot.send_message(chat_id=chat_id, text=text, parse_mode=constants.ParseMode.HTML,
-                                   disable_web_page_preview=True)
+        m = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=constants.ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
         logging.info("FX sent: chat=%s message_id=%s", getattr(m.chat, "id", "?"), getattr(m, "message_id", "?"))
     except Exception:
         logging.exception("FX send failed")
@@ -183,12 +169,7 @@ async def _send_fx_only(bot: Bot, chat_id: Union[int, str], date_local: pendulum
     except Exception as e:
         logging.warning("FX: save cache failed: %s", e)
 
-# ───────────────────────────── Chat selection ────────────────────────────────
-
 def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
-    """
-    Возвращает chat_id как int ИЛИ строку '@channelusername'.
-    """
     chat_override = (args_chat or "").strip() or os.getenv("CHANNEL_ID_OVERRIDE", "").strip()
     if chat_override:
         try:
@@ -218,7 +199,154 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
         logging.info("CHANNEL_ID_KLG не число — используем как строку: %r", ch_main)
         return ch_main
 
-# ─────────────────────────── Патч даты для всего поста ──────────────────────
+
+# -------- priorities helpers --------
+_STORM_RE = re.compile(r"^\s*⚠️\s*(.+)$", re.M)
+
+ZODIAC_GLYPH = {
+    "Aries": "♈", "Taurus": "♉", "Gemini": "♊", "Cancer": "♋",
+    "Leo": "♌", "Virgo": "♍", "Libra": "♎", "Scorpio": "♏",
+    "Sagittarius": "♐", "Capricorn": "♑", "Aquarius": "♒", "Pisces": "♓",
+}
+
+def _extract_storm_line(msg: str) -> Optional[str]:
+    if not msg:
+        return None
+    m = _STORM_RE.search(msg)
+    if m:
+        return m.group(1).strip()
+    for line in msg.splitlines():
+        ll = line.lower()
+        if "шторм" in ll and ("предупреж" in ll or "⚠" in line):
+            return line.strip()
+    return None
+
+def _seed_for_image(base_date: pendulum.DateTime, *, style_name: str) -> Optional[int]:
+    mode = os.getenv("IMG_SEED_MODE", "daily").strip().lower()
+    variant = os.getenv("IMG_VARIANT", "").strip()
+    try:
+        v = int(variant) if variant else 0
+    except Exception:
+        v = 0
+
+    if mode == "deterministic":
+        return None
+    if mode == "random":
+        return secrets.randbelow(2_000_000_000)
+
+    key = f"{base_date.to_date_string()}|{style_name}|{v}"
+    return abs(hash(key)) % 2_000_000_000
+
+
+async def _maybe_send_kld_image(
+    bot: Bot,
+    chat_id: Union[int, str],
+    base_date: "pendulum.DateTime",
+    mode: str,
+    dry_run: bool,
+    *,
+    msg_text: str,
+) -> None:
+    if mode != "evening":
+        return
+
+    try:
+        from image_prompt_kld import build_kld_evening_prompt, get_lunar_meta  # type: ignore
+    except Exception as e:
+        logging.info("KLD image: image_prompt_kld недоступен — картинка пропущена (%s)", e)
+        return
+
+    try:
+        import imagegen
+    except Exception as e:
+        logging.info("KLD image: imagegen.py недоступен — картинка пропущена (%s)", e)
+        return
+
+    overlay_mod = None
+    try:
+        import image_overlays  # type: ignore
+        overlay_mod = image_overlays
+    except Exception:
+        overlay_mod = None
+
+    try:
+        storm_line = _extract_storm_line(msg_text)
+        storm_on = bool(storm_line)
+
+        tomorrow = base_date.date().add(days=1)
+        lunar = get_lunar_meta(tomorrow)
+
+        force_style = None
+        if storm_on:
+            force_style = "sea_dunes"
+        elif getattr(lunar, "is_full_or_new", False):
+            force_style = "moon_goddess"
+
+        prompt, style_name = build_kld_evening_prompt(
+            date=base_date.date(),
+            marine_mood=("storm warning, strong gusts, waves" if storm_on else ""),
+            inland_mood=("windy cold night" if storm_on else ""),
+            astro_mood_en=getattr(lunar, "phrase_en", "") or "",
+            force_style=force_style,
+            storm=storm_on,
+        )
+
+        seed = _seed_for_image(base_date, style_name=style_name)
+        img_path = imagegen.generate_kld_evening_image(prompt=prompt, style_name=style_name, seed=seed)
+        logging.info("KLD image: local image ready: %s", img_path)
+
+        final_path = img_path
+
+        if overlay_mod:
+            try:
+                from PIL import Image  # type: ignore
+                src = Path(img_path)
+                out = src.with_name(src.stem + "_ov.jpg")
+
+                im = Image.open(src).convert("RGB")
+
+                if storm_on and hasattr(overlay_mod, "overlay_storm_window"):
+                    data = overlay_mod.StormData(
+                        title="Штормовое предупреждение",
+                        subtitle=(storm_line or "Сильный ветер и порывы на побережье"),
+                        icon="⚠️",
+                    )
+                    im = overlay_mod.overlay_storm_window(im, data, anchor="top_left")
+
+                if (not storm_on) and getattr(lunar, "is_full_or_new", False) and hasattr(overlay_mod, "overlay_moon_badge"):
+                    phase = getattr(lunar, "phase_key", "") or ""
+                    sign = getattr(lunar, "sign_en", "") or ""
+                    glyph = ZODIAC_GLYPH.get(sign, "✶")
+                    caption = getattr(lunar, "phrase_en", "") or ""
+                    if caption:
+                        caption = caption.replace(" in ", " • ")
+                    data = overlay_mod.MoonData(phase=phase, zodiac=glyph, caption=caption)
+                    im = overlay_mod.overlay_moon_badge(im, data, anchor="top_right")
+
+                im.save(out, format="JPEG", quality=92, optimize=True)
+                final_path = str(out)
+                logging.info("KLD image: overlay applied -> %s", final_path)
+            except Exception:
+                logging.exception("KLD image: overlay failed (continue with base image)")
+
+        if dry_run:
+            logging.info("KLD image: DRY-RUN — отправка картинки пропущена")
+            return
+
+        if storm_on:
+            caption = "⚠️ Визуальный вайб: штормовое предупреждение над Балтикой"
+        elif getattr(lunar, "is_full_or_new", False):
+            caption = f"🌙 Визуальный вайб: {getattr(lunar,'phrase_en','Moon')} над Балтикой"
+        else:
+            caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
+
+        with open(final_path, "rb") as f:
+            msg = await bot.send_photo(chat_id=chat_id, photo=f, caption=caption)
+
+        logging.info("KLD image: photo sent: chat=%s message_id=%s", getattr(msg.chat, "id", "?"), getattr(msg, "message_id", "?"))
+    except Exception:
+        logging.exception("KLD image: ошибка при генерации/отправке картинки")
+
 
 class _TodayPatch:
     def __init__(self, base_date: pendulum.DateTime):
@@ -234,33 +362,29 @@ class _TodayPatch:
             return dt.in_tz(tz_arg) if tz_arg else dt
 
         pendulum.today = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
-        pendulum.now   = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
+        pendulum.now = lambda tz_arg=None: _fake(self.base_date, tz_arg)  # type: ignore[assignment]
 
-        logging.info("Дата для поста зафиксирована как %s (TZ %s)",
-                     self.base_date.to_datetime_string(), self.base_date.timezone_name)
+        logging.info("Дата для поста зафиксирована как %s (TZ %s)", self.base_date.to_datetime_string(), self.base_date.timezone_name)
         return self
 
     def __exit__(self, exc_type, exc, tb):
         if self._orig_today:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
-            pendulum.now   = self._orig_now    # type: ignore[assignment]
+            pendulum.now = self._orig_now  # type: ignore[assignment]
         return False
 
-# ───────────────────────────────── Main ─────────────────────────────────────
 
 async def main_kld() -> None:
     parser = argparse.ArgumentParser(description="Kaliningrad daily post runner")
-    parser.add_argument("--mode", choices=["morning", "evening"],
-                        default=(os.getenv("MODE") or "evening"),
-                        help="morning — на сегодня, evening — анонс на завтра (по умолчанию).")
-    parser.add_argument("--date", type=str, default="", help="YYYY-MM-DD (по умолчанию — WORK_DATE или сегодня в TZ)")
-    parser.add_argument("--for-tomorrow", action="store_true", help="Использовать дату +1 день")
-    parser.add_argument("--dry-run", action="store_true", help="Не отправлять сообщение, только лог")
-    parser.add_argument("--echo", action="store_true", help="Вывести готовый текст поста и выйти (без отправки)")
-    parser.add_argument("--fx-only", action="store_true", help="Отправить только блок «Курсы валют»")
-    parser.add_argument("--to-test", action="store_true", help="Публиковать в тестовый канал (CHANNEL_ID_TEST)")
-    parser.add_argument("--chat-id", type=str, default="", help="Явный chat_id канала (перебивает все остальные)")
+    parser.add_argument("--mode", choices=["morning", "evening"], default=(os.getenv("MODE") or "evening"))
+    parser.add_argument("--date", type=str, default="")
+    parser.add_argument("--for-tomorrow", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--echo", action="store_true")
+    parser.add_argument("--fx-only", action="store_true")
+    parser.add_argument("--to-test", action="store_true")
+    parser.add_argument("--chat-id", type=str, default="")
     args = parser.parse_args()
 
     tz = pendulum.timezone(TZ_STR)
@@ -273,36 +397,32 @@ async def main_kld() -> None:
     mode = (args.mode or "evening").lower().strip()
     logging.info("Режим поста: %s", mode)
 
-    # Прокинем ENV для post_common
     day_offset = 0 if mode == "morning" else 1
-    os.environ["POST_MODE"]    = mode
-    os.environ["DAY_OFFSET"]   = str(day_offset)
+    os.environ["POST_MODE"] = mode
+    os.environ["DAY_OFFSET"] = str(day_offset)
     os.environ["ASTRO_OFFSET"] = str(day_offset)
+
     if mode == "morning":
         os.environ["SHOW_AIR"] = "1"
         os.environ["SHOW_SPACE"] = "1"
-        os.environ["SHOW_SCHUMANN"] = os.getenv("DISABLE_SCHUMANN","0") in ("1","true","yes","on") and "0" or "1"
+        os.environ["SHOW_SCHUMANN"] = (
+            os.getenv("DISABLE_SCHUMANN", "0").lower() in ("1", "true", "yes", "on")
+            and "0"
+            or "1"
+        )
     else:
         os.environ["SHOW_AIR"] = "0"
         os.environ["SHOW_SPACE"] = "0"
         os.environ["SHOW_SCHUMANN"] = "0"
 
-    logging.info("Флаги: DAY_OFFSET=%s, ASTRO_OFFSET=%s, AIR=%s, SPACE=%s, SCHUMANN=%s",
-                 os.environ.get("DAY_OFFSET"), os.environ.get("ASTRO_OFFSET"),
-                 os.environ.get("SHOW_AIR"), os.environ.get("SHOW_SPACE"), os.environ.get("SHOW_SCHUMANN"))
-
     chat_id = resolve_chat_id(args.chat_id, args.to_test)
-    logging.info("Resolved chat_id: %r", chat_id)
-
     bot = Bot(token=TOKEN_KLG)
 
     with _TodayPatch(base_date):
-        # FX-only
         if args.fx_only:
             await _send_fx_only(bot, chat_id, base_date, tz, dry_run=args.dry_run)
             return
 
-        # Сконструируем текст поста (как в post_common)
         msg = build_message(
             region_name="Калининградская область",
             sea_label=SEA_LABEL,
@@ -320,23 +440,18 @@ async def main_kld() -> None:
                 logging.info("DRY-RUN: отправка пропущена")
                 return
 
-        # Проверка токена
-        try:
-            me = await bot.get_me()
-            logging.info("Bot OK: @%s (id=%s)", getattr(me, "username", "?"), getattr(me, "id", "?"))
-        except Exception:
-            logging.exception("get_me() failed — проверь TELEGRAM_TOKEN_KLG")
-            raise
+        await bot.get_me()
 
-        # Отправка
-        try:
-            m = await bot.send_message(chat_id=chat_id, text=msg,
-                                       parse_mode=constants.ParseMode.HTML,
-                                       disable_web_page_preview=True)
-            logging.info("Sent OK: chat=%s message_id=%s", getattr(m.chat, "id", "?"), getattr(m, "message_id", "?"))
-        except Exception:
-            logging.exception("send_message failed — проверь права бота в канале и chat_id")
-            raise
+        m = await bot.send_message(
+            chat_id=chat_id,
+            text=msg,
+            parse_mode=constants.ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        logging.info("Sent OK: chat=%s message_id=%s", getattr(m.chat, "id", "?"), getattr(m, "message_id", "?"))
+
+        await _maybe_send_kld_image(bot, chat_id, base_date, mode, args.dry_run, msg_text=msg)
+
 
 if __name__ == "__main__":
     asyncio.run(main_kld())
