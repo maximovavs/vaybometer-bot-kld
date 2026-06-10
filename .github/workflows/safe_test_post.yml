@@ -1,0 +1,103 @@
+name: Safe Test Post (Kaliningrad)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Post mode"
+        type: choice
+        options:
+          - morning
+          - evening
+        default: evening
+        required: true
+      work_date:
+        description: "Optional date override (YYYY-MM-DD)"
+        required: false
+      send_to_test:
+        description: "Send to CHANNEL_ID_TEST? If false, logs only."
+        type: boolean
+        default: false
+        required: false
+      for_tomorrow:
+        description: "Shift base date by +1 day"
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safe-test-post-kld
+  cancel-in-progress: false
+
+env:
+  TELEGRAM_TOKEN_KLG: ${{ secrets.TELEGRAM_TOKEN_KLG }}
+  CHANNEL_ID_TEST: ${{ secrets.CHANNEL_ID_TEST }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  OWM_KEY: ${{ secrets.OWM_KEY }}
+  POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
+  STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY }}
+  COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
+  COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
+  TZ: Europe/Kaliningrad
+  VAYBOMETER_CACHE_DIR: ".cache"
+  KLD_IMG_ENABLED: "0"
+  DISABLE_SCHUMANN: "1"
+  FORMAT_V2: "0"
+
+jobs:
+  safe_test:
+    name: Build sanitized test post
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: format-v2-safe-test
+
+      - name: Restore .cache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: kld-safe-test-cache-${{ runner.os }}-${{ github.run_number }}
+          restore-keys: |
+            kld-safe-test-cache-${{ runner.os }}-
+
+      - name: Time debug
+        run: |
+          echo "UTC:         $(date -u)"
+          echo "Kaliningrad: $(TZ=Europe/Kaliningrad date)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build / optionally send safe test post
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=("safe_test_post.py" "--mode" "${{ github.event.inputs.mode }}")
+
+          if [ -n "${{ github.event.inputs.work_date }}" ]; then
+            args+=("--date" "${{ github.event.inputs.work_date }}")
+          fi
+
+          if [ "${{ github.event.inputs.for_tomorrow }}" = "true" ]; then
+            args+=("--for-tomorrow")
+          fi
+
+          if [ "${{ github.event.inputs.send_to_test }}" = "true" ]; then
+            args+=("--to-test" "--send")
+          fi
+
+          echo "Running: python ${args[*]}"
+          python "${args[@]}"
