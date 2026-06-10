@@ -24,6 +24,23 @@ _BROKEN_TAILS = {
     "наступает",
 }
 
+_DIR_RU = {
+    "N": "северный ветер",
+    "NE": "северо-восточный ветер",
+    "E": "восточный ветер",
+    "SE": "юго-восточный ветер",
+    "S": "южный ветер",
+    "SW": "юго-западный ветер",
+    "W": "западный ветер",
+    "NW": "северо-западный ветер",
+}
+
+_SHORE_RU = {
+    "onshore": "к берегу",
+    "offshore": "от берега",
+    "cross": "вдоль берега",
+}
+
 _FORBIDDEN_PATTERNS = [
     (re.compile(r"\bKp\s+н/д\b", re.I), "Kp n/a"),
     (re.compile(r"\bКр\s+н/д\b", re.I), "Kp n/a"),
@@ -31,6 +48,11 @@ _FORBIDDEN_PATTERNS = [
     (re.compile(r"\bFull\s+Moon\b", re.I), "English moon phrase"),
     (re.compile(r"\bSagittarius\b", re.I), "English zodiac phrase"),
     (re.compile(r"#(?:К|здо)\b", re.I), "broken hashtag"),
+]
+
+_DROP_LINE_PATTERNS = [
+    (re.compile(r"Освещ[её]нность\s*:\s*(?:н/д|—|-)", re.I), "empty moon illumination"),
+    (re.compile(r"\bЛуна\s*[—-]\s*держи курс на простые", re.I), "generic moon placeholder"),
 ]
 
 @dataclass
@@ -44,14 +66,42 @@ def _line_is_separator(line: str) -> bool:
     return bool(s) and set(s) <= {"—", "-", "─"}
 
 
-def _normalize_line(line: str) -> str:
+def _replace_shore_terms(line: str, issues: list[str]) -> str:
+    def repl(match: re.Match[str]) -> str:
+        d = match.group(1).upper()
+        shore = match.group(2).lower()
+        d_ru = _DIR_RU.get(d, d)
+        shore_ru = _SHORE_RU.get(shore, shore)
+        issues.append(f"translated shore note: ({d}/{shore})")
+        return f"({d_ru}, {shore_ru})"
+
+    return re.sub(
+        r"\b\((N|NE|E|SE|S|SW|W|NW)/(onshore|offshore|cross)\)\b",
+        repl,
+        line,
+        flags=re.I,
+    )
+
+
+def _normalize_line(line: str, issues: list[str] | None = None) -> str:
+    issues = issues if issues is not None else []
+    original = line
     line = line.rstrip()
     line = re.sub(r"\s+/None\b", "", line, flags=re.I)
     line = re.sub(r"\((?:N|NE|E|SE|S|SW|W|NW)?/?None\)", "", line, flags=re.I)
+    line = _replace_shore_terms(line, issues)
+
+    # Remove empty weather placeholders inside metric chains.
     line = line.replace(" • —", "")
+    line = line.replace(" • -", "")
     line = line.replace(" — —", " —")
+    line = line.replace(" - -", " -")
+    line = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", line)
     line = re.sub(r"\s{2,}", " ", line)
-    return line.strip()
+    line = line.strip()
+    if original.strip() != line and "translated shore note" not in "\n".join(issues[-1:]):
+        issues.append(f"normalized line: {original.strip()[:120]}")
+    return line
 
 
 def _line_should_drop(line: str) -> tuple[bool, str | None]:
@@ -60,6 +110,10 @@ def _line_should_drop(line: str) -> tuple[bool, str | None]:
         return False, None
 
     for rx, reason in _FORBIDDEN_PATTERNS:
+        if rx.search(stripped):
+            return True, reason
+
+    for rx, reason in _DROP_LINE_PATTERNS:
         if rx.search(stripped):
             return True, reason
 
@@ -79,7 +133,7 @@ def sanitize_post_text(text: str) -> SafetyResult:
     prev_sep = False
     blank_seen = False
     for raw in raw_lines:
-        line = _normalize_line(raw)
+        line = _normalize_line(raw, issues)
         drop, reason = _line_should_drop(line)
         if drop:
             issues.append(f"removed line ({reason}): {raw.strip()[:120]}")
