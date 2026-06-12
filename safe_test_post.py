@@ -53,6 +53,13 @@ OTHER_CITIES_ALL = [
 ]
 
 
+def _env_on(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
 def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
     chat = (args_chat or "").strip()
     if chat:
@@ -104,12 +111,14 @@ async def main() -> None:
     parser.add_argument("--for-tomorrow", action="store_true")
     parser.add_argument("--to-test", action="store_true")
     parser.add_argument("--chat-id", default="")
+    parser.add_argument("--format-v2", action="store_true", help="Build scenario-style FORMAT_V2 text after legacy sanitizing.")
     parser.add_argument("--send", action="store_true", help="Actually send to CHANNEL_ID_TEST / --chat-id. Omit for dry-run.")
     args = parser.parse_args()
 
     mode = (args.mode or "evening").strip().lower()
     os.environ["POST_MODE"] = mode
-    os.environ.setdefault("FORMAT_V2", "0")
+    use_format_v2 = bool(args.format_v2 or _env_on("FORMAT_V2"))
+    os.environ["FORMAT_V2"] = "1" if use_format_v2 else "0"
     day_offset = 0 if mode == "morning" else 1
     os.environ["DAY_OFFSET"] = str(day_offset)
     os.environ["ASTRO_OFFSET"] = str(day_offset)
@@ -138,20 +147,34 @@ async def main() -> None:
             mode=mode,
         )
 
-    result = sanitize_post_text(raw_msg)
-    chunks = split_telegram_text(result.text)
+    legacy_result = sanitize_post_text(raw_msg)
+    final_result = legacy_result
+    final_label = "SAFE MESSAGE"
+
+    if use_format_v2:
+        from format_v2 import build_format_v2
+        v2_raw = build_format_v2("Калининградская область", mode, legacy_result.text)
+        final_result = sanitize_post_text(v2_raw)
+        final_label = "FORMAT_V2 MESSAGE"
+        print("\n===== FORMAT_V2 RAW BEGIN =====\n")
+        print(v2_raw)
+        print("\n===== FORMAT_V2 RAW END =====\n")
+        print("\n===== FORMAT_V2 SAFETY SUMMARY =====\n")
+        print(validation_summary(final_result))
+
+    chunks = split_telegram_text(final_result.text)
 
     print("\n===== RAW MESSAGE BEGIN =====\n")
     print(raw_msg)
     print("\n===== RAW MESSAGE END =====\n")
-    print("\n===== SAFETY SUMMARY =====\n")
-    print(validation_summary(result))
-    print("\n===== SAFE MESSAGE BEGIN =====\n")
-    print(result.text)
-    print("\n===== SAFE MESSAGE END =====\n")
+    print("\n===== LEGACY SAFETY SUMMARY =====\n")
+    print(validation_summary(legacy_result))
+    print(f"\n===== {final_label} BEGIN =====\n")
+    print(final_result.text)
+    print(f"\n===== {final_label} END =====\n")
 
     if not args.send:
-        logging.info("SAFE DRY-RUN: отправка пропущена, chunks=%d", len(chunks))
+        logging.info("SAFE DRY-RUN: отправка пропущена, format_v2=%s, chunks=%d", use_format_v2, len(chunks))
         return
 
     if not TOKEN_KLG:
@@ -166,7 +189,7 @@ async def main() -> None:
             parse_mode=constants.ParseMode.HTML,
             disable_web_page_preview=True,
         )
-    logging.info("SAFE TEST sent: chat=%s chunks=%d", chat_id, len(chunks))
+    logging.info("SAFE TEST sent: chat=%s chunks=%d format_v2=%s", chat_id, len(chunks), use_format_v2)
 
 
 if __name__ == "__main__":
