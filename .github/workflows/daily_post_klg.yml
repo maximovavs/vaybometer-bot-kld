@@ -26,7 +26,7 @@ on:
         default: false
         required: false
       format_v2:
-        description: "FORMAT_V2 для вечернего поста (пока только тест/override)"
+        description: "FORMAT_V2 для вечернего поста (ручной тест/override; расписание evening уже включает V2)"
         type: boolean
         default: false
         required: false
@@ -175,9 +175,11 @@ jobs:
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
 
-          format_v2 = (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
+          scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
+          format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
+          production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
 
           if format_v2:
               args = ["safe_test_post.py", "--mode", "evening", "--format-v2"]
@@ -187,6 +189,8 @@ jobs:
                   args += ["--chat-id", chat_override.strip(), "--send", "--no-test-label"]
               elif to_test:
                   args += ["--to-test", "--send"]
+              elif scheduled_run and production_chat:
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
               else:
                   print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
               sys.argv = args
