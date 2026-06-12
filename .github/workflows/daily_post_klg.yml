@@ -25,6 +25,11 @@ on:
         type: boolean
         default: false
         required: false
+      format_v2:
+        description: "FORMAT_V2 для вечернего поста (пока только тест/override)"
+        type: boolean
+        default: false
+        required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
         required: false
@@ -59,6 +64,7 @@ env:
   DEBUG_WATER: "0"
   GEN_SKIP_SHORT: "1"
   PYTHONUNBUFFERED: "1"
+  FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
 
   # LLM ключи (опционально)
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -168,12 +174,29 @@ jobs:
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
-          args = ["post_kld.py", "--mode", "evening"]
+
+          format_v2 = (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
+          to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
+
+          if format_v2:
+              args = ["safe_test_post.py", "--mode", "evening", "--format-v2"]
+              if wd:
+                  args += ["--date", wd]
+              if chat_override.strip():
+                  args += ["--chat-id", chat_override.strip(), "--send"]
+              elif to_test:
+                  args += ["--to-test", "--send"]
+              else:
+                  print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
+              sys.argv = args
+              runpy.run_path("safe_test_post.py", run_name="__main__")
+              raise SystemExit(0)
+
+          args = ["post_kld.py", "--mode", "evening"]
           if chat_override.strip():
               args += ["--chat-id", chat_override.strip()]
           else:
-              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
               if to_test:
                   args.append("--to-test")
           sys.argv = args
