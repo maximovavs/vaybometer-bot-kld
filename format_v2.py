@@ -53,26 +53,65 @@ def _section_between(lines: list[str], start_marker: str, stop_markers: tuple[st
 
 def _first_line_contains(lines: list[str], word: str) -> str:
     for line in lines:
-        if word.lower() in line.lower():
+        if word.lower() in line.lower() and "погода на завтра" not in line.lower():
             return line.strip()
     return ""
 
 
 def _city_line(lines: list[str], city: str) -> str:
     for line in lines:
-        if city in line:
+        p = _plain(line)
+        if p.startswith(f"🏙️ {city}:") or p.startswith(f"{city}:"):
             return line.strip()
     return ""
 
 
 def _astro(lines: list[str]) -> list[str]:
     sec = _section_after(lines, "Астрособытия")
-    return [x for x in sec if x.startswith(("•", "🌙", "✅", "⚫"))][:3]
+    return [x for x in sec if x.startswith(("•", "🌙", "✅", "⚫"))][:2]
 
 
-def _recommendations(lines: list[str]) -> list[str]:
+def _tips_fallback(has_storm: bool, has_rain: bool) -> list[str]:
+    if has_storm:
+        return [
+            "🧥 Ветровка/капюшон важнее зонта у моря.",
+            "🚗 Для поездок по области проверьте дождь и порывы утром.",
+            "🌊 Прогулки у воды — коротко и без выхода на открытые пирсы.",
+        ]
+    if has_rain:
+        return [
+            "☔ Возьми компактный зонт или дождевик.",
+            "👟 Обувь лучше закрытая: местами будет влажно.",
+            "🚗 Для поездок по области проверь осадки утром.",
+        ]
+    return [
+        "🧥 У моря пригодится лёгкая ветровка.",
+        "🚶 Для прогулок выбирай более защищённые маршруты.",
+        "🌡 Сравни город и побережье перед выездом.",
+    ]
+
+
+def _recommendations(lines: list[str], has_storm: bool, has_rain: bool) -> list[str]:
     sec = _section_after(lines, "Рекомендации")
-    return [x for x in sec if not _is_sep(x) and not x.startswith("#")][:3]
+    raw = [x for x in sec if not _is_sep(x) and not x.startswith("#")][:3]
+    bad = {"жизнь прекрасна.", "сон восстанавливает 🛋️", "питание питает 💪"}
+    useful = [x for x in raw if x.strip().lower() not in bad]
+    return useful[:3] if useful else _tips_fallback(has_storm, has_rain)
+
+
+def _soften_sea_lines(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if "🧜‍♂️" in s and "SUP" in s:
+            suit = ""
+            m = re.search(r"(гидрокостюм[^•]*)", s)
+            if m:
+                suit = " • " + m.group(1).strip()
+            out.append("🧜‍♂️ SUP: только для опытных и короткой сессии" + suit)
+        else:
+            out.append(s)
+    return out
 
 
 def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
@@ -82,20 +121,20 @@ def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
 
     kal = _city_line(lines, "Калининград")
     storm = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
-    sea = _section_after(lines, "Морские города")
+    sea = _soften_sea_lines(_section_after(lines, "Морские города"))
     warm_cold = _section_between(lines, "Тёплые города", ("Астрособытия", "Рекомендации"))
     astro = _astro(lines)
-    tips = _recommendations(lines)
     has_storm = bool(storm)
     has_rain = "дожд" in safe_legacy_text.lower()
+    tips = _recommendations(lines, has_storm, has_rain)
 
-    out: list[str] = [f"<b>🌅 Калининградская область завтра: берег и восток снова разные{title_date}</b>", ""]
+    out: list[str] = [f"<b>🌅 Калининградская область завтра: берег, город и восток — разные сценарии{title_date}</b>", ""]
 
     out.append("🧭 <b>Главный сценарий</b>")
     if has_storm:
         out.append("Главный фактор — ветер/порывы и осадки. У моря ощущение будет свежее и резче, чем в городе и внутри области.")
     elif has_rain:
-        out.append("День прохладный и влажный: у моря свежее, в городе мягче, восток области может отличаться по температуре и осадкам.")
+        out.append("День прохладный и влажный: у моря свежее, в Калининграде мягче, восток области может отличаться по температуре и осадкам.")
     else:
         out.append("Типичный областной контраст: побережье живёт морским ветром, Калининград — более мягким городским сценарием, восток области — своим температурным режимом.")
     out.append("")
@@ -135,7 +174,7 @@ def build_format_v2(region_name: str, mode: str, safe_legacy_text: str) -> str:
     out.append("")
 
     if astro:
-        out.append("🌙 <b>Луна и ритм дня</b>")
+        out.append("🌙 <b>Астроритм</b>")
         out.extend(astro)
         out.append("")
 
