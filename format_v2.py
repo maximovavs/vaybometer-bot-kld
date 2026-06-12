@@ -94,7 +94,14 @@ def _tips_fallback(has_storm: bool, has_rain: bool) -> list[str]:
 def _recommendations(lines: list[str], has_storm: bool, has_rain: bool) -> list[str]:
     sec = _section_after(lines, "Рекомендации")
     raw = [x for x in sec if not _is_sep(x) and not x.startswith("#")][:3]
-    bad = {"жизнь прекрасна.", "сон восстанавливает 🛋️", "питание питает 💪"}
+    bad = {
+        "жизнь прекрасна.",
+        "сон восстанавливает 🛋️",
+        "питание питает 💪",
+        "🌿 заварите чай с травами",
+        "🌙 посмотрите на луну без гаджетов",
+        "🌬️ проветривайте жилище",
+    }
     useful = [x for x in raw if x.strip().lower() not in bad]
     return useful[:3] if useful else _tips_fallback(has_storm, has_rain)
 
