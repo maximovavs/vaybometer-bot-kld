@@ -11,6 +11,11 @@ on:
           - evening
         default: evening
         required: true
+      format_v2:
+        description: "Use scenario-style FORMAT_V2"
+        type: boolean
+        default: false
+        required: false
       work_date:
         description: "Optional date override (YYYY-MM-DD)"
         required: false
@@ -47,7 +52,7 @@ env:
   VAYBOMETER_CACHE_DIR: ".cache"
   KLD_IMG_ENABLED: "0"
   DISABLE_SCHUMANN: "1"
-  FORMAT_V2: "0"
+  FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
 
 jobs:
   safe_test:
@@ -70,6 +75,7 @@ jobs:
         run: |
           echo "UTC:         $(date -u)"
           echo "Kaliningrad: $(TZ=Europe/Kaliningrad date)"
+          echo "FORMAT_V2: $FORMAT_V2"
 
       - uses: actions/setup-python@v5
         with:
@@ -86,6 +92,10 @@ jobs:
         run: |
           set -euo pipefail
           args=("safe_test_post.py" "--mode" "${{ github.event.inputs.mode }}")
+
+          if [ "${{ github.event.inputs.format_v2 }}" = "true" ]; then
+            args+=("--format-v2")
+          fi
 
           if [ -n "${{ github.event.inputs.work_date }}" ]; then
             args+=("--date" "${{ github.event.inputs.work_date }}")
