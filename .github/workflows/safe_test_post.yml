@@ -5,7 +5,7 @@ on:
     inputs:
       test_branch:
         description: "Branch with safe test code"
-        default: format-v2-safe-test
+        default: main
         required: true
       mode:
         description: "Post mode"
