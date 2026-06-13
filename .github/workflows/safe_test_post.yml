@@ -20,6 +20,11 @@ on:
         type: boolean
         default: false
         required: false
+      feels_like:
+        description: "Test extra morning line: feels-like / comfort"
+        type: boolean
+        default: false
+        required: false
       work_date:
         description: "Optional date override (YYYY-MM-DD)"
         required: false
@@ -49,14 +54,12 @@ env:
   GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
   OWM_KEY: ${{ secrets.OWM_KEY }}
   POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
-  STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY }}
-  COPERNICUS_USER: ${{ secrets.COPERNICUS_USER }}
-  COPERNICUS_PASS: ${{ secrets.COPERNICUS_PASS }}
   TZ: Europe/Kaliningrad
   VAYBOMETER_CACHE_DIR: ".cache"
   KLD_IMG_ENABLED: "0"
   DISABLE_SCHUMANN: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
+  MORNING_FEELS_LIKE: ${{ github.event.inputs.feels_like == 'true' && '1' || '0' }}
 
 jobs:
   safe_test:
@@ -81,6 +84,7 @@ jobs:
           echo "Kaliningrad: $(TZ=Europe/Kaliningrad date)"
           echo "Branch: ${{ github.event.inputs.test_branch }}"
           echo "FORMAT_V2: $FORMAT_V2"
+          echo "MORNING_FEELS_LIKE: $MORNING_FEELS_LIKE"
 
       - uses: actions/setup-python@v5
         with:
