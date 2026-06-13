@@ -128,6 +128,14 @@ def _morning_pick(lines: list[str], prefixes: tuple[str, ...]) -> list[str]:
     return [x.strip() for x in lines if x.strip().startswith(prefixes)]
 
 
+def _clean_uv_line(line: str) -> str:
+    s = str(line or "").strip()
+    s = re.sub(r"^☀️\s*УФ:\s*", "☀️ УФ ", s)
+    s = re.sub(r"\s*•\s*(Низкий|Умеренный|Средний|Высокий|Очень высокий):\s*", ": ", s, flags=re.I)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     """Compact morning post: current weather + FX + air + UV + space weather + 2 practical tips."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
@@ -154,7 +162,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if warning:
         out.append("⚠️ " + warning)
     if uv:
-        out.append(uv[0])
+        out.append(_clean_uv_line(uv[0]))
     if air:
         out.append(air[0])
     if space:
