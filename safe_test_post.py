@@ -125,6 +125,29 @@ def _kld_best_window_line(v2_text: str) -> str:
     return "🕒 Лучшее окно: позднее утро и время ближе к закату."
 
 
+def _kld_smart_plan_line(v2_text: str) -> str:
+    weather = _kld_weather_line(v2_text)
+    if not weather:
+        return ""
+    p = _plain(weather)
+    wind = _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p)
+    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p)
+    has_rain = any(w in p.lower() for w in ("дожд", "морось", "ливень"))
+    windy = (gust is not None and gust >= 7) or (wind is not None and wind >= 3)
+    uv_line = next((x.strip() for x in str(v2_text or "").splitlines() if x.strip().startswith("☀️")), "")
+    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
+
+    if has_rain and windy:
+        return "✅ План: дождевик/капюшон надёжнее зонта; закрытая обувь; выходы короткими блоками между дождём; у воды осторожнее с порывами."
+    if has_rain:
+        return "✅ План: зонт или дождевик, закрытая обувь; дела лучше короткими выходами между дождём."
+    if windy:
+        return "✅ План: ветровка/слой, у воды осторожнее с порывами; прогулку лучше в защищённых местах."
+    if uv is not None and uv >= 6:
+        return "✅ План: очки/кепка и SPF; прогулка в лучшее окно; вечером взять лёгкий слой."
+    return ""
+
+
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
     if not line_to_add:
         return v2_text
@@ -136,6 +159,23 @@ def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...
         if not inserted and line.strip().startswith(anchors):
             out.append(line_to_add)
             inserted = True
+    return "\n".join(out)
+
+
+def _replace_plan(v2_text: str, new_plan: str) -> str:
+    if not new_plan:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if not replaced and line.strip().startswith("✅"):
+            out.append(new_plan)
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(new_plan)
     return "\n".join(out)
 
 
@@ -157,6 +197,12 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     if "🌡 Ощущается:" in v2_text:
         return _inject_after_anchor(v2_text, window, ("🌡 Ощущается:",))
     return _inject_after_anchor(v2_text, window, ("🏙️ Калининград",))
+
+
+def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_SMART_PLAN")):
+        return v2_text
+    return _replace_plan(v2_text, _kld_smart_plan_line(v2_text))
 
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
@@ -256,6 +302,7 @@ async def main() -> None:
         v2_raw = build_format_v2("Калининградская область", mode, legacy_result.text)
         v2_raw = _inject_morning_feels(v2_raw, mode)
         v2_raw = _inject_morning_best_window(v2_raw, mode)
+        v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
