@@ -92,7 +92,7 @@ def _kld_feels_line(v2_text: str) -> str:
         parts.append("свежо")
     else:
         parts.append("мягко для коротких прогулок")
-    if (gust is not None and gust >= 8) or (wind is not None and wind >= 4):
+    if (gust is not None and gust >= 7) or (wind is not None and wind >= 3):
         parts.append("у воды ощутимо свежее")
     if tmin is not None and tmin <= 12:
         parts.append("утром лучше слой/ветровка")
