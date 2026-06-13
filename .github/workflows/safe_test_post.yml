@@ -25,6 +25,11 @@ on:
         type: boolean
         default: false
         required: false
+      best_window:
+        description: "Test extra morning line: best window of the day"
+        type: boolean
+        default: false
+        required: false
       work_date:
         description: "Optional date override (YYYY-MM-DD)"
         required: false
@@ -60,6 +65,7 @@ env:
   DISABLE_SCHUMANN: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
   MORNING_FEELS_LIKE: ${{ github.event.inputs.feels_like == 'true' && '1' || '0' }}
+  MORNING_BEST_WINDOW: ${{ github.event.inputs.best_window == 'true' && '1' || '0' }}
 
 jobs:
   safe_test:
@@ -85,6 +91,7 @@ jobs:
           echo "Branch: ${{ github.event.inputs.test_branch }}"
           echo "FORMAT_V2: $FORMAT_V2"
           echo "MORNING_FEELS_LIKE: $MORNING_FEELS_LIKE"
+          echo "MORNING_BEST_WINDOW: $MORNING_BEST_WINDOW"
 
       - uses: actions/setup-python@v5
         with:
