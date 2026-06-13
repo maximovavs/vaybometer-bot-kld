@@ -53,11 +53,14 @@ def _section_between(lines: list[str], start_marker: str, stop_markers: tuple[st
 
 def _first_line_contains(lines: list[str], word: str) -> str:
     for line in lines:
-        low = line.lower()
-        if "без шторма" in low:
+        s = line.strip()
+        low = s.lower()
+        if "без шторма" in low or "доброе утро" in low or s.startswith("🌾"):
+            continue
+        if not (s.startswith("⚠️") or "предупреждение" in low):
             continue
         if word.lower() in low and "погода на завтра" not in low:
-            return line.strip()
+            return s
     return ""
 
 
