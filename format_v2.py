@@ -136,6 +136,15 @@ def _clean_uv_line(line: str) -> str:
     return s
 
 
+def _clean_kp_line(line: str) -> str:
+    s = str(line or "").strip()
+    # Remove text assessment and stale minute marker after numeric Kp/Kr value.
+    # Example: "Кр 0.3 (умеренно, 🕓 4 мин назад)" -> "Кр 0.3".
+    s = re.sub(r"(\b(?:Кр|Kp)\s*\d+(?:[\.,]\d+)?)\s*\([^)]*\)", r"\1", s, flags=re.I)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     """Compact morning post: current weather + FX + air + UV + space weather + 2 practical tips."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
@@ -166,7 +175,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if air:
         out.append(air[0])
     if space:
-        out.append(space[0])
+        out.append(_clean_kp_line(space[0]))
 
     tips = _tips_fallback(has_warning, has_rain)
     out.append("✅ " + " ".join(tips))
