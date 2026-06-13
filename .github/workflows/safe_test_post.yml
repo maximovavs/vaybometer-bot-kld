@@ -35,6 +35,11 @@ on:
         type: boolean
         default: false
         required: false
+      vaybometer_score:
+        description: "Test extra morning line: VayboMeter score"
+        type: boolean
+        default: false
+        required: false
       work_date:
         description: "Optional date override (YYYY-MM-DD)"
         required: false
@@ -72,6 +77,7 @@ env:
   MORNING_FEELS_LIKE: ${{ github.event.inputs.feels_like == 'true' && '1' || '0' }}
   MORNING_BEST_WINDOW: ${{ github.event.inputs.best_window == 'true' && '1' || '0' }}
   MORNING_SMART_PLAN: ${{ github.event.inputs.smart_plan == 'true' && '1' || '0' }}
+  MORNING_VAYBOMETER_SCORE: ${{ github.event.inputs.vaybometer_score == 'true' && '1' || '0' }}
 
 jobs:
   safe_test:
@@ -99,6 +105,7 @@ jobs:
           echo "MORNING_FEELS_LIKE: $MORNING_FEELS_LIKE"
           echo "MORNING_BEST_WINDOW: $MORNING_BEST_WINDOW"
           echo "MORNING_SMART_PLAN: $MORNING_SMART_PLAN"
+          echo "MORNING_VAYBOMETER_SCORE: $MORNING_VAYBOMETER_SCORE"
 
       - uses: actions/setup-python@v5
         with:
