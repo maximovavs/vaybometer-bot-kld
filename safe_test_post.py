@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 from typing import Union
 
 import pendulum
@@ -54,6 +55,65 @@ def _env_on(name: str, default: bool = False) -> bool:
     if val is None:
         return default
     return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"</?b>", "", str(text or "")).strip()
+
+
+def _num(pattern: str, text: str) -> float | None:
+    m = re.search(pattern, _plain(text), flags=re.I)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _kld_feels_line(v2_text: str) -> str:
+    lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
+    weather = next((x for x in lines if x.startswith("🏙️ Калининград")), "")
+    if not weather:
+        return ""
+    p = _plain(weather)
+    tmax = _num(r"—\s*(-?\d+(?:[\.,]\d+)?)/", p)
+    tmin = _num(r"/(-?\d+(?:[\.,]\d+)?)\s*°", p)
+    wind = _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p)
+    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p)
+    has_rain = any(w in p.lower() for w in ("дожд", "морось", "ливень"))
+
+    parts: list[str] = []
+    if has_rain and ((gust is not None and gust >= 7) or (wind is not None and wind >= 3)):
+        parts.append("прохладно, влажно и ветровито")
+    elif has_rain:
+        parts.append("прохладно и влажно")
+    elif tmax is not None and tmax <= 17:
+        parts.append("свежо")
+    else:
+        parts.append("мягко для коротких прогулок")
+    if (gust is not None and gust >= 8) or (wind is not None and wind >= 4):
+        parts.append("у воды ощутимо свежее")
+    if tmin is not None and tmin <= 12:
+        parts.append("утром лучше слой/ветровка")
+    return "🌡 Ощущается: " + "; ".join(parts[:3]) + "."
+
+
+def _inject_morning_feels(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_FEELS_LIKE")):
+        return v2_text
+    feels = _kld_feels_line(v2_text)
+    if not feels:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    inserted = False
+    for line in lines:
+        out.append(line)
+        if not inserted and line.strip().startswith("🏙️ Калининград"):
+            out.append(feels)
+            inserted = True
+    return "\n".join(out)
 
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
@@ -151,6 +211,7 @@ async def main() -> None:
     if use_format_v2:
         from format_v2 import build_format_v2
         v2_raw = build_format_v2("Калининградская область", mode, legacy_result.text)
+        v2_raw = _inject_morning_feels(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
