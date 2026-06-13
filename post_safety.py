@@ -94,6 +94,7 @@ def _normalize_line(line: str, issues: list[str] | None = None) -> str:
     line = line.replace(" • -", "")
     line = line.replace(" — —", " —")
     line = line.replace(" - -", " -")
+    line = re.sub(r"\bпорывы\s*[—-]\s*(\d+)", r"порывы до \1", line, flags=re.I)
     line = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", line)
     line = re.sub(r"\s{2,}", " ", line)
     line = line.strip()
