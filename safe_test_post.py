@@ -76,43 +76,53 @@ def _kld_weather_line(v2_text: str) -> str:
     return next((x for x in lines if x.startswith("🏙️ Калининград")), "")
 
 
-def _kld_feels_line(v2_text: str) -> str:
+def _kld_conditions(v2_text: str) -> dict[str, float | bool | None]:
     weather = _kld_weather_line(v2_text)
-    if not weather:
-        return ""
     p = _plain(weather)
-    tmax = _num(r"—\s*(-?\d+(?:[\.,]\d+)?)/", p)
-    tmin = _num(r"/(-?\d+(?:[\.,]\d+)?)\s*°", p)
-    wind = _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p)
-    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p)
-    has_rain = any(w in p.lower() for w in ("дожд", "морось", "ливень"))
+    uv_line = next((x.strip() for x in str(v2_text or "").splitlines() if x.strip().startswith("☀️")), "")
+    air_line = next((x.strip() for x in str(v2_text or "").splitlines() if x.strip().startswith("🏭")), "")
+    return {
+        "tmax": _num(r"—\s*(-?\d+(?:[\.,]\d+)?)/", p),
+        "tmin": _num(r"/(-?\d+(?:[\.,]\d+)?)\s*°", p),
+        "wind": _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p),
+        "gust": _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p),
+        "rain": any(w in p.lower() for w in ("дожд", "морось", "ливень")),
+        "uv": _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line),
+        "aqi": _num(r"AQI\s*(\d+(?:[\.,]\d+)?)", air_line),
+    }
+
+
+def _kld_feels_line(v2_text: str) -> str:
+    c = _kld_conditions(v2_text)
+    tmax = c.get("tmax")
+    tmin = c.get("tmin")
+    wind = c.get("wind")
+    gust = c.get("gust")
+    has_rain = bool(c.get("rain"))
 
     parts: list[str] = []
-    if has_rain and ((gust is not None and gust >= 7) or (wind is not None and wind >= 3)):
+    if has_rain and ((isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)):
         parts.append("прохладно, влажно и ветровито")
     elif has_rain:
         parts.append("прохладно и влажно")
-    elif tmax is not None and tmax <= 17:
+    elif isinstance(tmax, (int, float)) and tmax <= 17:
         parts.append("свежо")
     else:
         parts.append("мягко для коротких прогулок")
-    if (gust is not None and gust >= 7) or (wind is not None and wind >= 3):
+    if (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3):
         parts.append("у воды ощутимо свежее")
-    if tmin is not None and tmin <= 12:
+    if isinstance(tmin, (int, float)) and tmin <= 12:
         parts.append("утром лучше слой/ветровка")
     return "🌡 Ощущается: " + "; ".join(parts[:3]) + "."
 
 
 def _kld_best_window_line(v2_text: str) -> str:
-    weather = _kld_weather_line(v2_text)
-    if not weather:
-        return ""
-    p = _plain(weather)
-    tmax = _num(r"—\s*(-?\d+(?:[\.,]\d+)?)/", p)
-    wind = _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p)
-    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p)
-    has_rain = any(w in p.lower() for w in ("дожд", "морось", "ливень"))
-    windy = (gust is not None and gust >= 7) or (wind is not None and wind >= 3)
+    c = _kld_conditions(v2_text)
+    tmax = c.get("tmax")
+    wind = c.get("wind")
+    gust = c.get("gust")
+    has_rain = bool(c.get("rain"))
+    windy = (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)
 
     if has_rain and windy:
         return "🕒 Лучшее окно: короткие выходы между дождём; у воды — по фактическому ветру."
@@ -120,22 +130,18 @@ def _kld_best_window_line(v2_text: str) -> str:
         return "🕒 Лучшее окно: короткие выходы между дождём; для прогулки — защищённые маршруты."
     if windy:
         return "🕒 Лучшее окно: позднее утро и первая половина дня; у воды — по ветру."
-    if tmax is not None and tmax <= 17:
+    if isinstance(tmax, (int, float)) and tmax <= 17:
         return "🕒 Лучшее окно: позднее утро и первая половина дня; вечером будет свежее."
     return "🕒 Лучшее окно: позднее утро и время ближе к закату."
 
 
 def _kld_smart_plan_line(v2_text: str) -> str:
-    weather = _kld_weather_line(v2_text)
-    if not weather:
-        return ""
-    p = _plain(weather)
-    wind = _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p)
-    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p)
-    has_rain = any(w in p.lower() for w in ("дожд", "морось", "ливень"))
-    windy = (gust is not None and gust >= 7) or (wind is not None and wind >= 3)
-    uv_line = next((x.strip() for x in str(v2_text or "").splitlines() if x.strip().startswith("☀️")), "")
-    uv = _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line)
+    c = _kld_conditions(v2_text)
+    wind = c.get("wind")
+    gust = c.get("gust")
+    has_rain = bool(c.get("rain"))
+    windy = (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)
+    uv = c.get("uv")
 
     if has_rain and windy:
         return "✅ План: дождевик/капюшон надёжнее зонта; закрытая обувь; выходы короткими блоками между дождём; у воды осторожнее с порывами."
@@ -143,9 +149,46 @@ def _kld_smart_plan_line(v2_text: str) -> str:
         return "✅ План: зонт или дождевик, закрытая обувь; дела лучше короткими выходами между дождём."
     if windy:
         return "✅ План: ветровка/слой, у воды осторожнее с порывами; прогулку лучше в защищённых местах."
-    if uv is not None and uv >= 6:
+    if isinstance(uv, (int, float)) and uv >= 6:
         return "✅ План: очки/кепка и SPF; прогулка в лучшее окно; вечером взять лёгкий слой."
     return ""
+
+
+def _kld_score_line(v2_text: str) -> str:
+    c = _kld_conditions(v2_text)
+    tmax = c.get("tmax")
+    wind = c.get("wind")
+    gust = c.get("gust")
+    has_rain = bool(c.get("rain"))
+    uv = c.get("uv")
+    aqi = c.get("aqi")
+
+    score = 10.0
+    reasons: list[str] = []
+    if has_rain:
+        score -= 1.4; reasons.append("дождь")
+    if isinstance(gust, (int, float)):
+        if gust >= 10:
+            score -= 1.0; reasons.append("порывы")
+        elif gust >= 7:
+            score -= 0.7; reasons.append("ветер у воды")
+    elif isinstance(wind, (int, float)) and wind >= 3:
+        score -= 0.5; reasons.append("ветер")
+    if isinstance(tmax, (int, float)):
+        if tmax <= 14:
+            score -= 1.0; reasons.append("прохладно")
+        elif tmax <= 18:
+            score -= 0.5; reasons.append("свежо")
+    if isinstance(uv, (int, float)) and uv >= 6:
+        score -= 0.3; reasons.append("УФ высокий")
+    if isinstance(aqi, (int, float)) and aqi > 80:
+        score -= 0.8; reasons.append("воздух похуже")
+
+    score = max(1.0, min(10.0, score))
+    label = "отлично" if score >= 8.5 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
+    if reasons:
+        return f"✨ VayboMeter: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
+    return f"✨ VayboMeter: {score:.1f}/10 — {label} для обычных дел и прогулок."
 
 
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
@@ -197,6 +240,17 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     if "🌡 Ощущается:" in v2_text:
         return _inject_after_anchor(v2_text, window, ("🌡 Ощущается:",))
     return _inject_after_anchor(v2_text, window, ("🏙️ Калининград",))
+
+
+def _inject_morning_score(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_VAYBOMETER_SCORE")):
+        return v2_text
+    score = _kld_score_line(v2_text)
+    if "🕒 Лучшее окно:" in v2_text:
+        return _inject_after_anchor(v2_text, score, ("🕒 Лучшее окно:",))
+    if "🌡 Ощущается:" in v2_text:
+        return _inject_after_anchor(v2_text, score, ("🌡 Ощущается:",))
+    return _inject_after_anchor(v2_text, score, ("🏙️ Калининград",))
 
 
 def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
@@ -302,6 +356,7 @@ async def main() -> None:
         v2_raw = build_format_v2("Калининградская область", mode, legacy_result.text)
         v2_raw = _inject_morning_feels(v2_raw, mode)
         v2_raw = _inject_morning_best_window(v2_raw, mode)
+        v2_raw = _inject_morning_score(v2_raw, mode)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
