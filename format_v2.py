@@ -66,7 +66,7 @@ def _city_line(lines: list[str], city: str) -> str:
         p = _plain(line)
         if p.startswith(f"Погода: 🏙️ {city}"):
             return line.strip().replace("Погода: ", "")
-        if p.startswith(f"🏙️ {city}:") or p.startswith(f"{city}:"):
+        if p.startswith(f"🏙️ {city}:") or p.startswith(f"{city}:") or p.startswith(f"🏙️ {city} —"):
             return line.strip()
     return ""
 
@@ -79,20 +79,17 @@ def _astro(lines: list[str]) -> list[str]:
 def _tips_fallback(has_storm: bool, has_rain: bool) -> list[str]:
     if has_storm:
         return [
-            "🧥 Ветровка/капюшон важнее зонта у моря.",
-            "🚗 Для поездок по области проверьте дождь и порывы утром.",
-            "🌊 Прогулки у воды — коротко и аккуратно.",
+            "🧥 У моря — ветровка/капюшон.",
+            "🌊 Открытые пирсы лучше пропустить.",
         ]
     if has_rain:
         return [
-            "☔ Возьми компактный зонт или дождевик.",
-            "👟 Обувь лучше закрытая: местами будет влажно.",
-            "🚗 Для поездок по области проверь осадки утром.",
+            "☔ Возьми зонт или дождевик.",
+            "👟 Обувь лучше закрытая.",
         ]
     return [
         "🧥 У моря пригодится лёгкая ветровка.",
-        "🚶 Для прогулок выбирай более защищённые маршруты.",
-        "🌡 Сравни город и побережье перед выездом.",
+        "🚶 Прогулки лучше по защищённым от ветра маршрутам.",
     ]
 
 
@@ -124,91 +121,38 @@ def _hashtags(lines: list[str], fallback: str) -> str:
     return fallback
 
 
-def _first_content_line(lines: list[str]) -> str:
-    for line in lines[1:]:
-        s = line.strip()
-        if s and not _is_sep(s) and not s.startswith("#") and not s.startswith("Погода:"):
-            return s
-    return ""
-
-
 def _morning_pick(lines: list[str], prefixes: tuple[str, ...]) -> list[str]:
     return [x.strip() for x in lines if x.strip().startswith(prefixes)]
 
 
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
+    """Compact morning post: current weather + air + space weather + 2 practical tips."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
-    greeting = _first_content_line(lines)
+
     weather = _city_line(lines, "Калининград")
     warning = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
-    uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
-    sun = _morning_pick(lines, ("🌅", "🌇"))
-    air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "📟", "☢", "🟢", "🟡", "🔴", "ℹ️"))
+    air = [x for x in _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
 
     has_warning = bool(warning)
-    has_air = bool(air)
-    has_uv = bool(uv)
     has_rain = "дожд" in safe_legacy_text.lower() or "морось" in safe_legacy_text.lower()
 
-    out: list[str] = [f"<b>🌅 Калининградская область сегодня: утренний прогноз по зонам{title_date}</b>", ""]
-
-    out.append("🧭 <b>Главный сценарий</b>")
-    if greeting:
-        out.append(greeting)
-    if has_warning:
-        out.append("День лучше планировать с запасом: ветер, осадки и дорога к морю могут ощущаться по-разному в разных частях области.")
-    elif has_rain:
-        out.append("Главная поправка дня — локальные осадки: Калининград, берег и восток области могут расходиться по влажности и ощущаемой температуре.")
-    else:
-        out.append("Не усредняй область: Калининград, побережье и восточные города часто дают разные погодные сценарии даже в один день.")
-    out.append("")
+    out: list[str] = [f"<b>🌅 Калининград сегодня{title_date}</b>"]
 
     if weather:
-        out.append("🏙 <b>Калининград сейчас</b>")
         out.append(weather)
-        out.append("")
-
-    out.append("🎯 <b>На что обратить внимание</b>")
-    out.append("✅ Температура: можно использовать для базового планирования.")
-    out.append("🟡 Берег/внутри области: ощущаемая температура может отличаться.")
-    if has_rain:
-        out.append("🟡 Осадки: лучше проверить перед выходом и поездкой по области.")
-    if has_air:
-        out.append("🟡 Воздух/фон: учитывай самочувствие и чувствительность к погоде.")
-    out.append("")
-
-    if warning or uv or sun:
-        out.append("☀️ <b>Солнце и погодные риски</b>")
-        if warning:
-            out.append(warning)
-        out.extend(uv[:2])
-        out.extend(sun[:2])
-        out.append("")
-
+    if warning:
+        out.append("⚠️ " + warning)
     if air:
-        out.append("🌫 <b>Воздух и фон</b>")
-        out.extend(air[:3])
-        out.append("")
-
+        out.append(air[0])
     if space:
-        out.append("🧲 <b>Космопогода</b>")
-        out.extend(space[:1])
-        out.append("")
+        out.append(space[0])
 
-    out.append("✅ <b>Рекомендации на день</b>")
-    out.extend(_tips_fallback(has_warning, has_rain)[:3])
-    out.append("")
-
-    out.append("📌 <b>Вывод</b>")
-    if has_rain:
-        out.append("День лучше строить гибко: городские дела — по факту осадков, море — с поправкой на ветер и влажность.")
-    else:
-        out.append("Хороший день для обычных дел, но перед поездкой к морю сравни город, берег и восток области.")
-    out.append("")
+    tips = _tips_fallback(has_warning, has_rain)
+    out.append("✅ " + " ".join(tips))
     out.append(tags)
     return "\n".join(out).strip()
 
