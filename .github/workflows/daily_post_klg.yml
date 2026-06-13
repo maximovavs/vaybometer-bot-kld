@@ -59,6 +59,7 @@ env:
   PYTHONUNBUFFERED: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
   MORNING_FEELS_LIKE: "1"
+  MORNING_BEST_WINDOW: "1"
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
