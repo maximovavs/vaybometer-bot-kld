@@ -53,7 +53,10 @@ def _section_between(lines: list[str], start_marker: str, stop_markers: tuple[st
 
 def _first_line_contains(lines: list[str], word: str) -> str:
     for line in lines:
-        if word.lower() in line.lower() and "погода на завтра" not in line.lower():
+        low = line.lower()
+        if "без шторма" in low:
+            continue
+        if word.lower() in low and "погода на завтра" not in low:
             return line.strip()
     return ""
 
@@ -61,6 +64,8 @@ def _first_line_contains(lines: list[str], word: str) -> str:
 def _city_line(lines: list[str], city: str) -> str:
     for line in lines:
         p = _plain(line)
+        if p.startswith(f"Погода: 🏙️ {city}"):
+            return line.strip().replace("Погода: ", "")
         if p.startswith(f"🏙️ {city}:") or p.startswith(f"{city}:"):
             return line.strip()
     return ""
@@ -76,7 +81,7 @@ def _tips_fallback(has_storm: bool, has_rain: bool) -> list[str]:
         return [
             "🧥 Ветровка/капюшон важнее зонта у моря.",
             "🚗 Для поездок по области проверьте дождь и порывы утром.",
-            "🌊 Прогулки у воды — коротко и без выхода на открытые пирсы.",
+            "🌊 Прогулки у воды — коротко и аккуратно.",
         ]
     if has_rain:
         return [
@@ -122,7 +127,7 @@ def _hashtags(lines: list[str], fallback: str) -> str:
 def _first_content_line(lines: list[str]) -> str:
     for line in lines[1:]:
         s = line.strip()
-        if s and not _is_sep(s) and not s.startswith("#"):
+        if s and not _is_sep(s) and not s.startswith("#") and not s.startswith("Погода:"):
             return s
     return ""
 
@@ -136,14 +141,13 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
     greeting = _first_content_line(lines)
+    weather = _city_line(lines, "Калининград")
     warning = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sun = _morning_pick(lines, ("🌅", "🌇"))
-    air = _morning_pick(lines, ("🌫", "🌬", "🌿", "🫁", "💨", "📟", "☢", "🟢", "🟡", "🔴", "ℹ️"))
+    air = _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "📟", "☢", "🟢", "🟡", "🔴", "ℹ️"))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
-    summary = _morning_pick(lines, ("🔎",))
-    today_tips = _morning_pick(lines, ("✅ Сегодня",))
-    tags = _hashtags(lines, "#Калининград #погода #здоровье #море")
+    tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
 
     has_warning = bool(warning)
     has_air = bool(air)
@@ -162,6 +166,11 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     else:
         out.append("Не усредняй область: Калининград, побережье и восточные города часто дают разные погодные сценарии даже в один день.")
     out.append("")
+
+    if weather:
+        out.append("🏙 <b>Калининград сейчас</b>")
+        out.append(weather)
+        out.append("")
 
     out.append("🎯 <b>На что обратить внимание</b>")
     out.append("✅ Температура: можно использовать для базового планирования.")
@@ -182,21 +191,17 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if air:
         out.append("🌫 <b>Воздух и фон</b>")
-        out.extend(air[:4])
+        out.extend(air[:3])
         out.append("")
 
     if space:
         out.append("🧲 <b>Космопогода</b>")
-        out.extend(space[:2])
+        out.extend(space[:1])
         out.append("")
 
-    if summary or today_tips:
-        out.append("✅ <b>Рекомендации на день</b>")
-        if has_rain:
-            out.extend(["☔ Возьми зонт или дождевик.", "👟 Обувь лучше закрытая: местами будет влажно."])
-        out.extend(summary[:1])
-        out.extend(today_tips[:1])
-        out.append("")
+    out.append("✅ <b>Рекомендации на день</b>")
+    out.extend(_tips_fallback(has_warning, has_rain)[:3])
+    out.append("")
 
     out.append("📌 <b>Вывод</b>")
     if has_rain:
