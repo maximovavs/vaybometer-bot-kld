@@ -71,6 +71,21 @@ def _num(pattern: str, text: str) -> float | None:
         return None
 
 
+def _numbers(pattern: str, text: str) -> list[float]:
+    out: list[float] = []
+    for raw in re.findall(pattern, _plain(text), flags=re.I):
+        val = raw[0] if isinstance(raw, tuple) else raw
+        try:
+            out.append(float(str(val).replace(",", ".")))
+        except Exception:
+            pass
+    return out
+
+
+def _score_label(score: float) -> str:
+    return "отлично" if score >= 8.7 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
+
+
 def _kld_weather_line(v2_text: str) -> str:
     lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
     return next((x for x in lines if x.startswith("🏙️ Калининград")), "")
@@ -193,10 +208,48 @@ def _kld_score_line(v2_text: str) -> str:
         score -= 0.8; reasons.append("воздух похуже")
 
     score = max(1.0, min(10.0, score))
-    label = "отлично" if score >= 8.7 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
+    label = _score_label(score)
     if reasons:
         return f"✨ VayboMeter: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
     return f"✨ VayboMeter: {score:.1f}/10 — {label} для обычных дел и прогулок."
+
+
+def _kld_evening_score_line(v2_text: str) -> str:
+    text = _plain(v2_text)
+    low = text.lower()
+    temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
+    gusts = _numbers(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", text)
+    max_t = max(temps) if temps else None
+    max_gust = max(gusts) if gusts else None
+    score = 10.0
+    reasons: list[str] = []
+
+    if "шторм" in low or "предупреждение" in low:
+        score -= 1.8; reasons.append("предупреждение")
+    if "дожд" in low or "морось" in low:
+        score -= 1.1; reasons.append("осадки")
+    if isinstance(max_gust, (int, float)):
+        if max_gust >= 15:
+            score -= 1.4; reasons.append("сильные порывы")
+        elif max_gust >= 10:
+            score -= 1.0; reasons.append("порывы")
+        elif max_gust >= 7:
+            score -= 0.6; reasons.append("ветер у воды")
+    elif "ветер" in low or "порыв" in low:
+        score -= 0.4; reasons.append("ветер у воды")
+    if isinstance(max_t, (int, float)):
+        if max_t <= 14:
+            score -= 0.9; reasons.append("прохладно")
+        elif max_t <= 17:
+            score -= 0.5; reasons.append("свежо")
+    if "локально" in low or "неравномерно" in low:
+        score -= 0.2; reasons.append("локальность прогноза")
+
+    score = max(1.0, min(10.0, score))
+    label = _score_label(score)
+    if reasons:
+        return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
+    return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
 
 
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
@@ -210,6 +263,25 @@ def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...
         if not inserted and line.strip().startswith(anchors):
             out.append(line_to_add)
             inserted = True
+    return "\n".join(out)
+
+
+def _insert_before_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
+    if not line_to_add:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and line.strip().startswith(anchors):
+            if out and out[-1].strip():
+                out.append("")
+            out.append(line_to_add)
+            out.append("")
+            inserted = True
+        out.append(line)
+    if not inserted:
+        out.append(line_to_add)
     return "\n".join(out)
 
 
@@ -259,6 +331,12 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
     if "🌡 Ощущается:" in v2_text:
         return _inject_after_anchor(v2_text, score, ("🌡 Ощущается:",))
     return _inject_after_anchor(v2_text, score, ("🏙️ Калининград",))
+
+
+def _inject_evening_score(v2_text: str, mode: str) -> str:
+    if mode.startswith("morn") or not _env_on("EVENING_VAYBOMETER_SCORE"):
+        return v2_text
+    return _insert_before_anchor(v2_text, _kld_evening_score_line(v2_text), ("🎯 <b>Уверенность", "🎯"))
 
 
 def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
@@ -365,6 +443,7 @@ async def main() -> None:
         v2_raw = _inject_morning_feels(v2_raw, mode)
         v2_raw = _inject_morning_best_window(v2_raw, mode)
         v2_raw = _inject_morning_score(v2_raw, mode)
+        v2_raw = _inject_evening_score(v2_raw, mode)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
