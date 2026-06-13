@@ -94,8 +94,11 @@ def _normalize_line(line: str, issues: list[str] | None = None) -> str:
     line = line.replace(" • -", "")
     line = line.replace(" — —", " —")
     line = line.replace(" - -", " -")
-    line = re.sub(r"\bпорывы\s*[—-]\s*(\d+)(?!\s*м/с)", r"порывы до \1 м/с", line, flags=re.I)
-    line = re.sub(r"\bпорывы\s+до\s+(\d+)(?!\s*м/с)", r"порывы до \1 м/с", line, flags=re.I)
+    # Guard against old bad normalization: "порывы до 1 м/с3 м/с" -> "порывы до 13 м/с".
+    line = re.sub(r"\bпорывы\s+до\s+(\d+)\s*м/с\s*(\d+)\s*м/с\b", r"порывы до \1\2 м/с", line, flags=re.I)
+    # Normalize dash/wording, but require the full number to be captured.
+    line = re.sub(r"\bпорывы\s*[—-]\s*(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", line, flags=re.I)
+    line = re.sub(r"\bпорывы\s+до\s+(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", line, flags=re.I)
     line = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", line)
     line = re.sub(r"\s{2,}", " ", line)
     line = line.strip()
