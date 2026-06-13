@@ -168,15 +168,23 @@ def _kld_score_line(v2_text: str) -> str:
     if has_rain:
         score -= 1.4; reasons.append("дождь")
     if isinstance(gust, (int, float)):
-        if gust >= 10:
-            score -= 1.0; reasons.append("порывы")
+        if gust >= 12:
+            score -= 1.4; reasons.append("порывы")
+        elif gust >= 10:
+            score -= 1.1; reasons.append("порывы")
         elif gust >= 7:
-            score -= 0.7; reasons.append("ветер у воды")
+            score -= 0.8; reasons.append("ветер у воды")
+        if isinstance(wind, (int, float)) and wind >= 6:
+            score -= 0.4; reasons.append("ветер")
+    elif isinstance(wind, (int, float)) and wind >= 6:
+        score -= 0.8; reasons.append("ветер")
     elif isinstance(wind, (int, float)) and wind >= 3:
         score -= 0.5; reasons.append("ветер")
     if isinstance(tmax, (int, float)):
         if tmax <= 14:
             score -= 1.0; reasons.append("прохладно")
+        elif tmax <= 16:
+            score -= 0.7; reasons.append("свежо")
         elif tmax <= 18:
             score -= 0.5; reasons.append("свежо")
     if isinstance(uv, (int, float)) and uv >= 6:
@@ -185,7 +193,7 @@ def _kld_score_line(v2_text: str) -> str:
         score -= 0.8; reasons.append("воздух похуже")
 
     score = max(1.0, min(10.0, score))
-    label = "отлично" if score >= 8.5 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
+    label = "отлично" if score >= 8.7 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
     if reasons:
         return f"✨ VayboMeter: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
     return f"✨ VayboMeter: {score:.1f}/10 — {label} для обычных дел и прогулок."
