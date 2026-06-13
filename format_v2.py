@@ -126,7 +126,7 @@ def _morning_pick(lines: list[str], prefixes: tuple[str, ...]) -> list[str]:
 
 
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
-    """Compact morning post: current weather + air + space weather + 2 practical tips."""
+    """Compact morning post: current weather + air + UV + space weather + 2 practical tips."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
@@ -134,6 +134,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     weather = _city_line(lines, "Калининград")
     warning = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
     air = [x for x in _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
+    uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
 
@@ -146,6 +147,8 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(weather)
     if warning:
         out.append("⚠️ " + warning)
+    if uv:
+        out.append(uv[0])
     if air:
         out.append(air[0])
     if space:
