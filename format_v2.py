@@ -64,13 +64,24 @@ def _first_line_contains(lines: list[str], word: str) -> str:
     return ""
 
 
+def _normalize_weather_line(line: str) -> str:
+    s = str(line or "").strip()
+    s = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", s)
+    s = re.sub(r"\s*•\s*[—-]\s*(?=•|$)", "", s)
+    s = re.sub(r"\bпорывы\s+до\s+(\d+)\s*м/с\s*(\d+)\s*м/с\b", r"порывы до \1\2 м/с", s, flags=re.I)
+    s = re.sub(r"\bпорывы\s*[—-]\s*(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", s, flags=re.I)
+    s = re.sub(r"\bпорывы\s+до\s+(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", s, flags=re.I)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
 def _city_line(lines: list[str], city: str) -> str:
     for line in lines:
         p = _plain(line)
         if p.startswith(f"Погода: 🏙️ {city}"):
-            return line.strip().replace("Погода: ", "")
+            return _normalize_weather_line(line.strip().replace("Погода: ", ""))
         if p.startswith(f"🏙️ {city}:") or p.startswith(f"{city}:") or p.startswith(f"🏙️ {city} —"):
-            return line.strip()
+            return _normalize_weather_line(line.strip())
     return ""
 
 
@@ -139,8 +150,9 @@ def _clean_uv_line(line: str) -> str:
 def _clean_kp_line(line: str) -> str:
     s = str(line or "").strip()
     # Remove text assessment and stale minute marker after numeric Kp/Kr value.
-    # Example: "Кр 0.3 (умеренно, 🕓 4 мин назад)" -> "Кр 0.3".
+    # Example: "Кр 0.3 (умеренно, 🕓 4 мин назад)" -> "Kp 0.3".
     s = re.sub(r"(\b(?:Кр|Kp)\s*\d+(?:[\.,]\d+)?)\s*\([^)]*\)", r"\1", s, flags=re.I)
+    s = re.sub(r"\bКр\b", "Kp", s)
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
 
