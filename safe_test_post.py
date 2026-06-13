@@ -71,9 +71,13 @@ def _num(pattern: str, text: str) -> float | None:
         return None
 
 
-def _kld_feels_line(v2_text: str) -> str:
+def _kld_weather_line(v2_text: str) -> str:
     lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
-    weather = next((x for x in lines if x.startswith("🏙️ Калининград")), "")
+    return next((x for x in lines if x.startswith("🏙️ Калининград")), "")
+
+
+def _kld_feels_line(v2_text: str) -> str:
+    weather = _kld_weather_line(v2_text)
     if not weather:
         return ""
     p = _plain(weather)
@@ -99,21 +103,60 @@ def _kld_feels_line(v2_text: str) -> str:
     return "🌡 Ощущается: " + "; ".join(parts[:3]) + "."
 
 
-def _inject_morning_feels(v2_text: str, mode: str) -> str:
-    if not (mode.startswith("morn") and _env_on("MORNING_FEELS_LIKE")):
-        return v2_text
-    feels = _kld_feels_line(v2_text)
-    if not feels:
+def _kld_best_window_line(v2_text: str) -> str:
+    weather = _kld_weather_line(v2_text)
+    if not weather:
+        return ""
+    p = _plain(weather)
+    tmax = _num(r"—\s*(-?\d+(?:[\.,]\d+)?)/", p)
+    wind = _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p)
+    gust = _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p)
+    has_rain = any(w in p.lower() for w in ("дожд", "морось", "ливень"))
+    windy = (gust is not None and gust >= 7) or (wind is not None and wind >= 3)
+
+    if has_rain and windy:
+        return "🕒 Лучшее окно: короткие выходы между дождём; у воды — по фактическому ветру."
+    if has_rain:
+        return "🕒 Лучшее окно: короткие выходы между дождём; для прогулки — защищённые маршруты."
+    if windy:
+        return "🕒 Лучшее окно: позднее утро и первая половина дня; у воды — по ветру."
+    if tmax is not None and tmax <= 17:
+        return "🕒 Лучшее окно: позднее утро и первая половина дня; вечером будет свежее."
+    return "🕒 Лучшее окно: позднее утро и время ближе к закату."
+
+
+def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
+    if not line_to_add:
         return v2_text
     lines = str(v2_text or "").splitlines()
     out: list[str] = []
     inserted = False
     for line in lines:
         out.append(line)
-        if not inserted and line.strip().startswith("🏙️ Калининград"):
-            out.append(feels)
+        if not inserted and line.strip().startswith(anchors):
+            out.append(line_to_add)
             inserted = True
     return "\n".join(out)
+
+
+def _inject_morning_feels(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_FEELS_LIKE")):
+        return v2_text
+    feels = _kld_feels_line(v2_text)
+    if not feels:
+        return v2_text
+    return _inject_after_anchor(v2_text, feels, ("🏙️ Калининград",))
+
+
+def _inject_morning_best_window(v2_text: str, mode: str) -> str:
+    if not (mode.startswith("morn") and _env_on("MORNING_BEST_WINDOW")):
+        return v2_text
+    window = _kld_best_window_line(v2_text)
+    if not window:
+        return v2_text
+    if "🌡 Ощущается:" in v2_text:
+        return _inject_after_anchor(v2_text, window, ("🌡 Ощущается:",))
+    return _inject_after_anchor(v2_text, window, ("🏙️ Калининград",))
 
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
@@ -212,6 +255,7 @@ async def main() -> None:
         from format_v2 import build_format_v2
         v2_raw = build_format_v2("Калининградская область", mode, legacy_result.text)
         v2_raw = _inject_morning_feels(v2_raw, mode)
+        v2_raw = _inject_morning_best_window(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
