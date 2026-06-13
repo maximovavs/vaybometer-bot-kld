@@ -2,11 +2,8 @@ name: Daily VayboMeter (KLD)
 
 on:
   schedule:
-    # Утро (пост "на сегодня"): 05:00 UTC = 08:00 МСК
     - cron: '0 5 * * *'
-    # Вечер (анонс "на завтра"): 15:00 UTC
     - cron: '0 15 * * *'
-    # Курсы валют (12:00 МСК): 09:00 UTC
     - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
@@ -26,7 +23,7 @@ on:
         default: false
         required: false
       format_v2:
-        description: "FORMAT_V2 для вечернего поста (ручной тест/override; расписание evening уже включает V2)"
+        description: "FORMAT_V2 для ручного теста/override; расписание morning/evening уже включает V2"
         type: boolean
         default: false
         required: false
@@ -49,32 +46,21 @@ concurrency:
   group: daily-post-kld-${{ github.workflow }}-${{ github.job }}
   cancel-in-progress: false
 
-# Базовые ENV (общие)
 env:
   TELEGRAM_TOKEN_KLG:  ${{ secrets.TELEGRAM_TOKEN_KLG }}
   CHANNEL_ID_KLG:      ${{ secrets.CHANNEL_ID_KLG }}
   CHANNEL_ID_TEST:     ${{ secrets.CHANNEL_ID_TEST }}
   CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
-
   TZ: Europe/Kaliningrad
   WORK_DATE: ${{ github.event.inputs.work_date }}
-
-  # Поведение бота (общие)
   DISABLE_LLM_DAILY: "0"
   DEBUG_WATER: "0"
   GEN_SKIP_SHORT: "1"
   PYTHONUNBUFFERED: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
-
-  # LLM ключи (опционально)
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
-
-  # Ключ для генерации изображений (Stable Horde)
-  STABLE_HORDE_API_KEY: ${{ secrets.STABLE_HORDE_API_KEY }}
-
-  # Флаг публикации в тест-канал
   TO_TEST: ${{ github.event.inputs.to_test }}
 
 jobs:
@@ -86,29 +72,24 @@ jobs:
       (github.event_name == 'schedule' && github.event.schedule == '0 5 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_morning))
     env:
-      # ЯВНО фиксируем режим и секции
       POST_MODE: "morning"
       DAY_OFFSET: "0"
       ASTRO_OFFSET: "0"
       SHOW_AIR: "1"
       SHOW_SPACE: "1"
       SHOW_SCHUMANN: "1"
-      # на всякий случай не глушим шуман глобально
       DISABLE_SCHUMANN: "0"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Post morning (for today)
         shell: bash
         run: |
@@ -121,14 +102,31 @@ jobs:
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
+          scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
+          format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
+          to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
+          if format_v2:
+              args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
+              if wd:
+                  args += ["--date", wd]
+              if chat_override:
+                  args += ["--chat-id", chat_override, "--send", "--no-test-label"]
+              elif to_test:
+                  args += ["--to-test", "--send"]
+              elif scheduled_run and production_chat:
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+              else:
+                  print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
+              sys.argv = args
+              runpy.run_path("safe_test_post.py", run_name="__main__")
+              raise SystemExit(0)
           args = ["post_kld.py", "--mode", "morning"]
-          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
-          if chat_override.strip():
-              args += ["--chat-id", chat_override.strip()]
-          else:
-              to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
-              if to_test:
-                  args.append("--to-test")
+          if chat_override:
+              args += ["--chat-id", chat_override]
+          elif to_test:
+              args.append("--to-test")
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
@@ -150,18 +148,15 @@ jobs:
       DISABLE_SCHUMANN: "0"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Post evening (announce tomorrow)
         shell: bash
         run: |
@@ -174,13 +169,11 @@ jobs:
                   dt = pendulum.parse(wd)
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
-
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
           format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = os.getenv("TO_TEST","").strip().lower() in ("1","true","yes","on")
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
           production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
-
           if format_v2:
               args = ["safe_test_post.py", "--mode", "evening", "--format-v2"]
               if wd:
@@ -196,13 +189,11 @@ jobs:
               sys.argv = args
               runpy.run_path("safe_test_post.py", run_name="__main__")
               raise SystemExit(0)
-
           args = ["post_kld.py", "--mode", "evening"]
           if chat_override.strip():
               args += ["--chat-id", chat_override.strip()]
-          else:
-              if to_test:
-                  args.append("--to-test")
+          elif to_test:
+              args.append("--to-test")
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
@@ -216,21 +207,17 @@ jobs:
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_noon_fx))
     env:
       DISABLE_LLM_DAILY: "1"
-      # FX не зависит от режимов, остальное не задаём
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Post FX only (12:00 MSK)
         shell: bash
         run: |
