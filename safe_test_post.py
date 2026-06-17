@@ -112,7 +112,7 @@ def _kld_conditions(v2_text: str) -> dict[str, float | bool | None]:
     uv_line = next((x.strip() for x in str(v2_text or "").splitlines() if x.strip().startswith("☀️")), "")
     air_line = next((x.strip() for x in str(v2_text or "").splitlines() if x.strip().startswith("🏭")), "")
     return {
-        "tmax": _num(r"—\s*(-?\d+(?:[\.,]\d+)?)/", p),
+        "tmax": _num(r"(?:дн/ночь\s*)?(-?\d+(?:[\.,]\d+)?)/", p),
         "tmin": _num(r"/(-?\d+(?:[\.,]\d+)?)\s*°", p),
         "wind": _num(r"💨\s*(\d+(?:[\.,]\d+)?)", p),
         "gust": _num(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", p),
@@ -308,11 +308,54 @@ def _downgrade_sup_lines(text: str) -> str:
     return "\n".join(out)
 
 
+def _downgrade_windsport_lines(text: str) -> str:
+    if not _env_on("FORMAT_V2_WINDSPORT_POLISH"):
+        return text
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    last_air: float | None = None
+    last_water: float | None = None
+    last_wave: float | None = None
+    last_weather = ""
+    last_has_wind = False
+    for line in lines:
+        if "°C" in line and "🌊" in line:
+            last_air = _num(r":\s*(-?\d+(?:[\.,]\d+)?)\s*/", line)
+            last_water = _num(r"🌊\s*(\d+(?:[\.,]\d+)?)", line)
+            last_wave = _num(r"(?:^|•)\s*(\d+(?:[\.,]\d+)?)\s*м\b", line)
+            last_weather = line.lower()
+            last_has_wind = ("💨" in line) or ("порыв" in line.lower())
+        low_line = line.lower()
+        is_windsport = any(x in low_line for x in ("кайт", "винг", "винд"))
+        if is_windsport and "Отлично" in line:
+            hard_reasons: list[str] = []
+            soft_reasons: list[str] = []
+            if isinstance(last_water, (int, float)) and last_water <= 16:
+                hard_reasons.append(f"вода {_fmt_num(last_water)}°")
+            if isinstance(last_wave, (int, float)) and last_wave >= 0.6:
+                hard_reasons.append(f"волна {_fmt_num(last_wave)} м")
+            if any(w in last_weather for w in ("морось", "дожд", "ливень")):
+                hard_reasons.append("осадки")
+            if isinstance(last_air, (int, float)) and last_air <= 16:
+                hard_reasons.append(f"воздух {_fmt_num(last_air)}°")
+            if not last_has_wind:
+                soft_reasons.append("ветер сверить утром")
+            if hard_reasons:
+                out.append("🏄 Кайт/Винг/Винд: только подготовленным; гидрокостюм обязателен, ветер и волну сверить утром.")
+                continue
+            if soft_reasons:
+                out.append("🏄 Кайт/Винг/Винд: возможно для опытных; по фактическому ветру и состоянию воды.")
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _apply_format_v2_test_polish(v2_text: str) -> str:
     if not _env_any("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH"):
         return v2_text
     text = _translate_shore_notes(v2_text)
     text = _downgrade_sup_lines(text)
+    text = _downgrade_windsport_lines(text)
     text = re.sub(r"\s+,", ",", text)
     text = re.sub(r"🌙\s+🌙", "🌙", text)
     return text
