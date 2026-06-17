@@ -186,6 +186,8 @@ def _structure_summary(text: str) -> str:
 
     issues: list[str] = []
     s = str(text or "")
+    if not any(marker in s for marker in ("🧭 <b>Главный сценарий", "✨ VayboMeter", "🎯 <b>Уверенность", "📌 <b>Вывод")):
+        return ""
     plain = re.sub(r"</?b>", "", s)
     is_evening = "завтра" in plain.lower()
     score_expected = _env_on("MORNING_VAYBOMETER_SCORE") or _env_on("EVENING_VAYBOMETER_SCORE") or _env_on("FORMAT_V2_COMPACT")
