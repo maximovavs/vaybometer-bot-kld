@@ -102,6 +102,12 @@ def _normalize_line(line: str, issues: list[str] | None = None) -> str:
     line = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", line)
     line = re.sub(r"\s{2,}", " ", line)
     line = line.strip()
+    line = re.sub(
+        r"^✅\s*(?:В целом|Общий фон):\s*благоприятный день\.?$",
+        "✅ Астроритм: благоприятный.",
+        line,
+        flags=re.I,
+    )
     if original.strip() != line and not (issues and issues[-1].startswith("translated shore note")):
         issues.append(f"normalized line: {original.strip()[:120]}")
     return line
