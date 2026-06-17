@@ -83,8 +83,8 @@ env:
   MORNING_FEELS_LIKE: ${{ github.event.inputs.feels_like == 'true' && '1' || '0' }}
   MORNING_BEST_WINDOW: ${{ github.event.inputs.best_window == 'true' && '1' || '0' }}
   MORNING_SMART_PLAN: ${{ github.event.inputs.smart_plan == 'true' && '1' || '0' }}
-  MORNING_VAYBOMETER_SCORE: ${{ github.event.inputs.vaybometer_score == 'true' && '1' || '0' }}
-  EVENING_VAYBOMETER_SCORE: ${{ github.event.inputs.vaybometer_score == 'true' && '1' || '0' }}
+  MORNING_VAYBOMETER_SCORE: ${{ (github.event.inputs.vaybometer_score == 'true' || github.event.inputs.compact == 'true') && '1' || '0' }}
+  EVENING_VAYBOMETER_SCORE: ${{ (github.event.inputs.vaybometer_score == 'true' || github.event.inputs.compact == 'true') && '1' || '0' }}
   FORMAT_V2_POLISH: "1"
   FORMAT_V2_SCORE_CONCLUSION: "1"
   FORMAT_V2_REASON_CONCLUSION: "1"
