@@ -8,6 +8,7 @@ removes lines that look broken, stale, or low-trust before a post is sent.
 from __future__ import annotations
 
 import html
+import os
 import re
 from dataclasses import dataclass
 from typing import List
@@ -59,6 +60,13 @@ _DROP_LINE_PATTERNS = [
 class SafetyResult:
     text: str
     issues: List[str]
+
+
+def _env_on(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _line_is_separator(line: str) -> bool:
@@ -172,6 +180,55 @@ def sanitize_post_text(text: str) -> SafetyResult:
     return SafetyResult(text=safe, issues=issues)
 
 
+def _structure_summary(text: str) -> str:
+    if not _env_on("FORMAT_V2"):
+        return ""
+
+    issues: list[str] = []
+    s = str(text or "")
+    plain = re.sub(r"</?b>", "", s)
+    is_evening = "завтра" in plain.lower()
+    score_expected = _env_on("MORNING_VAYBOMETER_SCORE") or _env_on("EVENING_VAYBOMETER_SCORE") or _env_on("FORMAT_V2_COMPACT")
+
+    if not s.lstrip().startswith("<b>🌅"):
+        issues.append("missing title")
+    if is_evening and "🧭 <b>Главный сценарий" not in s:
+        issues.append("missing main scenario block")
+    if score_expected and "VayboMeter" not in s:
+        issues.append("missing VayboMeter line")
+    if is_evening and _env_on("FORMAT_V2_MAIN_NUANCE") and "VayboMeter" in s and "⚠️ Главный нюанс:" not in s:
+        issues.append("missing main nuance line")
+    if is_evening and "🎯 <b>Уверенность" not in s:
+        issues.append("missing confidence block")
+    if is_evening and "📌 <b>Вывод" not in s:
+        issues.append("missing conclusion block")
+    if not ("🌊 <b>Морские города" in s or "🏙 <b>Калининград" in s or "🏙️ Калининград" in s or "🌡 <b>Внутри области" in s):
+        issues.append("missing weather/cities block")
+    if "#" not in s:
+        issues.append("missing hashtags")
+
+    forbidden_checks = [
+        (r"\bKp\s+н/д\b", "forbidden Kp n/a"),
+        (r"\bКр\s+н/д\b", "forbidden Cyrillic Kp n/a"),
+        (r"/None\b", "forbidden /None artifact"),
+        (r"INFO:", "log line leaked into post"),
+        (r"Общий фон:\s*благоприятный день", "ambiguous astro background line"),
+    ]
+    for pattern, label in forbidden_checks:
+        if re.search(pattern, s, flags=re.I):
+            issues.append(label)
+    for line in s.splitlines():
+        if "…" in line and len(line.strip()) > 80:
+            issues.append("long clipped ellipsis line")
+            break
+
+    if issues:
+        return "⚠️ Structure validator:\n" + "\n".join(f"- {x}" for x in issues[:12])
+    length = len(s.strip())
+    compact = "on" if _env_on("FORMAT_V2_COMPACT") else "off"
+    return f"✅ Structure validator: all required blocks found. Length: {length} chars. Compact: {compact}."
+
+
 def split_telegram_text(text: str, limit: int = _SAFE_CHUNK_LIMIT) -> list[str]:
     """Split text into Telegram-safe chunks, preferably on paragraph boundaries."""
     text = str(text or "").strip()
@@ -214,7 +271,10 @@ def split_telegram_text(text: str, limit: int = _SAFE_CHUNK_LIMIT) -> list[str]:
 
 def validation_summary(result: SafetyResult) -> str:
     if not result.issues:
-        return "✅ Safety validator: no issues found."
-    escaped = [html.escape(x, quote=False) for x in result.issues[:20]]
-    more = "" if len(result.issues) <= 20 else f"\n… and {len(result.issues) - 20} more"
-    return "⚠️ Safety validator removed/changed lines:\n" + "\n".join(f"- {x}" for x in escaped) + more
+        base = "✅ Safety validator: no issues found."
+    else:
+        escaped = [html.escape(x, quote=False) for x in result.issues[:20]]
+        more = "" if len(result.issues) <= 20 else f"\n… and {len(result.issues) - 20} more"
+        base = "⚠️ Safety validator removed/changed lines:\n" + "\n".join(f"- {x}" for x in escaped) + more
+    structure = _structure_summary(result.text)
+    return base if not structure else base + "\n" + structure
