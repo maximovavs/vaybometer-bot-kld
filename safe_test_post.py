@@ -49,12 +49,27 @@ OTHER_CITIES_ALL = [
     ("Гвардейск", (54.655, 21.078)),
 ]
 
+_DIR_RU = {
+    "N": "северный ветер",
+    "NE": "северо-восточный ветер",
+    "E": "восточный ветер",
+    "SE": "юго-восточный ветер",
+    "S": "южный ветер",
+    "SW": "юго-западный ветер",
+    "W": "западный ветер",
+    "NW": "северо-западный ветер",
+}
+
 
 def _env_on(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
     if val is None:
         return default
     return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_any(*names: str) -> bool:
+    return any(_env_on(name) for name in names)
 
 
 def _plain(text: str) -> str:
@@ -252,10 +267,53 @@ def _kld_evening_score_line(v2_text: str) -> str:
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
 
 
+def _translate_shore_notes(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        d = match.group(1).upper()
+        direction = _DIR_RU.get(d, d)
+        if match.group(2).lower() == "none":
+            return f"({direction})"
+        return match.group(0)
+
+    return re.sub(r"\((N|NE|E|SE|S|SW|W|NW)/(None)\)", repl, str(text or ""), flags=re.I)
+
+
+def _fmt_num(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+
+
+def _downgrade_sup_lines(text: str) -> str:
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    last_water: float | None = None
+    last_wave: float | None = None
+    last_weather = ""
+    for line in lines:
+        if "°C" in line and "🌊" in line:
+            last_water = _num(r"🌊\s*(\d+(?:[\.,]\d+)?)", line)
+            last_wave = _num(r"(?:^|•)\s*(\d+(?:[\.,]\d+)?)\s*м\b", line)
+            last_weather = line.lower()
+        if "SUP" in line and "Отлично" in line:
+            reasons: list[str] = []
+            if isinstance(last_wave, (int, float)) and last_wave >= 0.6:
+                reasons.append(f"волна {_fmt_num(last_wave)} м")
+            if isinstance(last_water, (int, float)) and last_water <= 16:
+                reasons.append(f"вода {_fmt_num(last_water)}°")
+            if any(w in last_weather for w in ("морось", "дожд", "ливень")):
+                reasons.append("осадки")
+            if reasons:
+                out.append("🧜‍♂️ SUP: только опытным и короткой сессии • " + ", ".join(reasons[:3]))
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _apply_format_v2_test_polish(v2_text: str) -> str:
-    if not _env_on("FORMAT_V2_TEST_POLISH"):
+    if not _env_any("FORMAT_V2_POLISH", "FORMAT_V2_TEST_POLISH"):
         return v2_text
-    text = re.sub(r"\s+,", ",", str(v2_text or ""))
+    text = _translate_shore_notes(v2_text)
+    text = _downgrade_sup_lines(text)
+    text = re.sub(r"\s+,", ",", text)
     text = re.sub(r"🌙\s+🌙", "🌙", text)
     return text
 
@@ -295,7 +353,7 @@ def _replace_conclusion(v2_text: str, conclusion: str) -> str:
 
 
 def _apply_score_conclusion(v2_text: str) -> str:
-    if not _env_on("FORMAT_V2_TEST_CONCLUSION"):
+    if not _env_any("FORMAT_V2_SCORE_CONCLUSION", "FORMAT_V2_TEST_CONCLUSION"):
         return v2_text
     score = _score_value(v2_text)
     if score is None:
@@ -318,7 +376,7 @@ def _sensor_line_from_legacy(legacy_text: str) -> str:
 
 
 def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
-    if not _env_on("FORMAT_V2_TEST_SENSOR"):
+    if not _env_any("FORMAT_V2_SENSOR_LINE", "FORMAT_V2_TEST_SENSOR", "FORMAT_V2_TEST_SAFECAST"):
         return v2_text
     line = _sensor_line_from_legacy(legacy_text)
     if not line or line in v2_text:
