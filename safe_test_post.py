@@ -318,8 +318,18 @@ def _apply_format_v2_test_polish(v2_text: str) -> str:
     return text
 
 
+def _score_line(v2_text: str) -> str:
+    return next((x.strip() for x in str(v2_text or "").splitlines() if "VayboMeter" in x and "/10" in x), "")
+
+
 def _score_value(v2_text: str) -> float | None:
     return _num(r"VayboMeter\s+завтра:\s*(\d+(?:[\.,]\d+)?)\s*/\s*10", v2_text)
+
+
+def _score_reasons(v2_text: str) -> str:
+    line = _score_line(v2_text)
+    m = re.search(r";\s*(.*?)\.?$", line)
+    return (m.group(1) if m else "").lower()
 
 
 def _kld_score_conclusion(score: float) -> str:
@@ -330,6 +340,25 @@ def _kld_score_conclusion(score: float) -> str:
     if score >= 5.5:
         return "День рабочий, но не прогулочный: лучше короткие маршруты, слой одежды и запасной план на дождь."
     return "День лучше вести в бережном режиме: короткие выходы, защита от ветра/дождя и минимум открытого побережья."
+
+
+def _kld_reason_conclusion(score: float, reasons: str, v2_text: str) -> str:
+    low = (reasons + " " + _plain(v2_text)).lower()
+    precip = any(x in low for x in ("осадки", "дожд", "морось"))
+    cool = any(x in low for x in ("прохлад", "свеж"))
+    wind = any(x in low for x in ("порыв", "ветер"))
+    warning = any(x in low for x in ("шторм", "предупреждение"))
+    if warning:
+        return "День лучше вести с запасным планом: сверить предупреждения утром, у воды не рисковать и держать короткие маршруты."
+    if precip and cool and wind:
+        return "День рабочий, но не прогулочный: короткие маршруты, слой одежды, закрытая обувь и запасной план на дождь."
+    if precip and cool:
+        return "Главная нагрузка — влажная прохлада: лучше короткие выходы, тёплый слой и сухая обувь."
+    if wind:
+        return "У воды осторожнее: выбирай защищённые променады и маршруты за домами, а порывы перепроверь утром."
+    if precip:
+        return "Планируй день короткими выходами между осадками; зонт/капюшон и закрытая обувь будут полезнее долгой прогулки."
+    return _kld_score_conclusion(score)
 
 
 def _replace_conclusion(v2_text: str, conclusion: str) -> str:
@@ -358,7 +387,31 @@ def _apply_score_conclusion(v2_text: str) -> str:
     score = _score_value(v2_text)
     if score is None:
         return v2_text
+    if _env_on("FORMAT_V2_REASON_CONCLUSION"):
+        return _replace_conclusion(v2_text, _kld_reason_conclusion(score, _score_reasons(v2_text), v2_text))
     return _replace_conclusion(v2_text, _kld_score_conclusion(score))
+
+
+def _kld_main_nuance(v2_text: str) -> str:
+    low = (_score_reasons(v2_text) + " " + _plain(v2_text)).lower()
+    precip = any(x in low for x in ("осадки", "морось", "дожд"))
+    cool = any(x in low for x in ("прохлад", "свеж"))
+    wind = any(x in low for x in ("порыв", "ветер"))
+    if precip and cool and wind:
+        return "⚠️ Главный нюанс: морось, свежий ветер и прохладное побережье."
+    if precip and cool:
+        return "⚠️ Главный нюанс: влажная прохлада и короткие окна для прогулок."
+    if wind:
+        return "⚠️ Главный нюанс: у воды ветер ощущается сильнее, чем в городе."
+    if precip:
+        return "⚠️ Главный нюанс: осадки могут идти неравномерно по области."
+    return ""
+
+
+def _insert_main_nuance(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_MAIN_NUANCE") or "⚠️ Главный нюанс:" in v2_text:
+        return v2_text
+    return _inject_after_anchor(v2_text, _kld_main_nuance(v2_text), ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
 
 
 def _sensor_line_from_legacy(legacy_text: str) -> str:
@@ -382,6 +435,74 @@ def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
     if not line or line in v2_text:
         return v2_text
     return _insert_before_anchor(v2_text, line, ("🌙 <b>Астроритм", "✅ <b>Рекомендации", "📌 <b>Вывод"))
+
+
+def _apply_confidence_polish(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_CONFIDENCE_POLISH"):
+        return v2_text
+    return str(v2_text or "").replace(
+        "✅ Разница берег/внутри области: учитывать обязательно.",
+        "✅ Берег и восток области: ощущаются по-разному — не усредняй прогноз.",
+    )
+
+
+def _apply_astro_cleanup(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_ASTRO_CLEANUP"):
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    in_astro = False
+    astro_details = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("🌙 <b>Астроритм", "☀️ <b>Солнце")):
+            in_astro = True
+            astro_details = 0
+            out.append(line)
+            continue
+        if in_astro and stripped.startswith(("✅ <b>Рекомендации", "📌 <b>Вывод", "#")):
+            in_astro = False
+        if in_astro and stripped:
+            if stripped.endswith("для первых") or stripped.endswith("и вдо…"):
+                continue
+            if "…" in stripped and len(stripped) > 80:
+                continue
+            if stripped.startswith("✅ В целом:"):
+                line = "✅ Астроритм: благоприятный."
+                stripped = line
+            if not stripped.startswith(("🌅", "🌙", "✅", "💚")):
+                continue
+            astro_details += 1
+            if astro_details > 3:
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _apply_compact(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_COMPACT"):
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    in_main = False
+    main_text_seen = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("🧭 <b>Главный сценарий"):
+            in_main = True
+            main_text_seen = 0
+            out.append(line)
+            continue
+        if in_main and stripped.startswith(("✨ VayboMeter", "🎯")):
+            in_main = False
+        if in_main and stripped and not stripped.startswith("🧭"):
+            main_text_seen += 1
+            if main_text_seen > 1:
+                continue
+        if stripped.startswith("🧜‍♂️ Отлично:"):
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
@@ -578,8 +699,12 @@ async def main() -> None:
         v2_raw = _inject_evening_score(v2_raw, mode)
         v2_raw = _inject_sensor_line(v2_raw, legacy_result.text)
         v2_raw = _apply_format_v2_test_polish(v2_raw)
+        v2_raw = _apply_confidence_polish(v2_raw)
+        v2_raw = _insert_main_nuance(v2_raw)
+        v2_raw = _apply_astro_cleanup(v2_raw)
         v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
+        v2_raw = _apply_compact(v2_raw)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
