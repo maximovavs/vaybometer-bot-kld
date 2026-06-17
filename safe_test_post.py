@@ -252,6 +252,80 @@ def _kld_evening_score_line(v2_text: str) -> str:
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
 
 
+def _apply_format_v2_test_polish(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_TEST_POLISH"):
+        return v2_text
+    text = re.sub(r"\s+,", ",", str(v2_text or ""))
+    text = re.sub(r"🌙\s+🌙", "🌙", text)
+    return text
+
+
+def _score_value(v2_text: str) -> float | None:
+    return _num(r"VayboMeter\s+завтра:\s*(\d+(?:[\.,]\d+)?)\s*/\s*10", v2_text)
+
+
+def _kld_score_conclusion(score: float) -> str:
+    if score >= 8.7:
+        return "День комфортный для обычных дел и прогулок; у моря всё равно стоит сверить ветер утром."
+    if score >= 7:
+        return "День в целом рабочий и прогулочный, но у воды лучше держать ветровку и сверить порывы утром."
+    if score >= 5.5:
+        return "День рабочий, но не прогулочный: лучше короткие маршруты, слой одежды и запасной план на дождь."
+    return "День лучше вести в бережном режиме: короткие выходы, защита от ветра/дождя и минимум открытого побережья."
+
+
+def _replace_conclusion(v2_text: str, conclusion: str) -> str:
+    lines = str(v2_text or "").splitlines()
+    out: list[str] = []
+    in_conclusion = False
+    replaced = False
+    for line in lines:
+        if line.strip().startswith("📌 <b>Вывод"):
+            in_conclusion = True
+            replaced = False
+            out.append(line)
+            continue
+        if in_conclusion and not replaced and line.strip():
+            out.append(conclusion)
+            replaced = True
+            in_conclusion = False
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _apply_score_conclusion(v2_text: str) -> str:
+    if not _env_on("FORMAT_V2_TEST_CONCLUSION"):
+        return v2_text
+    score = _score_value(v2_text)
+    if score is None:
+        return v2_text
+    return _replace_conclusion(v2_text, _kld_score_conclusion(score))
+
+
+def _sensor_line_from_legacy(legacy_text: str) -> str:
+    marker = "Safe" + "cast"
+    for line in str(legacy_text or "").splitlines():
+        if marker.lower() not in line.lower():
+            continue
+        s = line.strip()
+        s = re.sub(r"^\s*🧪\s*", "", s)
+        s = re.sub(r"\s*—\s*(?:🔴\s*)?высокий.*$", " — выше обычного по датчику; сверяем с динамикой и официальным фоном.", s, flags=re.I)
+        if "—" not in s:
+            s += " — сверяем с динамикой и официальным фоном."
+        return "🧪 " + s
+    return ""
+
+
+def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
+    if not _env_on("FORMAT_V2_TEST_SENSOR"):
+        return v2_text
+    line = _sensor_line_from_legacy(legacy_text)
+    if not line or line in v2_text:
+        return v2_text
+    return _insert_before_anchor(v2_text, line, ("🌙 <b>Астроритм", "✅ <b>Рекомендации", "📌 <b>Вывод"))
+
+
 def _inject_after_anchor(v2_text: str, line_to_add: str, anchors: tuple[str, ...]) -> str:
     if not line_to_add:
         return v2_text
@@ -444,6 +518,9 @@ async def main() -> None:
         v2_raw = _inject_morning_best_window(v2_raw, mode)
         v2_raw = _inject_morning_score(v2_raw, mode)
         v2_raw = _inject_evening_score(v2_raw, mode)
+        v2_raw = _inject_sensor_line(v2_raw, legacy_result.text)
+        v2_raw = _apply_format_v2_test_polish(v2_raw)
+        v2_raw = _apply_score_conclusion(v2_raw)
         v2_raw = _inject_morning_smart_plan(v2_raw, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
