@@ -25,7 +25,6 @@ except Exception:  # pragma: no cover - allows docs/tools to import gracefully
     VisualContext = Any  # type: ignore
     build_visual_context = None  # type: ignore
 
-# Thresholds from docs/visual_weather_matrix.md
 WIND_LIGHT = 4
 WIND_MODERATE = 7
 WIND_STRONG = 10
@@ -87,6 +86,47 @@ def _score_mood(score: Optional[float]) -> str:
     if score >= 6.0:
         return "mixed, cautious comfort"
     return "visibly cautious day"
+
+
+def _normalize_evidence_dict(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Keep evidence flat and JSON-clean for logs.
+
+    Only numeric pairs are allowed inside temp_pairs. Any strings or lists of
+    strings that accidentally appear there are moved to ignored_temp_like_lines.
+    """
+    out: dict[str, Any] = {"evidence_schema_version": 1}
+    ignored_from_temp: list[str] = []
+    for key, value in (evidence or {}).items():
+        if key == "temp_pairs":
+            clean_pairs: list[list[float]] = []
+            if isinstance(value, list):
+                for item in value:
+                    if (
+                        isinstance(item, (list, tuple))
+                        and len(item) == 2
+                        and isinstance(item[0], (int, float))
+                        and isinstance(item[1], (int, float))
+                    ):
+                        clean_pairs.append([float(item[0]), float(item[1])])
+                    elif isinstance(item, str):
+                        ignored_from_temp.append(item)
+                    elif isinstance(item, (list, tuple)) and all(isinstance(x, str) for x in item):
+                        ignored_from_temp.extend(str(x) for x in item)
+            out["temp_pairs"] = clean_pairs
+            continue
+        out[key] = value
+    if ignored_from_temp:
+        existing = out.get("ignored_temp_like_lines", [])
+        if not isinstance(existing, list):
+            existing = [str(existing)]
+        out["ignored_temp_like_lines"] = list(existing) + ignored_from_temp
+    return out
+
+
+def _clean_source_context(ctx: VisualContext) -> dict[str, Any]:
+    payload = dataclasses.asdict(ctx)
+    payload["evidence"] = _normalize_evidence_dict(payload.get("evidence") or {})
+    return payload
 
 
 def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) -> str:
@@ -400,12 +440,11 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
         must_show=must_show,
         must_avoid=must_avoid,
         validation_notes=validation_notes,
-        source_context=dataclasses.asdict(ctx),
+        source_context=_clean_source_context(ctx),
     )
 
 
 def build_prompt_from_cues(cues: SceneCues) -> str:
-    """Prompt-only representation, used for logs before image generation is enabled."""
     parts = [
         "Create an atmospheric, information-driven weather illustration for VayboMeter Kaliningrad.",
         f"Base scene: {cues.base_scene}.",
@@ -448,7 +487,15 @@ def main() -> None:
 
     ctx = build_visual_context(message, post_type=args.post_type or None)
     cues = apply_visual_rules(ctx)
+
+    print("\n===== VISUAL_CONTEXT BEGIN =====\n")
+    print(json.dumps(_clean_source_context(ctx), ensure_ascii=False, indent=2 if not args.compact else None))
+    print("\n===== VISUAL_CONTEXT END =====\n")
+
+    print("\n===== VISUAL_CUES BEGIN =====\n")
     print(to_json(cues, pretty=not args.compact))
+    print("\n===== VISUAL_CUES END =====\n")
+
     if args.prompt:
         print("\n===== VISUAL_PROMPT BEGIN =====\n")
         print(build_prompt_from_cues(cues))
