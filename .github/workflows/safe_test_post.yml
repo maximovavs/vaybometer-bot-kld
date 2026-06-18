@@ -198,21 +198,24 @@ jobs:
           fi
 
           echo "Running: python ${args[*]}"
-          python "${args[@]}"
+          python "${args[@]}" | tee safe_test_post_output.log
 
           if [ "${{ github.event.inputs.visual_prompt_probe }}" = "true" ] && [ "${{ github.event.inputs.format_v2 }}" = "true" ]; then
-            probe_args=("visual_probe_kld.py" "--mode" "${{ github.event.inputs.mode }}" "--print-message")
+            python - <<'PY'
+          from pathlib import Path
 
-            if [ -n "${{ github.event.inputs.work_date }}" ]; then
-              probe_args+=("--date" "${{ github.event.inputs.work_date }}")
-            fi
+          log = Path("safe_test_post_output.log").read_text(encoding="utf-8")
+          start = "===== FORMAT_V2 MESSAGE BEGIN ====="
+          end = "===== FORMAT_V2 MESSAGE END ====="
+          if start not in log or end not in log:
+              raise SystemExit("FORMAT_V2 MESSAGE block not found in safe_test_post output")
+          block = log.split(start)[-1].split(end)[0].strip()
+          Path("format_v2_message.txt").write_text(block + "\n", encoding="utf-8")
+          print("Extracted already-built FORMAT_V2 message to format_v2_message.txt")
+          PY
 
-            if [ "${{ github.event.inputs.for_tomorrow }}" = "true" ]; then
-              probe_args+=("--for-tomorrow")
-            fi
-
-            echo "Running visual prompt probe: python ${probe_args[*]}"
-            python "${probe_args[@]}"
+            echo "Running visual prompt parser on already-built FORMAT_V2 text"
+            python visual_rules.py --message-file format_v2_message.txt --post-type "${{ github.event.inputs.mode }}" --prompt
           else
             echo "Visual prompt probe skipped. Enable format_v2=true and visual_prompt_probe=true."
           fi
