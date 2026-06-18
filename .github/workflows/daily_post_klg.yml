@@ -25,7 +25,7 @@ on:
       format_v2:
         description: "FORMAT_V2 для ручного теста/override; расписание morning/evening уже включает V2"
         type: boolean
-        default: false
+        default: true
         required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
@@ -231,18 +231,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Post FX only (12:00 MSK)
+      - name: Post FX Market Pulse only (12:00 MSK)
         shell: bash
         run: |
           python <<'PY'
           import os, runpy, sys, pendulum
           wd = os.getenv("WORK_DATE")
+          args = ["post_kld_fx_market_pulse.py"]
           if wd:
-              def _fake_today(tz=None):
-                  dt = pendulum.parse(wd)
-                  return dt.in_tz(tz) if tz else dt
-              pendulum.today = _fake_today
-          args = ["post_kld.py", "--fx-only"]
+              args += ["--date", wd]
           chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
           if chat_override.strip():
               args += ["--chat-id", chat_override.strip()]
@@ -251,5 +248,5 @@ jobs:
               if to_test:
                   args.append("--to-test")
           sys.argv = args
-          runpy.run_path("post_kld.py", run_name="__main__")
+          runpy.run_path("post_kld_fx_market_pulse.py", run_name="__main__")
           PY
