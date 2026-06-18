@@ -460,8 +460,8 @@ def build_prompt_from_cues(cues: SceneCues) -> str:
         parts.append("Must show: " + "; ".join(cues.must_show) + ".")
     if cues.must_avoid:
         parts.append("Must avoid: " + "; ".join(cues.must_avoid) + ".")
-    parts.append("No text, no captions, no labels, no logos, no numbers, no UI, no watermarks.")
-    return " ".join(parts)
+    parts.append("Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.")
+    return "\n".join(parts)
 
 
 def to_json(obj: Any, *, pretty: bool = True) -> str:
