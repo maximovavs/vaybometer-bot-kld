@@ -20,6 +20,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass, field
+from statistics import median
 from typing import Any, Literal, Optional
 
 Region = Literal["kaliningrad"]
@@ -50,6 +51,21 @@ MoonPhase = Literal[
 ]
 TimeHint = Literal["day", "sunrise", "sunset", "night", "unknown"]
 
+SECTION_MARKERS = (
+    "морские города",
+    "тёплые города",
+    "теплые города",
+    "холодные города",
+    "рекомендации",
+    "астроритм",
+    "вывод",
+    "главный сценарий",
+    "главный нюанс",
+    "уверенность",
+)
+
+SPORT_WORDS = ("sup", "сап", "кайт", "винг", "винд", "гидрокостюм", "боты")
+
 
 @dataclass(frozen=True)
 class VisualContext:
@@ -69,6 +85,13 @@ class VisualContext:
     uv_index: Optional[float] = None
     score: Optional[float] = None
     evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _SportLine:
+    sport: Sport
+    level: SportLevel
+    line: str
 
 
 def _clean_text(text: str) -> str:
@@ -99,6 +122,66 @@ def _first_num(pattern: str, text: str, flags: int = re.I) -> Optional[float]:
     return _num(m.group(1))
 
 
+def _is_section_line(line: str) -> bool:
+    low = line.lower()
+    return any(marker in low for marker in SECTION_MARKERS)
+
+
+def _is_sport_or_wetsuit_line(line: str) -> bool:
+    low = line.lower()
+    return any(word in low for word in SPORT_WORDS)
+
+
+def _city_weather_lines(text: str) -> list[str]:
+    """Return lines that look like real city forecast rows.
+
+    This intentionally excludes headers like "❄️ Холодные города" and water-sport
+    recommendation rows like "гидрокостюм 4/3 мм", which previously polluted
+    weather and temperature parsing.
+    """
+    out: list[str] = []
+    for line in _lines(text):
+        low = line.lower()
+        if _is_section_line(line):
+            continue
+        if _is_sport_or_wetsuit_line(line):
+            continue
+        if "°" not in line and "°c" not in low:
+            continue
+        if ":" not in line:
+            continue
+        if not re.search(r":\s*-?\d+(?:[\.,]\d+)?\s*/\s*-?\d+(?:[\.,]\d+)?\s*°", line):
+            continue
+        out.append(line)
+    return out
+
+
+def _detect_weather_from_lines(lines: list[str], *, allow_snow: bool = True) -> WeatherMain:
+    s = "\n".join(lines).lower()
+    if not s:
+        return "unknown"
+
+    if any(x in s for x in ("шторм", "штормовое", "storm", "gale", "squall", "ураган")):
+        return "storm"
+    if "⛈" in s or "гроза" in s or "thunder" in s:
+        return "rain"
+    if allow_snow and ("снег" in s or "snow" in s or re.search(r"(?:^|\s)❄️?\s*(?:снег|snow)", s)):
+        return "snow"
+    if "🌧" in s or "ливн" in s or re.search(r"\bдожд", s) or "rain" in s or "shower" in s:
+        return "rain"
+    if "🌦" in s or "морось" in s or "drizzle" in s:
+        return "drizzle"
+    if "🌫" in s or "туман" in s or "fog" in s or "mist" in s:
+        return "fog"
+    if "🌥" in s or "пасм" in s or "☁" in s or "обл" in s or "cloudy" in s:
+        return "cloudy"
+    if "⛅" in s or "ч.обл" in s or "переменн" in s or "partly" in s:
+        return "partly_cloudy"
+    if "☀" in s or "ясно" in s or "clear" in s:
+        return "clear"
+    return "unknown"
+
+
 def detect_post_type(text: str, override: str | None = None) -> PostType:
     ov = (override or "").strip().lower()
     if ov in ("morning", "утро"):
@@ -124,39 +207,29 @@ def detect_time_hint(post_type: PostType, text: str) -> TimeHint:
     return "unknown"
 
 
-def detect_weather_main(text: str) -> WeatherMain:
-    s = _clean_text(text).lower()
+def detect_weather_main(text: str, temp_max: Optional[float] = None) -> tuple[WeatherMain, dict[str, Any]]:
+    lines = _city_weather_lines(text)
+    evidence: dict[str, Any] = {"weather_lines": lines[:20]}
+    weather = _detect_weather_from_lines(lines, allow_snow=True)
 
-    # Precedence: dangerous/strong signals first.
-    if any(x in s for x in ("шторм", "штормовое", "storm", "gale", "squall", "ураган")):
-        return "storm"
-    if "⚠️" in s and any(x in s for x in ("ветер", "порыв", "волна", "шторм")):
-        return "storm"
-    if "❄" in s or "снег" in s or "snow" in s:
-        return "snow"
-    if "⛈" in s or "гроза" in s or "thunder" in s:
-        return "rain"
-    if "🌧" in s or "ливн" in s or re.search(r"\bдожд", s) or "rain" in s or "shower" in s:
-        return "rain"
-    if "🌦" in s or "морось" in s or "drizzle" in s:
-        return "drizzle"
-    if "🌫" in s or "туман" in s or "fog" in s or "mist" in s:
-        return "fog"
-    if "🌥" in s or "пасм" in s or "☁" in s or "обл" in s or "cloudy" in s:
-        return "cloudy"
-    if "⛅" in s or "ч.обл" in s or "переменн" in s or "partly" in s:
-        return "partly_cloudy"
-    if "☀" in s or "ясно" in s or "clear" in s:
-        return "clear"
-    return "unknown"
+    # Consistency guard: if a decorative snowflake or a single polluted token gets
+    # through while the day is clearly warm, fall back to non-snow interpretation.
+    if weather == "snow" and temp_max is not None and temp_max >= 8:
+        fallback = _detect_weather_from_lines(lines, allow_snow=False)
+        evidence["weather_consistency_guard"] = {
+            "from": "snow",
+            "to": fallback,
+            "reason": f"temp_max={temp_max} >= 8; snow is inconsistent",
+        }
+        weather = fallback if fallback != "unknown" else "cloudy"
+    return weather, evidence
 
 
 def extract_score(text: str) -> Optional[float]:
     s = _clean_text(text)
     patterns = [
-        r"VayboMeter[^\d]{0,30}(\d+(?:[\.,]\d+)?)\s*/\s*10",
-        r"ВайбоМетр[^\d]{0,30}(\d+(?:[\.,]\d+)?)\s*/\s*10",
-        r"Score[^\d]{0,30}(\d+(?:[\.,]\d+)?)\s*/\s*10",
+        r"(?:VayboMeter|ВайбоМетр)[^0-9]{0,80}(\d+(?:[\.,]\d+)?)\s*/\s*10",
+        r"Score[^0-9]{0,80}(\d+(?:[\.,]\d+)?)\s*/\s*10",
     ]
     for p in patterns:
         v = _first_num(p, s)
@@ -166,21 +239,29 @@ def extract_score(text: str) -> Optional[float]:
 
 
 def extract_temperatures(text: str) -> tuple[Optional[float], Optional[float], dict[str, Any]]:
-    s = _clean_text(text)
     pairs: list[tuple[float, float]] = []
-    for m in re.finditer(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*(-?\d+(?:[\.,]\d+)?)\s*°?\s*C?", s, re.I):
+    ignored: list[str] = []
+    for line in _lines(text):
+        if _is_sport_or_wetsuit_line(line):
+            if re.search(r"\d+(?:[\.,]\d+)?\s*/\s*\d+(?:[\.,]\d+)?", line):
+                ignored.append(line)
+            continue
+        if line not in _city_weather_lines(text):
+            continue
+        m = re.search(r":\s*(-?\d+(?:[\.,]\d+)?)\s*/\s*(-?\d+(?:[\.,]\d+)?)\s*°", line)
+        if not m:
+            continue
         a = _num(m.group(1))
         b = _num(m.group(2))
         if a is not None and b is not None:
             pairs.append((a, b))
-    if pairs:
-        return max(a for a, _ in pairs), min(b for _, b in pairs), {"temp_pairs": pairs[:20]}
 
-    vals = [_num(m.group(1)) for m in re.finditer(r"(-?\d+(?:[\.,]\d+)?)\s*°\s*C?", s, re.I)]
-    vals = [v for v in vals if v is not None]
-    if vals:
-        return max(vals), min(vals), {"temp_values": vals[:20]}
-    return None, None, {}
+    evidence: dict[str, Any] = {"temp_pairs": pairs[:20]}
+    if ignored:
+        evidence["ignored_temp_like_lines"] = ignored[:20]
+    if pairs:
+        return max(a for a, _ in pairs), min(b for _, b in pairs), evidence
+    return None, None, evidence
 
 
 def extract_wind(text: str) -> tuple[Optional[float], Optional[float], dict[str, Any]]:
@@ -214,8 +295,8 @@ def extract_wind(text: str) -> tuple[Optional[float], Optional[float], dict[str,
                 avg_candidates.append((a + b) / 2)
 
     single_patterns = [
-        r"ветер[^\d]{0,24}(\d+(?:[\.,]\d+)?)\s*м\s*/?\s*с",
-        r"wind[^\d]{0,24}(\d+(?:[\.,]\d+)?)\s*m\s*/?\s*s",
+        r"(?:^|\n)[^\n]{0,80}ветер[^\d]{0,24}(\d+(?:[\.,]\d+)?)\s*м\s*/?\s*с",
+        r"(?:^|\n)[^\n]{0,80}wind[^\d]{0,24}(\d+(?:[\.,]\d+)?)\s*m\s*/?\s*s",
     ]
     for p in single_patterns:
         for m in re.finditer(p, s, re.I):
@@ -230,33 +311,31 @@ def extract_wind(text: str) -> tuple[Optional[float], Optional[float], dict[str,
 
 
 def extract_sea(text: str) -> tuple[Optional[float], Optional[float], dict[str, Any]]:
-    s = _clean_text(text)
-    sea_temp = None
-    wave_height = None
+    sea_temps: list[float] = []
+    waves: list[float] = []
+    source_lines: list[str] = []
 
-    sea_patterns = [
-        r"(?:вода|море|sst)[^\d-]{0,12}(-?\d+(?:[\.,]\d+)?)\s*°",
-        r"(-?\d+(?:[\.,]\d+)?)\s*°[^\n]{0,20}(?:вода|море|sst)",
-    ]
-    for p in sea_patterns:
-        sea_temp = _first_num(p, s)
-        if sea_temp is not None:
-            break
+    for line in _city_weather_lines(text):
+        if "🌊" not in line and "волна" not in line.lower():
+            continue
+        source_lines.append(line)
+        sea = _first_num(r"🌊\s*(\d+(?:[\.,]\d+)?)", line)
+        if sea is not None:
+            sea_temps.append(sea)
+        wave = _first_num(r"(?:^|[•\s])\s*(\d+(?:[\.,]\d+)?)\s*м\b", line)
+        if wave is not None:
+            waves.append(wave)
 
-    wave_patterns = [
-        r"волна[^\d]{0,12}(\d+(?:[\.,]\d+)?)\s*м",
-        r"wave[^\d]{0,12}(\d+(?:[\.,]\d+)?)\s*m",
-    ]
-    for p in wave_patterns:
-        wave_height = _first_num(p, s)
-        if wave_height is not None:
-            break
+    sea_temp = float(median(sea_temps)) if sea_temps else None
+    wave_height = max(waves) if waves else None
 
     evidence = {}
-    if sea_temp is not None:
-        evidence["sea_temp_source"] = sea_temp
-    if wave_height is not None:
-        evidence["wave_height_source"] = wave_height
+    if source_lines:
+        evidence["sea_source_lines"] = source_lines[:20]
+    if sea_temps:
+        evidence["sea_temp_candidates"] = sea_temps[:20]
+    if waves:
+        evidence["wave_height_candidates"] = waves[:20]
     return sea_temp, wave_height, evidence
 
 
@@ -280,7 +359,6 @@ def extract_sport(text: str, wind_gust: Optional[float] = None) -> tuple[Sport, 
         if "sup" in low or "сап" in low or "сапе" in low:
             sport_lines.append(("sup", _level_from_line(line), line))
         if "кайт" in low or "wing" in low or "винг" in low or "винд" in low or "windsurf" in low:
-            # For visuals, combined KLD line is best represented as kite/wind sport cue.
             if "wing" in low or "винг" in low:
                 sp: Sport = "wing"
             elif "винд" in low or "windsurf" in low:
@@ -296,19 +374,11 @@ def extract_sport(text: str, wind_gust: Optional[float] = None) -> tuple[Sport, 
 
     def sort_key(item: tuple[Sport, SportLevel, str]) -> tuple[int, int]:
         sp, lvl, _ = item
-        # If wind is meaningfully strong, prefer wind sport over SUP on ties.
         wind_bonus = 1 if (wind_gust is not None and wind_gust >= 10 and sp in ("kite", "wing", "windsurf")) else 0
         return rank.get(lvl, 0), wind_bonus
 
     chosen = sorted(sport_lines, key=sort_key, reverse=True)[0]
     return chosen[0], chosen[1], {"sport_lines": [dataclasses.asdict(_SportLine(*x)) for x in sport_lines]}
-
-
-@dataclass(frozen=True)
-class _SportLine:
-    sport: Sport
-    level: SportLevel
-    line: str
 
 
 def extract_moon_phase(text: str) -> MoonPhase:
@@ -335,8 +405,8 @@ def extract_moon_phase(text: str) -> MoonPhase:
 def build_visual_context(message: str, *, post_type: str | None = None) -> VisualContext:
     clean = _clean_text(message)
     pt = detect_post_type(clean, post_type)
-    weather = detect_weather_main(clean)
     temp_max, temp_min, temp_ev = extract_temperatures(clean)
+    weather, weather_ev = detect_weather_main(clean, temp_max=temp_max)
     wind_avg, wind_gust, wind_ev = extract_wind(clean)
     sea_temp, wave_height, sea_ev = extract_sea(clean)
     sport, sport_level, sport_ev = extract_sport(clean, wind_gust)
@@ -345,6 +415,7 @@ def build_visual_context(message: str, *, post_type: str | None = None) -> Visua
     time_hint = detect_time_hint(pt, clean)
 
     evidence: dict[str, Any] = {}
+    evidence.update(weather_ev)
     evidence.update(temp_ev)
     evidence.update(wind_ev)
     evidence.update(sea_ev)
