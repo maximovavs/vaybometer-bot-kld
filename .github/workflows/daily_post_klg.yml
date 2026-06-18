@@ -58,6 +58,7 @@ env:
   GEN_SKIP_SHORT: "1"
   PYTHONUNBUFFERED: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
+  FORMAT_V2_MORNING_SPACING: "1"
   MORNING_FEELS_LIKE: "1"
   MORNING_BEST_WINDOW: "1"
   MORNING_SMART_PLAN: "1"
