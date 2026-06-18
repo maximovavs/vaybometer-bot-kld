@@ -141,6 +141,41 @@ def _line_should_drop(line: str) -> tuple[bool, str | None]:
     return False, None
 
 
+def _move_safecast_before_hashtags(text: str) -> str:
+    lines = str(text or "").splitlines()
+    safecast = [line for line in lines if line.strip().startswith("🧪")]
+    if not safecast:
+        return text
+    kept = [line for line in lines if not line.strip().startswith("🧪")]
+    hash_idx = next((idx for idx, line in enumerate(kept) if line.strip().startswith("#")), -1)
+    if hash_idx < 0:
+        return "\n".join(kept + ([""] if kept and kept[-1].strip() else []) + safecast)
+    insert = []
+    if hash_idx > 0 and kept[hash_idx - 1].strip():
+        insert.append("")
+    insert.extend(safecast)
+    insert.append("")
+    return "\n".join(kept[:hash_idx] + insert + kept[hash_idx:])
+
+
+def _promote_vaybometer_after_title(text: str) -> str:
+    if not _env_on("FORMAT_V2"):
+        return text
+    lines = str(text or "").splitlines()
+    score_idx = next((idx for idx, line in enumerate(lines) if line.strip().startswith("✨ VayboMeter") and "/10" in line), -1)
+    if score_idx <= 0:
+        return text
+    title_idx = next((idx for idx, line in enumerate(lines) if line.strip().startswith("<b>🌅")), -1)
+    if title_idx < 0 or score_idx == title_idx + 1:
+        return text
+    score_line = lines.pop(score_idx)
+    insert_at = title_idx + 1
+    while insert_at < len(lines) and not lines[insert_at].strip():
+        insert_at += 1
+    lines.insert(insert_at, score_line)
+    return "\n".join(lines)
+
+
 def _apply_kld_morning_spacing(text: str) -> str:
     """Add visual breathing room to compact KLD morning FORMAT_V2 posts."""
     if not _env_on("FORMAT_V2_MORNING_SPACING"):
@@ -205,6 +240,8 @@ def sanitize_post_text(text: str) -> SafetyResult:
 
     safe = "\n".join(out).strip()
     safe = re.sub(r"\n{3,}", "\n\n", safe)
+    safe = _move_safecast_before_hashtags(safe)
+    safe = _promote_vaybometer_after_title(safe)
     safe = _apply_kld_morning_spacing(safe)
     return SafetyResult(text=safe, issues=issues)
 
