@@ -20,6 +20,11 @@ on:
         type: boolean
         default: false
         required: false
+      visual_prompt_probe:
+        description: "Print VISUAL_CONTEXT / VISUAL_CUES / VISUAL_PROMPT for image matrix"
+        type: boolean
+        default: true
+        required: false
       compact:
         description: "Test compact FORMAT_V2 output"
         type: boolean
@@ -94,6 +99,7 @@ env:
   KLD_IMG_ENABLED: "0"
   DISABLE_SCHUMANN: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
+  FORMAT_V2_VISUAL_PROMPT_PROBE: ${{ github.event.inputs.visual_prompt_probe == 'true' && '1' || '0' }}
   FORMAT_V2_COMPACT: ${{ github.event.inputs.compact == 'true' && '1' || '0' }}
   FORMAT_V2_MORNING_SPACING: ${{ github.event.inputs.morning_spacing == 'true' && '1' || '0' }}
   FORMAT_V2_WINDSPORT_POLISH: ${{ github.event.inputs.windsport_polish == 'true' && '1' || '0' }}
@@ -134,6 +140,7 @@ jobs:
           echo "Kaliningrad: $(TZ=Europe/Kaliningrad date)"
           echo "Branch: ${{ github.event.inputs.test_branch }}"
           echo "FORMAT_V2: $FORMAT_V2"
+          echo "FORMAT_V2_VISUAL_PROMPT_PROBE: $FORMAT_V2_VISUAL_PROMPT_PROBE"
           echo "FORMAT_V2_COMPACT: $FORMAT_V2_COMPACT"
           echo "FORMAT_V2_MORNING_SPACING: $FORMAT_V2_MORNING_SPACING"
           echo "FORMAT_V2_WINDSPORT_POLISH: $FORMAT_V2_WINDSPORT_POLISH"
@@ -192,3 +199,20 @@ jobs:
 
           echo "Running: python ${args[*]}"
           python "${args[@]}"
+
+          if [ "${{ github.event.inputs.visual_prompt_probe }}" = "true" ] && [ "${{ github.event.inputs.format_v2 }}" = "true" ]; then
+            probe_args=("visual_probe_kld.py" "--mode" "${{ github.event.inputs.mode }}" "--print-message")
+
+            if [ -n "${{ github.event.inputs.work_date }}" ]; then
+              probe_args+=("--date" "${{ github.event.inputs.work_date }}")
+            fi
+
+            if [ "${{ github.event.inputs.for_tomorrow }}" = "true" ]; then
+              probe_args+=("--for-tomorrow")
+            fi
+
+            echo "Running visual prompt probe: python ${probe_args[*]}"
+            python "${probe_args[@]}"
+          else
+            echo "Visual prompt probe skipped. Enable format_v2=true and visual_prompt_probe=true."
+          fi
