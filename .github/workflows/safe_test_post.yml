@@ -35,6 +35,11 @@ on:
         type: boolean
         default: true
         required: false
+      synthetic_bad_weather:
+        description: "Run synthetic cold rain/wind sea scenario for water-sport safety"
+        type: boolean
+        default: false
+        required: false
       feels_like:
         description: "Test extra morning line: feels-like / comfort"
         type: boolean
@@ -92,6 +97,7 @@ env:
   FORMAT_V2_COMPACT: ${{ github.event.inputs.compact == 'true' && '1' || '0' }}
   FORMAT_V2_MORNING_SPACING: ${{ github.event.inputs.morning_spacing == 'true' && '1' || '0' }}
   FORMAT_V2_WINDSPORT_POLISH: ${{ github.event.inputs.windsport_polish == 'true' && '1' || '0' }}
+  KLD_SYNTHETIC_BAD_WEATHER: ${{ github.event.inputs.synthetic_bad_weather == 'true' && '1' || '0' }}
   MORNING_FEELS_LIKE: ${{ github.event.inputs.feels_like == 'true' && '1' || '0' }}
   MORNING_BEST_WINDOW: ${{ github.event.inputs.best_window == 'true' && '1' || '0' }}
   MORNING_SMART_PLAN: ${{ github.event.inputs.smart_plan == 'true' && '1' || '0' }}
@@ -131,6 +137,7 @@ jobs:
           echo "FORMAT_V2_COMPACT: $FORMAT_V2_COMPACT"
           echo "FORMAT_V2_MORNING_SPACING: $FORMAT_V2_MORNING_SPACING"
           echo "FORMAT_V2_WINDSPORT_POLISH: $FORMAT_V2_WINDSPORT_POLISH"
+          echo "KLD_SYNTHETIC_BAD_WEATHER: $KLD_SYNTHETIC_BAD_WEATHER"
           echo "MORNING_FEELS_LIKE: $MORNING_FEELS_LIKE"
           echo "MORNING_BEST_WINDOW: $MORNING_BEST_WINDOW"
           echo "MORNING_SMART_PLAN: $MORNING_SMART_PLAN"
@@ -158,6 +165,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          if [ "${{ github.event.inputs.synthetic_bad_weather }}" = "true" ]; then
+            echo "Running synthetic bad-weather fixture"
+            python synthetic_badweather_test.py
+            exit 0
+          fi
+
           args=("safe_test_post.py" "--mode" "${{ github.event.inputs.mode }}")
 
           if [ "${{ github.event.inputs.format_v2 }}" = "true" ]; then
