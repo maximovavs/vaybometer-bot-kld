@@ -215,6 +215,10 @@ def _fix_kld_temperature_emojis(text: str) -> str:
     return pattern.sub(repl, str(text or ""))
 
 
+def _polish_sup_wording(text: str) -> str:
+    return str(text or "").replace("🧜‍♂️ SUP: только опытным", "🧜‍♂️ SUP: только для опытных")
+
+
 def _move_safecast_before_hashtags(text: str) -> str:
     lines = str(text or "").splitlines()
     safecast = [line for line in lines if line.strip().startswith("🧪")]
@@ -314,6 +318,7 @@ def sanitize_post_text(text: str) -> SafetyResult:
     safe = re.sub(r"\n{3,}", "\n\n", safe)
     safe = _cap_kld_morning_score(safe)
     safe = _fix_kld_temperature_emojis(safe)
+    safe = _polish_sup_wording(safe)
     safe = _move_safecast_before_hashtags(safe)
     safe = _promote_vaybometer_after_title(safe)
     safe = _apply_kld_morning_spacing(safe)
