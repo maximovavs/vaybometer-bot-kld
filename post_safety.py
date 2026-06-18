@@ -42,6 +42,8 @@ _SHORE_RU = {
     "cross": "вдоль берега",
 }
 
+_TEMP_PREFIXES = ("🥵", "😎", "😊", "😌", "🙄", "😮‍💨", "🥶", "🌤", "🌥")
+
 _FORBIDDEN_PATTERNS = [
     (re.compile(r"\bKp\s+н/д\b", re.I), "Kp n/a"),
     (re.compile(r"\bКр\s+н/д\b", re.I), "Kp n/a"),
@@ -102,9 +104,7 @@ def _normalize_line(line: str, issues: list[str] | None = None) -> str:
     line = line.replace(" • -", "")
     line = line.replace(" — —", " —")
     line = line.replace(" - -", " -")
-    # Guard against old bad normalization: "порывы до 1 м/с3 м/с" -> "порывы до 13 м/с".
     line = re.sub(r"\bпорывы\s+до\s+(\d+)\s*м/с\s*(\d+)\s*м/с\b", r"порывы до \1\2 м/с", line, flags=re.I)
-    # Normalize dash/wording, but require the full number to be captured.
     line = re.sub(r"\bпорывы\s*[—-]\s*(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", line, flags=re.I)
     line = re.sub(r"\bпорывы\s+до\s+(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", line, flags=re.I)
     line = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", line)
@@ -182,6 +182,37 @@ def _cap_kld_morning_score(text: str) -> str:
     if water_wind and "ветер" not in repl.lower():
         repl = repl.rstrip(".") + ", у воды ветер заметнее."
     return s.replace(line, repl, 1)
+
+
+def _kld_temp_emoji(t: float) -> str:
+    if t >= 25:
+        return "😎"
+    if t >= 20:
+        return "😊"
+    if t >= 17:
+        return "😌"
+    if t >= 14:
+        return "😮‍💨"
+    return "🥶"
+
+
+def _fix_kld_temperature_emojis(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        prefix = match.group("prefix") or ""
+        city_part = match.group("city") or ""
+        temp_raw = (match.group("temp") or "").replace(",", ".")
+        try:
+            t = float(temp_raw)
+        except Exception:
+            return match.group(0)
+        return f"{prefix}{_kld_temp_emoji(t)} {city_part}{match.group('temp')}/"
+
+    emoji_alt = "|".join(re.escape(x) for x in _TEMP_PREFIXES)
+    pattern = re.compile(
+        rf"^(?P<prefix>\s*)(?:{emoji_alt})\s+(?P<city>[^:\n]+:\s*)(?P<temp>-?\d+(?:[\.,]\d+)?)/",
+        flags=re.M,
+    )
+    return pattern.sub(repl, str(text or ""))
 
 
 def _move_safecast_before_hashtags(text: str) -> str:
@@ -282,6 +313,7 @@ def sanitize_post_text(text: str) -> SafetyResult:
     safe = "\n".join(out).strip()
     safe = re.sub(r"\n{3,}", "\n\n", safe)
     safe = _cap_kld_morning_score(safe)
+    safe = _fix_kld_temperature_emojis(safe)
     safe = _move_safecast_before_hashtags(safe)
     safe = _promote_vaybometer_after_title(safe)
     safe = _apply_kld_morning_spacing(safe)
