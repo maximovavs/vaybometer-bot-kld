@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Visual rules engine for VayboMeter weather images.
+
+Step 3 of the visual weather matrix implementation.
+
+Input: VisualContext from visual_context_kld.py.
+Output: SceneCues used later by prompt builders.
+
+This module does not generate or send images. It only applies deterministic
+if/else rules preserved in docs/visual_weather_matrix.md.
+"""
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import sys
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+try:
+    from visual_context_kld import VisualContext, build_visual_context
+except Exception:  # pragma: no cover - allows docs/tools to import gracefully
+    VisualContext = Any  # type: ignore
+    build_visual_context = None  # type: ignore
+
+# Thresholds from docs/visual_weather_matrix.md
+WIND_LIGHT = 4
+WIND_MODERATE = 7
+WIND_STRONG = 10
+WIND_VERY_STRONG = 13
+
+GUST_MODERATE = 10
+GUST_STRONG = 13
+GUST_VERY_STRONG = 16
+
+WAVE_LOW = 0.4
+WAVE_MEDIUM = 0.8
+WAVE_HIGH = 1.0
+
+WARM_KLD = 22
+MILD_KLD = 17
+COOL_KLD = 13
+
+SEA_COLD = 16
+SEA_VERY_COLD = 13
+
+
+@dataclass(frozen=True)
+class SceneCues:
+    region: str
+    post_type: str
+    base_scene: str
+    palette: str
+    light_style: str
+    weather_visual: str
+    sea_state: str
+    activity_visual: str
+    activity_scale: str
+    moon_visual: str
+    overall_mood: str
+    must_show: list[str] = field(default_factory=list)
+    must_avoid: list[str] = field(default_factory=list)
+    validation_notes: list[str] = field(default_factory=list)
+    source_context: dict[str, Any] = field(default_factory=dict)
+
+
+def _has(value: Optional[float]) -> bool:
+    return isinstance(value, (int, float))
+
+
+def _add_unique(items: list[str], value: str | None) -> None:
+    value = (value or "").strip()
+    if value and value not in items:
+        items.append(value)
+
+
+def _score_mood(score: Optional[float]) -> str:
+    if not _has(score):
+        return "balanced weather mood"
+    assert score is not None
+    if score >= 8.5:
+        return "pleasant, attractive, calm-confidence"
+    if score >= 7.0:
+        return "good with caveats"
+    if score >= 6.0:
+        return "mixed, cautious comfort"
+    return "visibly cautious day"
+
+
+def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) -> str:
+    w = getattr(ctx, "weather_main", "unknown")
+
+    if w == "clear":
+        _add_unique(must_show, "mostly clear sky")
+        _add_unique(must_show, "good visibility and readable horizon")
+        _add_unique(must_avoid, "rain, heavy clouds, storm mood")
+        return "clear Baltic weather"
+
+    if w == "partly_cloudy":
+        _add_unique(must_show, "visible clouds with sun gaps")
+        _add_unique(must_show, "balanced soft northern light")
+        return "partly cloudy Baltic weather"
+
+    if w == "cloudy":
+        _add_unique(must_show, "cloud-dominant sky")
+        _add_unique(must_show, "diffused light")
+        _add_unique(must_avoid, "hard bright sun")
+        return "cloudy Baltic weather"
+
+    if w == "drizzle":
+        _add_unique(must_show, "soft grey sky")
+        _add_unique(must_show, "humid wet Baltic air")
+        _add_unique(must_show, "subtle drizzle texture")
+        _add_unique(must_show, "wet promenade or damp shoreline foreground")
+        _add_unique(must_avoid, "bright harsh sun")
+        _add_unique(must_avoid, "cheerful dry beach postcard look")
+        return "drizzle and wet Baltic air"
+
+    if w == "rain":
+        _add_unique(must_show, "visible rain streaks")
+        _add_unique(must_show, "wet surfaces and darker rainy clouds")
+        _add_unique(must_show, "puddles or wet promenade if a promenade is visible")
+        _add_unique(must_avoid, "leisurely dry beach mood")
+        return "rainy Baltic weather"
+
+    if w == "fog":
+        _add_unique(must_show, "low horizon visibility")
+        _add_unique(must_show, "soft haze and reduced contrast")
+        _add_unique(must_show, "softened distant shoreline")
+        return "foggy Baltic atmosphere"
+
+    if w == "snow":
+        _add_unique(must_show, "snow in the air or on the ground")
+        _add_unique(must_show, "cold winter sky")
+        _add_unique(must_avoid, "summer greenery")
+        return "snowy Baltic winter scene"
+
+    if w == "storm":
+        _add_unique(must_show, "dramatic clouds")
+        _add_unique(must_show, "rough sea")
+        _add_unique(must_show, "spray and wave energy")
+        _add_unique(must_avoid, "relaxed casual sport foreground")
+        return "storm-warning Baltic atmosphere"
+
+    return "general Baltic weather mood"
+
+
+def _sea_state(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) -> str:
+    wind_avg = getattr(ctx, "wind_avg", None)
+    wind_gust = getattr(ctx, "wind_gust", None)
+    wave_height = getattr(ctx, "wave_height", None)
+    sea_temp = getattr(ctx, "sea_temp", None)
+
+    sea_state = "cool Baltic sea"
+
+    if _has(wind_avg) and _has(wind_gust):
+        assert wind_avg is not None and wind_gust is not None
+        if wind_avg <= WIND_LIGHT and wind_gust <= GUST_MODERATE:
+            sea_state = "calm or lightly textured water"
+            _add_unique(must_show, "calm or lightly textured Baltic water")
+        elif wind_avg <= WIND_MODERATE:
+            sea_state = "light chop on the Baltic water"
+            _add_unique(must_show, "light chop on water")
+            _add_unique(must_show, "mild movement in dune grass or pines")
+        elif wind_avg <= WIND_STRONG:
+            sea_state = "active textured Baltic water"
+            _add_unique(must_show, "active textured water")
+            _add_unique(must_show, "visible movement in vegetation and sky")
+        else:
+            sea_state = "windy Baltic sea"
+            _add_unique(must_show, "windy sea")
+            _add_unique(must_show, "dynamic sky motion")
+
+    if _has(wind_gust) and wind_gust is not None and wind_gust >= GUST_STRONG:
+        _add_unique(must_show, "dynamic sea texture")
+        _add_unique(must_show, "windy atmosphere")
+        _add_unique(must_avoid, "mirror-flat sea")
+        _add_unique(must_avoid, "full calm visual language")
+        sea_state = "gusty, dynamic Baltic sea"
+
+    if _has(wave_height):
+        assert wave_height is not None
+        if wave_height >= WAVE_HIGH:
+            _add_unique(must_show, "visibly wavy sea")
+            _add_unique(must_avoid, "perfect calm activity mood")
+            sea_state = "visibly wavy Baltic sea"
+        elif wave_height >= WAVE_MEDIUM:
+            _add_unique(must_show, "moderately active sea")
+            sea_state = "moderately active Baltic sea"
+        elif wave_height < WAVE_LOW:
+            _add_unique(must_show, "quite calm sea")
+            sea_state = "quite calm Baltic sea"
+
+    if _has(sea_temp):
+        assert sea_temp is not None
+        if sea_temp <= SEA_VERY_COLD:
+            _add_unique(must_show, "very cold water feeling")
+            _add_unique(must_show, "cool blue-grey water palette")
+            if getattr(ctx, "sport", "none") != "none":
+                _add_unique(must_show, "wetsuit implied for any water-sport figure")
+        elif sea_temp <= SEA_COLD:
+            _add_unique(must_show, "fresh cold water feeling")
+
+    return sea_state
+
+
+def _activity_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str], validation_notes: list[str]) -> tuple[str, str]:
+    sport = getattr(ctx, "sport", "none")
+    level = getattr(ctx, "sport_level", "none")
+    wind_gust = getattr(ctx, "wind_gust", None)
+    wave_height = getattr(ctx, "wave_height", None)
+    weather_main = getattr(ctx, "weather_main", "unknown")
+
+    if sport == "none":
+        _add_unique(must_avoid, "visible main water-sport athlete")
+        return "no explicit water-sport athlete", "none"
+
+    if sport == "sup":
+        if level == "excellent":
+            visual = "one visible paddleboarder on relatively calm water"
+            scale = "visible_secondary"
+            _add_unique(must_show, "one visible paddleboarder")
+            _add_unique(must_show, "relatively calm water around SUP")
+        elif level == "good":
+            visual = "one secondary paddleboarder in the midground"
+            scale = "secondary"
+            _add_unique(must_show, "one paddleboarder as a secondary scene element")
+        elif level == "experienced_only":
+            visual = "small distant paddleboarder only"
+            scale = "distant"
+            _add_unique(must_show, "small distant paddleboarder")
+            _add_unique(must_show, "conditions are visually more important than the athlete")
+            _add_unique(must_avoid, "relaxed beginner SUP scene")
+        else:
+            visual = "SUP not recommended; avoid prominent paddleboarder"
+            scale = "remove_or_tiny_hint"
+            _add_unique(must_avoid, "clear prominent SUP rider")
+
+        if _has(wind_gust) and wind_gust is not None and wind_gust > 12:
+            scale = "distant_or_removed"
+            _add_unique(must_avoid, "hero SUP rider")
+            _add_unique(validation_notes, "SUP with gusts > 12 m/s: no hero SUP")
+        if _has(wind_gust) and wind_gust is not None and wind_gust > 14:
+            scale = "experienced_only_or_removed"
+            _add_unique(validation_notes, "SUP with gusts > 14 m/s: experienced-only or remove SUP")
+        if _has(wave_height) and wave_height is not None and wave_height >= 0.8:
+            _add_unique(must_avoid, "calm beginner SUP look")
+            _add_unique(validation_notes, "SUP with wave >= 0.8 m: avoid calm beginner look")
+        if weather_main in ("rain", "storm"):
+            _add_unique(must_avoid, "relaxed SUP holiday mood")
+        return visual, scale
+
+    if sport in ("kite", "wing", "windsurf"):
+        sport_name = {"kite": "kite", "wing": "wing", "windsurf": "windsurfer"}.get(sport, "wind sport")
+        if level == "excellent":
+            visual = f"1-3 small {sport_name} riders or kites on the horizon"
+            scale = "visible_horizon"
+            _add_unique(must_show, f"1-3 small {sport_name} cues on the horizon")
+            _add_unique(must_show, "dynamic sea texture")
+        elif level == "good":
+            visual = f"1-2 small {sport_name} cues on the horizon"
+            scale = "small_horizon"
+            _add_unique(must_show, f"1-2 small {sport_name} cues")
+        elif level == "experienced_only":
+            visual = f"small distant {sport_name} rider only"
+            scale = "distant"
+            _add_unique(must_show, f"small distant {sport_name} rider")
+            _add_unique(must_show, "wind and water conditions dominate the image")
+            _add_unique(must_avoid, "easy beginner recreational mood")
+        else:
+            visual = f"avoid hero {sport_name} rider"
+            scale = "remove_or_tiny_hint"
+            _add_unique(must_avoid, f"hero {sport_name} rider")
+
+        if _has(wind_gust) and wind_gust is not None and wind_gust >= 10:
+            _add_unique(must_show, "small kites or wind-sport cue on the horizon")
+        if _has(wind_gust) and wind_gust is not None and wind_gust < 8:
+            _add_unique(must_avoid, "large kite as key object")
+            _add_unique(validation_notes, "Wind sport with gusts < 8 m/s: avoid prominent kite")
+        if weather_main == "storm" and level != "excellent":
+            _add_unique(must_avoid, "hero wind-sport rider in storm")
+            _add_unique(validation_notes, "Storm + wind sport: no hero rider unless explicitly excellent")
+        return visual, scale
+
+    return "no explicit water-sport athlete", "none"
+
+
+def _moon_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str], validation_notes: list[str]) -> str:
+    phase = getattr(ctx, "moon_phase", "unknown")
+    post_type = getattr(ctx, "post_type", "unknown")
+    time_hint = getattr(ctx, "time_hint", "unknown")
+
+    if phase == "new":
+        _add_unique(must_show, "moonless dark sky if evening or night")
+        _add_unique(must_avoid, "visible moon")
+        _add_unique(must_avoid, "crescent moon")
+        _add_unique(must_avoid, "full moon")
+        _add_unique(must_avoid, "lunar disc")
+        _add_unique(validation_notes, "New moon: do not draw any visible moon")
+        return "no visible moon / moonless sky"
+
+    if phase == "waxing_crescent":
+        _add_unique(must_show, "thin waxing crescent moon")
+        return "thin waxing crescent moon"
+    if phase == "first_quarter":
+        _add_unique(must_show, "half moon")
+        return "first quarter half moon"
+    if phase == "waxing_gibbous":
+        _add_unique(must_show, "almost full waxing moon, not full")
+        return "waxing gibbous moon"
+    if phase == "full":
+        _add_unique(must_show, "bright full moon")
+        if time_hint in ("sunset", "night") or post_type in ("evening", "forecast_tomorrow"):
+            _add_unique(must_show, "moon reflection on Baltic water if water is visible")
+        return "bright full moon"
+    if phase == "waning_gibbous":
+        _add_unique(must_show, "bright waning gibbous moon")
+        return "waning gibbous moon"
+    if phase == "last_quarter":
+        _add_unique(must_show, "half moon")
+        return "last quarter half moon"
+    if phase == "waning_crescent":
+        _add_unique(must_show, "thin waning crescent moon")
+        return "thin waning crescent moon"
+
+    if post_type == "morning":
+        _add_unique(must_avoid, "moon as dominant subject")
+        return "moon not emphasized"
+    return "moon optional, not dominant unless phase is explicit"
+
+
+def apply_visual_rules(ctx: VisualContext) -> SceneCues:
+    must_show: list[str] = []
+    must_avoid: list[str] = []
+    validation_notes: list[str] = []
+
+    base_scene = "Baltic coast near Kaliningrad, dunes, pines, promenade, sea horizon"
+    palette = "cool Baltic grey-blue, muted sand, pine green, restrained northern light"
+    light_style = "soft northern light"
+
+    _add_unique(must_show, "recognizable Baltic/Kaliningrad atmosphere")
+    _add_unique(must_show, "dunes, pines, promenade, or Baltic sea horizon")
+    _add_unique(must_avoid, "tropical palette")
+    _add_unique(must_avoid, "palm trees")
+    _add_unique(must_avoid, "Caribbean lagoon")
+
+    if _has(getattr(ctx, "temp_max", None)) and ctx.temp_max is not None:
+        if ctx.temp_max < MILD_KLD:
+            _add_unique(must_show, "fresh Baltic feeling")
+            _add_unique(must_show, "cooler tones")
+            _add_unique(must_avoid, "beach-relax summer mood")
+        elif ctx.temp_max >= WARM_KLD:
+            _add_unique(must_show, "pleasant warm Baltic day, still northern not tropical")
+
+    weather_visual = _weather_visual(ctx, must_show, must_avoid)
+    sea_state = _sea_state(ctx, must_show, must_avoid)
+    activity_visual, activity_scale = _activity_visual(ctx, must_show, must_avoid, validation_notes)
+    moon_visual = _moon_visual(ctx, must_show, must_avoid, validation_notes)
+    overall_mood = _score_mood(getattr(ctx, "score", None))
+
+    if getattr(ctx, "score", None) is not None and ctx.score is not None and ctx.score < 6.0:
+        _add_unique(must_avoid, "idyllic holiday postcard look")
+
+    return SceneCues(
+        region="kaliningrad",
+        post_type=getattr(ctx, "post_type", "unknown"),
+        base_scene=base_scene,
+        palette=palette,
+        light_style=light_style,
+        weather_visual=weather_visual,
+        sea_state=sea_state,
+        activity_visual=activity_visual,
+        activity_scale=activity_scale,
+        moon_visual=moon_visual,
+        overall_mood=overall_mood,
+        must_show=must_show,
+        must_avoid=must_avoid,
+        validation_notes=validation_notes,
+        source_context=dataclasses.asdict(ctx),
+    )
+
+
+def build_prompt_from_cues(cues: SceneCues) -> str:
+    """Prompt-only representation, used for logs before image generation is enabled."""
+    parts = [
+        "Create an atmospheric, information-driven weather illustration for VayboMeter Kaliningrad.",
+        f"Base scene: {cues.base_scene}.",
+        f"Palette: {cues.palette}.",
+        f"Light: {cues.light_style}.",
+        f"Weather: {cues.weather_visual}.",
+        f"Sea and wind state: {cues.sea_state}.",
+        f"Activity cue: {cues.activity_visual}; scale: {cues.activity_scale}.",
+        f"Moon cue: {cues.moon_visual}.",
+        f"Overall mood: {cues.overall_mood}.",
+    ]
+    if cues.must_show:
+        parts.append("Must show: " + "; ".join(cues.must_show) + ".")
+    if cues.must_avoid:
+        parts.append("Must avoid: " + "; ".join(cues.must_avoid) + ".")
+    parts.append("No text, no captions, no labels, no logos, no numbers, no UI, no watermarks.")
+    return " ".join(parts)
+
+
+def to_json(obj: Any, *, pretty: bool = True) -> str:
+    return json.dumps(dataclasses.asdict(obj), ensure_ascii=False, indent=2 if pretty else None)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Apply KLD visual rules to a weather message")
+    parser.add_argument("--message-file", default="", help="Path to text file. If omitted, stdin is used.")
+    parser.add_argument("--post-type", default="", choices=["", "morning", "evening", "forecast_tomorrow", "unknown"])
+    parser.add_argument("--prompt", action="store_true", help="Print prompt-only output after JSON cues")
+    parser.add_argument("--compact", action="store_true")
+    args = parser.parse_args()
+
+    if build_visual_context is None:
+        raise SystemExit("visual_context_kld.py is required")
+
+    if args.message_file:
+        with open(args.message_file, "r", encoding="utf-8") as f:
+            message = f.read()
+    else:
+        message = sys.stdin.read()
+
+    ctx = build_visual_context(message, post_type=args.post_type or None)
+    cues = apply_visual_rules(ctx)
+    print(to_json(cues, pretty=not args.compact))
+    if args.prompt:
+        print("\n===== VISUAL_PROMPT BEGIN =====\n")
+        print(build_prompt_from_cues(cues))
+        print("\n===== VISUAL_PROMPT END =====\n")
+
+
+if __name__ == "__main__":
+    main()
+
+
+__all__ = ["SceneCues", "apply_visual_rules", "build_prompt_from_cues", "to_json"]
