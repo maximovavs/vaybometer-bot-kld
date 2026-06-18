@@ -141,6 +141,49 @@ def _line_should_drop(line: str) -> tuple[bool, str | None]:
     return False, None
 
 
+def _score_label(score: float) -> str:
+    return "отлично" if score >= 8.7 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
+
+
+def _cap_kld_morning_score(text: str) -> str:
+    s = str(text or "")
+    if "Калининград сегодня" not in s or "завтра" in s.lower():
+        return s
+    line = next((x.strip() for x in s.splitlines() if x.strip().startswith("✨ VayboMeter:") and "/10" in x), "")
+    m = re.search(r"VayboMeter:\s*(\d+(?:[\.,]\d+)?)\s*/\s*10", line)
+    if not m:
+        return s
+    score = float(m.group(1).replace(",", "."))
+    low = s.lower()
+    gusts: list[float] = []
+    for raw in re.findall(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", s, flags=re.I):
+        try:
+            gusts.append(float(raw.replace(",", ".")))
+        except Exception:
+            pass
+    max_gust = max(gusts) if gusts else 0.0
+    water_wind = "ветер у воды" in low or "у воды ветер" in low or max_gust >= 6
+    cap = 10.0
+    if any(x in low for x in ("морось", "дожд", "ливень")):
+        cap = min(cap, 7.2)
+    if "уф" in low and "высок" in low and water_wind:
+        cap = min(cap, 8.3)
+    if max_gust >= 8:
+        cap = min(cap, 8.4)
+    if water_wind or "свеж" in low:
+        cap = min(cap, 8.6)
+    if score <= cap:
+        return s
+    repl = re.sub(
+        r"(VayboMeter:\s*)\d+(?:[\.,]\d+)?(/10\s+—\s*)[^;\.\n]+",
+        rf"\g<1>{cap:.1f}\g<2>{_score_label(cap)}",
+        line,
+    )
+    if water_wind and "ветер" not in repl.lower():
+        repl = repl.rstrip(".") + ", у воды ветер заметнее."
+    return s.replace(line, repl, 1)
+
+
 def _move_safecast_before_hashtags(text: str) -> str:
     lines = str(text or "").splitlines()
     safecast = [line for line in lines if line.strip().startswith("🧪")]
@@ -177,7 +220,6 @@ def _promote_vaybometer_after_title(text: str) -> str:
 
 
 def _apply_kld_morning_spacing(text: str) -> str:
-    """Add visual breathing room to compact KLD morning FORMAT_V2 posts."""
     if not _env_on("FORMAT_V2_MORNING_SPACING"):
         return text
     s = str(text or "").strip()
@@ -205,7 +247,6 @@ def _apply_kld_morning_spacing(text: str) -> str:
 
 
 def sanitize_post_text(text: str) -> SafetyResult:
-    """Return a safer post text and a list of removed/changed-line reasons."""
     raw_lines = str(text or "").splitlines()
     out: list[str] = []
     issues: list[str] = []
@@ -240,6 +281,7 @@ def sanitize_post_text(text: str) -> SafetyResult:
 
     safe = "\n".join(out).strip()
     safe = re.sub(r"\n{3,}", "\n\n", safe)
+    safe = _cap_kld_morning_score(safe)
     safe = _move_safecast_before_hashtags(safe)
     safe = _promote_vaybometer_after_title(safe)
     safe = _apply_kld_morning_spacing(safe)
@@ -298,7 +340,6 @@ def _structure_summary(text: str) -> str:
 
 
 def split_telegram_text(text: str, limit: int = _SAFE_CHUNK_LIMIT) -> list[str]:
-    """Split text into Telegram-safe chunks, preferably on paragraph boundaries."""
     text = str(text or "").strip()
     if not text:
         return []
