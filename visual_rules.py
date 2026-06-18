@@ -331,6 +331,34 @@ def _moon_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]
     return "moon optional, not dominant unless phase is explicit"
 
 
+def _temperature_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) -> None:
+    temp_max = getattr(ctx, "temp_max", None)
+    sea_temp = getattr(ctx, "sea_temp", None)
+    sport = getattr(ctx, "sport", "none")
+    post_type = getattr(ctx, "post_type", "unknown")
+
+    if not _has(temp_max) or temp_max is None:
+        return
+
+    if temp_max < MILD_KLD:
+        _add_unique(must_show, "fresh Baltic feeling")
+        _add_unique(must_show, "cooler tones")
+        _add_unique(must_avoid, "beach-relax summer mood")
+        return
+
+    if temp_max >= WARM_KLD:
+        coast_is_fresh = (_has(sea_temp) and sea_temp is not None and sea_temp <= SEA_COLD) or sport != "none" or post_type in ("evening", "forecast_tomorrow")
+        if coast_is_fresh:
+            _add_unique(must_show, "mild-to-warm Baltic coastal evening with fresh sea air, still northern not tropical")
+            if _has(sea_temp) and sea_temp is not None and sea_temp <= SEA_COLD:
+                _add_unique(must_show, "warm inland temperatures contrast with fresh Baltic water")
+            return
+        _add_unique(must_show, "pleasant warm Baltic day, still northern not tropical")
+        return
+
+    _add_unique(must_show, "mild fresh Baltic coastal weather")
+
+
 def apply_visual_rules(ctx: VisualContext) -> SceneCues:
     must_show: list[str] = []
     must_avoid: list[str] = []
@@ -346,13 +374,7 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
     _add_unique(must_avoid, "palm trees")
     _add_unique(must_avoid, "Caribbean lagoon")
 
-    if _has(getattr(ctx, "temp_max", None)) and ctx.temp_max is not None:
-        if ctx.temp_max < MILD_KLD:
-            _add_unique(must_show, "fresh Baltic feeling")
-            _add_unique(must_show, "cooler tones")
-            _add_unique(must_avoid, "beach-relax summer mood")
-        elif ctx.temp_max >= WARM_KLD:
-            _add_unique(must_show, "pleasant warm Baltic day, still northern not tropical")
+    _temperature_visual(ctx, must_show, must_avoid)
 
     weather_visual = _weather_visual(ctx, must_show, must_avoid)
     sea_state = _sea_state(ctx, must_show, must_avoid)
