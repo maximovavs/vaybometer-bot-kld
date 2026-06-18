@@ -141,6 +141,34 @@ def _line_should_drop(line: str) -> tuple[bool, str | None]:
     return False, None
 
 
+def _apply_kld_morning_spacing(text: str) -> str:
+    """Add visual breathing room to compact KLD morning FORMAT_V2 posts."""
+    if not _env_on("FORMAT_V2_MORNING_SPACING"):
+        return text
+    s = str(text or "").strip()
+    if "Калининград сегодня" not in s or "🧭 <b>Главный сценарий" in s or "завтра" in s.lower():
+        return text
+
+    markers_before = (
+        "🌡 Ощущается:",
+        "💱",
+        "🏭",
+        "🧲",
+        "✅ План:",
+        "🧪",
+        "#",
+    )
+    lines = s.splitlines()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(markers_before) and out and out[-1].strip():
+            out.append("")
+        out.append(line)
+    spaced = "\n".join(out).strip()
+    return re.sub(r"\n{3,}", "\n\n", spaced)
+
+
 def sanitize_post_text(text: str) -> SafetyResult:
     """Return a safer post text and a list of removed/changed-line reasons."""
     raw_lines = str(text or "").splitlines()
@@ -177,6 +205,7 @@ def sanitize_post_text(text: str) -> SafetyResult:
 
     safe = "\n".join(out).strip()
     safe = re.sub(r"\n{3,}", "\n\n", safe)
+    safe = _apply_kld_morning_spacing(safe)
     return SafetyResult(text=safe, issues=issues)
 
 
