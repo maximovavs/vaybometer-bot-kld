@@ -25,6 +25,11 @@ on:
         type: boolean
         default: false
         required: false
+      morning_spacing:
+        description: "Add visual blank lines to morning FORMAT_V2 output"
+        type: boolean
+        default: true
+        required: false
       windsport_polish:
         description: "Cautious wording for kite/wing/wind when sea conditions are mixed"
         type: boolean
@@ -85,6 +90,7 @@ env:
   DISABLE_SCHUMANN: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
   FORMAT_V2_COMPACT: ${{ github.event.inputs.compact == 'true' && '1' || '0' }}
+  FORMAT_V2_MORNING_SPACING: ${{ github.event.inputs.morning_spacing == 'true' && '1' || '0' }}
   FORMAT_V2_WINDSPORT_POLISH: ${{ github.event.inputs.windsport_polish == 'true' && '1' || '0' }}
   MORNING_FEELS_LIKE: ${{ github.event.inputs.feels_like == 'true' && '1' || '0' }}
   MORNING_BEST_WINDOW: ${{ github.event.inputs.best_window == 'true' && '1' || '0' }}
@@ -123,6 +129,7 @@ jobs:
           echo "Branch: ${{ github.event.inputs.test_branch }}"
           echo "FORMAT_V2: $FORMAT_V2"
           echo "FORMAT_V2_COMPACT: $FORMAT_V2_COMPACT"
+          echo "FORMAT_V2_MORNING_SPACING: $FORMAT_V2_MORNING_SPACING"
           echo "FORMAT_V2_WINDSPORT_POLISH: $FORMAT_V2_WINDSPORT_POLISH"
           echo "MORNING_FEELS_LIKE: $MORNING_FEELS_LIKE"
           echo "MORNING_BEST_WINDOW: $MORNING_BEST_WINDOW"
