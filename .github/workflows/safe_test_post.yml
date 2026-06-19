@@ -25,6 +25,11 @@ on:
         type: boolean
         default: true
         required: false
+      send_image_to_test:
+        description: "Generate and send FORMAT_V2 image to CHANNEL_ID_TEST only"
+        type: boolean
+        default: false
+        required: false
       compact:
         description: "Test compact FORMAT_V2 output"
         type: boolean
@@ -69,7 +74,7 @@ on:
         description: "Optional date override (YYYY-MM-DD)"
         required: false
       send_to_test:
-        description: "Send to CHANNEL_ID_TEST? If false, logs only."
+        description: "Send text post to CHANNEL_ID_TEST? If false, logs only."
         type: boolean
         default: false
         required: false
@@ -141,6 +146,7 @@ jobs:
           echo "Branch: ${{ github.event.inputs.test_branch }}"
           echo "FORMAT_V2: $FORMAT_V2"
           echo "FORMAT_V2_VISUAL_PROMPT_PROBE: $FORMAT_V2_VISUAL_PROMPT_PROBE"
+          echo "SEND_IMAGE_TO_TEST: ${{ github.event.inputs.send_image_to_test }}"
           echo "FORMAT_V2_COMPACT: $FORMAT_V2_COMPACT"
           echo "FORMAT_V2_MORNING_SPACING: $FORMAT_V2_MORNING_SPACING"
           echo "FORMAT_V2_WINDSPORT_POLISH: $FORMAT_V2_WINDSPORT_POLISH"
@@ -241,6 +247,8 @@ jobs:
               final_format_v2_message=message,
               post_type="${{ github.event.inputs.mode }}",
           )
+          Path("kld_image_prompt.txt").write_text(prompt + "\n", encoding="utf-8")
+          Path("kld_image_style.txt").write_text(style_name + "\n", encoding="utf-8")
           print("\n===== KLD_IMAGE_PROMPT_STYLE BEGIN =====\n")
           print(style_name)
           print("\n===== KLD_IMAGE_PROMPT_STYLE END =====\n")
@@ -248,6 +256,39 @@ jobs:
           print(prompt)
           print("\n===== KLD_IMAGE_PROMPT END =====\n")
           PY
+
+            if [ "${{ github.event.inputs.send_image_to_test }}" = "true" ]; then
+              echo "Generating and sending FORMAT_V2 image to CHANNEL_ID_TEST only"
+              python - <<'PY'
+          import asyncio
+          import os
+          from pathlib import Path
+          from telegram import Bot
+          import imagegen
+
+          async def main() -> None:
+              token = os.getenv("TELEGRAM_TOKEN_KLG", "").strip()
+              chat_id = os.getenv("CHANNEL_ID_TEST", "").strip()
+              if not token:
+                  raise SystemExit("TELEGRAM_TOKEN_KLG is required for send_image_to_test")
+              if not chat_id:
+                  raise SystemExit("CHANNEL_ID_TEST is required for send_image_to_test")
+
+              prompt = Path("kld_image_prompt.txt").read_text(encoding="utf-8").strip()
+              style_name = Path("kld_image_style.txt").read_text(encoding="utf-8").strip()
+              img_path = imagegen.generate_kld_evening_image(prompt=prompt, style_name=style_name)
+              print(f"Generated safe-test image: {img_path}")
+
+              caption = "🧪 KLD safe-test image • FORMAT_V2 SceneCues"
+              with open(img_path, "rb") as f:
+                  msg = await Bot(token=token).send_photo(chat_id=chat_id, photo=f, caption=caption)
+              print(f"Sent safe-test image to CHANNEL_ID_TEST, message_id={getattr(msg, 'message_id', '?')}")
+
+          asyncio.run(main())
+          PY
+            else
+              echo "Safe-test image sending skipped. Set send_image_to_test=true to generate and send image to CHANNEL_ID_TEST."
+            fi
           else
             echo "Visual prompt probe skipped. Enable format_v2=true and visual_prompt_probe=true."
           fi
