@@ -32,6 +32,11 @@ on:
         type: boolean
         default: false
         required: false
+      kld_morning_image_enabled:
+        description: "Отправить FORMAT_V2 image после утреннего KLD поста (только для ручного запуска)"
+        type: boolean
+        default: false
+        required: false
       work_date:
         description: "Переопределить дату (YYYY-MM-DD)"
         required: false
@@ -64,6 +69,7 @@ env:
   PYTHONUNBUFFERED: "1"
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
   KLD_IMG_ENABLED: ${{ github.event.inputs.kld_image_enabled == 'true' && '1' || '0' }}
+  KLD_MORNING_IMG_ENABLED: ${{ github.event.inputs.kld_morning_image_enabled == 'true' && '1' || '0' }}
   FORMAT_V2_MORNING_SPACING: "1"
   MORNING_FEELS_LIKE: "1"
   MORNING_BEST_WINDOW: "1"
@@ -113,7 +119,9 @@ jobs:
         shell: bash
         run: |
           python <<'PY'
-          import os, runpy, sys, pendulum
+          import os, runpy, sys, pendulum, subprocess
+          from pathlib import Path
+
           print("Morning post (for today)")
           wd = os.getenv("WORK_DATE")
           if wd:
@@ -126,21 +134,64 @@ jobs:
           to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
+          image_enabled = os.getenv("KLD_MORNING_IMG_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
           if format_v2:
               args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
               if wd:
                   args += ["--date", wd]
+
+              send_chat = ""
               if chat_override:
                   args += ["--chat-id", chat_override, "--send", "--no-test-label"]
+                  send_chat = chat_override
               elif to_test:
                   args += ["--to-test", "--send"]
+                  send_chat = (os.getenv("CHANNEL_ID_TEST") or "").strip()
               elif scheduled_run and production_chat:
                   args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  send_chat = production_chat
               else:
                   print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
-              sys.argv = args
-              runpy.run_path("safe_test_post.py", run_name="__main__")
+
+              if image_enabled and send_chat:
+                  cmd = [sys.executable] + args
+                  print("Running morning text post for image-enabled mode:", " ".join(cmd))
+                  result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  print(result.stdout, end="")
+                  Path("safe_test_post_output.log").write_text(result.stdout, encoding="utf-8")
+                  if result.returncode != 0:
+                      raise SystemExit(result.returncode)
+
+                  start = "===== FORMAT_V2 MESSAGE BEGIN ====="
+                  end = "===== FORMAT_V2 MESSAGE END ====="
+                  if start not in result.stdout or end not in result.stdout:
+                      raise SystemExit("FORMAT_V2 MESSAGE block not found; morning image generation skipped")
+                  block = result.stdout.split(start)[-1].split(end)[0].strip()
+                  Path("format_v2_message.txt").write_text(block + "\n", encoding="utf-8")
+
+                  caption = "Визуальный вайб сегодняшнего утра над Балтикой 🌊"
+                  if to_test:
+                      caption = "🧪 " + caption
+
+                  img_cmd = [
+                      sys.executable,
+                      "tools/kld_visual_fixture_image.py",
+                      "--message-file", "format_v2_message.txt",
+                      "--post-type", "morning",
+                      "--send-to-test",
+                      "--chat-id", send_chat,
+                      "--caption", caption,
+                  ]
+                  print("Running morning image send:", " ".join(img_cmd))
+                  subprocess.run(img_cmd, check=True)
+              else:
+                  if image_enabled and not send_chat:
+                      print("KLD_MORNING_IMG_ENABLED=1, но нет целевого chat_id — утренняя картинка пропущена.")
+                  sys.argv = args
+                  runpy.run_path("safe_test_post.py", run_name="__main__")
               raise SystemExit(0)
+
           args = ["post_kld.py", "--mode", "morning"]
           if chat_override:
               args += ["--chat-id", chat_override]
