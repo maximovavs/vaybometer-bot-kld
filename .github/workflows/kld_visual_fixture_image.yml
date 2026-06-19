@@ -20,6 +20,14 @@ on:
           - storm
           - new_moon
           - full_moon
+      post_type:
+        description: "FORMAT_V2 post type"
+        required: true
+        default: "evening"
+        type: choice
+        options:
+          - evening
+          - morning
       generate_image:
         description: "Generate local image file"
         required: false
@@ -68,14 +76,14 @@ jobs:
 
       - name: Compile visual modules
         run: |
-          python -m py_compile image_prompt_kld.py visual_context_kld.py visual_rules.py tools/kld_visual_fixture_image.py
+          python -m py_compile image_prompt_kld.py image_prompt_kld_morning.py visual_context_kld.py visual_rules.py tools/kld_visual_fixture_image.py
 
       - name: Run fixture prompt / image test
         shell: bash
         run: |
           set -euo pipefail
 
-          args=("tools/kld_visual_fixture_image.py" "--scenario" "${{ inputs.scenario }}")
+          args=("tools/kld_visual_fixture_image.py" "--scenario" "${{ inputs.scenario }}" "--post-type" "${{ inputs.post_type }}")
 
           if [ "${{ inputs.send_image_to_test }}" = "true" ]; then
             args+=("--send-to-test")
