@@ -216,6 +216,38 @@ jobs:
 
             echo "Running visual prompt parser on already-built FORMAT_V2 text"
             python visual_rules.py --message-file format_v2_message.txt --post-type "${{ github.event.inputs.mode }}" --prompt
+
+            echo "Running image prompt bridge on already-built FORMAT_V2 text"
+            python - <<'PY'
+          import datetime as dt
+          import os
+          from pathlib import Path
+          from image_prompt_kld import build_kld_evening_prompt
+
+          message = Path("format_v2_message.txt").read_text(encoding="utf-8")
+          work_date = os.getenv("WORK_DATE") or ""
+          if work_date:
+              try:
+                  date_value = dt.date.fromisoformat(work_date)
+              except Exception:
+                  date_value = dt.date.today()
+          else:
+              date_value = dt.date.today()
+
+          prompt, style_name = build_kld_evening_prompt(
+              date=date_value,
+              marine_mood="",
+              inland_mood="",
+              final_format_v2_message=message,
+              post_type="${{ github.event.inputs.mode }}",
+          )
+          print("\n===== KLD_IMAGE_PROMPT_STYLE BEGIN =====\n")
+          print(style_name)
+          print("\n===== KLD_IMAGE_PROMPT_STYLE END =====\n")
+          print("\n===== KLD_IMAGE_PROMPT BEGIN =====\n")
+          print(prompt)
+          print("\n===== KLD_IMAGE_PROMPT END =====\n")
+          PY
           else
             echo "Visual prompt probe skipped. Enable format_v2=true and visual_prompt_probe=true."
           fi
