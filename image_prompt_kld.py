@@ -23,7 +23,7 @@ import random
 import logging
 import json
 from pathlib import Path
-from typing import Tuple, Optional, List, Dict
+from typing import Tuple, Optional, List, Dict, Any
 
 
 @dataclasses.dataclass(frozen=True)
@@ -307,6 +307,82 @@ _NO_DOUBLE_MOON_GUARD = (
 )
 
 
+def _filter_prompt_list(line: str, blocked_tokens: tuple[str, ...], add_items: list[str] | None = None) -> str:
+    prefix, raw = line.split(":", 1)
+    items = [x.strip().rstrip(".") for x in raw.split(";") if x.strip()]
+    clean: list[str] = []
+    for item in items:
+        low = item.lower()
+        if any(tok in low for tok in blocked_tokens):
+            continue
+        if item not in clean:
+            clean.append(item)
+    for item in add_items or []:
+        if item and item not in clean:
+            clean.append(item)
+    return prefix + ": " + "; ".join(clean) + "."
+
+
+def _sanitize_format_v2_image_prompt(prompt: str, ctx: Any) -> str:
+    """Remove image-generator trigger words from FORMAT_V2 prompts.
+
+    Pollinations often treats words in negative instructions as objects to draw.
+    For the current KLD safe-test we therefore convert weak crescent/SUP cues into
+    positive empty-sky / empty-water cues instead of repeatedly saying what not to
+    draw.
+    """
+    weather = getattr(ctx, "weather_main", "unknown")
+    moon = getattr(ctx, "moon_phase", "unknown")
+    sport = getattr(ctx, "sport", "none")
+    level = getattr(ctx, "sport_level", "none")
+    wind_gust = getattr(ctx, "wind_gust", None)
+
+    hide_weak_moon = moon in ("waxing_crescent", "waning_crescent") and weather in ("cloudy", "drizzle", "rain", "storm")
+    remove_sup = sport == "sup" and level == "experienced_only"
+    if isinstance(wind_gust, (int, float)) and wind_gust >= 12:
+        remove_sup = sport == "sup"
+
+    moon_tokens = ("moon", "lunar", "crescent", "disc", "reflection path")
+    sup_tokens = ("sup", "paddle", "board", "boat", "yacht", "sail", "mast", "windsurf")
+
+    out: list[str] = []
+    for line in prompt.splitlines():
+        stripped = line.strip()
+        if hide_weak_moon and stripped.startswith("Moon cue:"):
+            out.append("Sky cue: cloud-dominant evening sky; celestial details hidden by clouds.")
+            continue
+        if remove_sup and stripped.startswith("Activity cue:"):
+            out.append("Activity cue: unoccupied shoreline and open Baltic water; scale: none.")
+            continue
+        if stripped.startswith("Must show:"):
+            blocked = ()
+            add_items: list[str] = []
+            if hide_weak_moon:
+                blocked += moon_tokens
+                add_items.extend([
+                    "layered cloud cover as the main sky feature",
+                    "no highlighted celestial object",
+                ])
+            if remove_sup:
+                blocked += sup_tokens
+                add_items.extend([
+                    "unoccupied shoreline",
+                    "open Baltic water with only natural wave texture",
+                ])
+            out.append(_filter_prompt_list(line, blocked, add_items) if blocked else line)
+            continue
+        if stripped.startswith("Must avoid:"):
+            blocked = ()
+            if hide_weak_moon:
+                blocked += moon_tokens
+            if remove_sup:
+                blocked += sup_tokens
+            out.append(_filter_prompt_list(line, blocked) if blocked else line)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _build_format_v2_visual_prompt(final_format_v2_message: str, *, post_type: str = "evening") -> Tuple[str, str]:
     """Build KLD FORMAT_V2 image prompt through VisualContext -> SceneCues.
 
@@ -320,6 +396,7 @@ def _build_format_v2_visual_prompt(final_format_v2_message: str, *, post_type: s
     ctx = build_visual_context(final_format_v2_message, post_type=post_type)
     cues = apply_visual_rules(ctx)
     prompt = build_prompt_from_cues(cues)
+    prompt = _sanitize_format_v2_image_prompt(prompt, ctx)
     logger.info(
         "KLD_FORMAT_V2_IMG_PROMPT: post_type=%s weather=%s sport=%s/%s moon=%s source=%s",
         getattr(ctx, "post_type", post_type),
