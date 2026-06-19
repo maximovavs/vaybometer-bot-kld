@@ -157,19 +157,22 @@ jobs:
                   print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
 
               if image_enabled and send_chat:
-                  cmd = [sys.executable] + args
-                  print("Running morning text post for image-enabled mode:", " ".join(cmd))
-                  result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                  print(result.stdout, end="")
-                  Path("safe_test_post_output.log").write_text(result.stdout, encoding="utf-8")
-                  if result.returncode != 0:
-                      raise SystemExit(result.returncode)
+                  preview_args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
+                  if wd:
+                      preview_args += ["--date", wd]
+                  preview_cmd = [sys.executable] + preview_args
+                  print("Building morning FORMAT_V2 for image-first mode:", " ".join(preview_cmd))
+                  preview = subprocess.run(preview_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  print(preview.stdout, end="")
+                  Path("safe_test_post_preview.log").write_text(preview.stdout, encoding="utf-8")
+                  if preview.returncode != 0:
+                      raise SystemExit(preview.returncode)
 
                   start = "===== FORMAT_V2 MESSAGE BEGIN ====="
                   end = "===== FORMAT_V2 MESSAGE END ====="
-                  if start not in result.stdout or end not in result.stdout:
+                  if start not in preview.stdout or end not in preview.stdout:
                       raise SystemExit("FORMAT_V2 MESSAGE block not found; morning image generation skipped")
-                  block = result.stdout.split(start)[-1].split(end)[0].strip()
+                  block = preview.stdout.split(start)[-1].split(end)[0].strip()
                   Path("format_v2_message.txt").write_text(block + "\n", encoding="utf-8")
 
                   caption = "Визуальный вайб сегодняшнего утра над Балтикой 🌊"
@@ -187,6 +190,10 @@ jobs:
                   ]
                   print("Running morning image send:", " ".join(img_cmd))
                   subprocess.run(img_cmd, check=True)
+
+                  send_cmd = [sys.executable] + args
+                  print("Sending morning text after image:", " ".join(send_cmd))
+                  subprocess.run(send_cmd, check=True)
               else:
                   if image_enabled and not send_chat:
                       print("KLD_MORNING_IMG_ENABLED=1, но нет целевого chat_id — утренняя картинка пропущена.")
@@ -271,19 +278,22 @@ jobs:
                   print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
 
               if image_enabled and send_chat:
-                  cmd = [sys.executable] + args
-                  print("Running text post for image-enabled mode:", " ".join(cmd))
-                  result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                  print(result.stdout, end="")
-                  Path("safe_test_post_output.log").write_text(result.stdout, encoding="utf-8")
-                  if result.returncode != 0:
-                      raise SystemExit(result.returncode)
+                  preview_args = ["safe_test_post.py", "--mode", "evening", "--format-v2"]
+                  if wd:
+                      preview_args += ["--date", wd]
+                  preview_cmd = [sys.executable] + preview_args
+                  print("Building evening FORMAT_V2 for image-first mode:", " ".join(preview_cmd))
+                  preview = subprocess.run(preview_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  print(preview.stdout, end="")
+                  Path("safe_test_post_preview.log").write_text(preview.stdout, encoding="utf-8")
+                  if preview.returncode != 0:
+                      raise SystemExit(preview.returncode)
 
                   start = "===== FORMAT_V2 MESSAGE BEGIN ====="
                   end = "===== FORMAT_V2 MESSAGE END ====="
-                  if start not in result.stdout or end not in result.stdout:
+                  if start not in preview.stdout or end not in preview.stdout:
                       raise SystemExit("FORMAT_V2 MESSAGE block not found; image generation skipped")
-                  block = result.stdout.split(start)[-1].split(end)[0].strip()
+                  block = preview.stdout.split(start)[-1].split(end)[0].strip()
                   Path("format_v2_message.txt").write_text(block + "\n", encoding="utf-8")
 
                   caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
@@ -300,6 +310,10 @@ jobs:
                   ]
                   print("Running image send:", " ".join(img_cmd))
                   subprocess.run(img_cmd, check=True)
+
+                  send_cmd = [sys.executable] + args
+                  print("Sending evening text after image:", " ".join(send_cmd))
+                  subprocess.run(send_cmd, check=True)
               else:
                   if image_enabled and not send_chat:
                       print("KLD_IMG_ENABLED=1, но нет целевого chat_id — картинка пропущена.")
