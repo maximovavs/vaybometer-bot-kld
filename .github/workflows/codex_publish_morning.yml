@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Apply verified morning pipeline files
+      - name: Apply verified morning pipeline code
         shell: bash
         run: |
           set -euo pipefail
@@ -28,12 +28,10 @@ jobs:
           cp /tmp/publish-morning/visual_rules.py visual_rules.py
           cp /tmp/publish-morning/tools/test_visual_kld.py tools/test_visual_kld.py
           cp /tmp/publish-morning/tools/kld_visual_fixture_image.py tools/kld_visual_fixture_image.py
-          cp /tmp/publish-morning/.github/workflows/kld_visual_fixture_image.yml .github/workflows/kld_visual_fixture_image.yml
-          rm .github/workflows/codex_publish_morning.yml
           python -m py_compile visual_rules.py image_prompt_kld_morning.py tools/test_visual_kld.py tools/kld_visual_fixture_image.py
           python tools/test_visual_kld.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add image_prompt_kld_morning.py visual_rules.py tools/test_visual_kld.py tools/kld_visual_fixture_image.py .github/workflows/kld_visual_fixture_image.yml .github/workflows/codex_publish_morning.yml
+          git add image_prompt_kld_morning.py visual_rules.py tools/test_visual_kld.py tools/kld_visual_fixture_image.py
           git commit -m "Add KLD morning image pipeline"
           git push origin HEAD:main
