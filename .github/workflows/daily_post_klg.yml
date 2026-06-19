@@ -231,12 +231,17 @@ jobs:
                   block = result.stdout.split(start)[-1].split(end)[0].strip()
                   Path("format_v2_message.txt").write_text(block + "\n", encoding="utf-8")
 
+                  caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
+                  if to_test:
+                      caption = "🧪 " + caption
+
                   img_cmd = [
                       sys.executable,
                       "tools/kld_visual_fixture_image.py",
                       "--message-file", "format_v2_message.txt",
                       "--send-to-test",
                       "--chat-id", send_chat,
+                      "--caption", caption,
                   ]
                   print("Running image send:", " ".join(img_cmd))
                   subprocess.run(img_cmd, check=True)
