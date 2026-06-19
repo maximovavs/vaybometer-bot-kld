@@ -130,7 +130,6 @@ def get_lunar_meta(date_for_astro: dt.date, *, path: str = "lunar_calendar.json"
                 if en.lower() in sign_raw:
                     sign_en = en
                     break
-
     parts: List[str] = []
     if phase_en:
         parts.append(phase_en)
@@ -308,6 +307,31 @@ _NO_DOUBLE_MOON_GUARD = (
 )
 
 
+def _build_format_v2_visual_prompt(final_format_v2_message: str, *, post_type: str = "evening") -> Tuple[str, str]:
+    """Build KLD FORMAT_V2 image prompt through VisualContext -> SceneCues.
+
+    This path is deterministic and side-effect free: it parses the already built
+    Telegram message and does not fetch weather/marine data, call LLM, send
+    Telegram messages, or generate an image.
+    """
+    from visual_context_kld import build_visual_context
+    from visual_rules import apply_visual_rules, build_prompt_from_cues
+
+    ctx = build_visual_context(final_format_v2_message, post_type=post_type)
+    cues = apply_visual_rules(ctx)
+    prompt = build_prompt_from_cues(cues)
+    logger.info(
+        "KLD_FORMAT_V2_IMG_PROMPT: post_type=%s weather=%s sport=%s/%s moon=%s source=%s",
+        getattr(ctx, "post_type", post_type),
+        getattr(ctx, "weather_main", "unknown"),
+        getattr(ctx, "sport", "none"),
+        getattr(ctx, "sport_level", "none"),
+        getattr(ctx, "moon_phase", "unknown"),
+        (getattr(ctx, "evidence", {}) or {}).get("weather_source_used"),
+    )
+    return prompt, "format_v2_scene_cues"
+
+
 def _style_prompt_map_mood(ctx: KldImageContext) -> Tuple[str, str]:
     style_name = "map_mood"
 
@@ -469,10 +493,22 @@ def build_kld_evening_prompt(
     *,
     force_style: Optional[str] = None,
     storm: bool = False,
+    final_format_v2_message: Optional[str] = None,
+    post_type: str = "evening",
 ) -> Tuple[str, str]:
     """
     Returns: (prompt_text, style_name)
+
+    FORMAT_V2 path: if final_format_v2_message is provided, build the prompt
+    through VisualContext -> SceneCues. If that pipeline fails, log the exception
+    and fall back to the legacy deterministic style prompt below.
     """
+    if final_format_v2_message and final_format_v2_message.strip():
+        try:
+            return _build_format_v2_visual_prompt(final_format_v2_message, post_type=post_type or "evening")
+        except Exception:
+            logger.exception("KLD_FORMAT_V2_IMG_PROMPT failed; falling back to legacy image prompt")
+
     date_for_astro = date + dt.timedelta(days=1)
     cal_phrase = _astro_phrase_from_calendar(date_for_astro)
 
