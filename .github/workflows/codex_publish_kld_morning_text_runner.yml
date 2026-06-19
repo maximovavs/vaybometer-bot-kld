@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/codex_publish_kld_morning_text_runner.yml
+      - .github/codex_apply_kld_morning.py
 
 permissions:
   contents: write
