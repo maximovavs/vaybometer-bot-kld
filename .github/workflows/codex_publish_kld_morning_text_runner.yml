@@ -37,7 +37,7 @@ jobs:
           test = base64.b64decode(payloads[1])
           assert hashlib.sha256(patch).hexdigest() == 'ed713ad9afb332c8e9ca7bbe9ec7a9db71fed7744fbf088712382b045b85dd16'
           assert hashlib.sha256(test).hexdigest() == 'd0b1c6c185d91bfb7aa12fb837833a3a1e5170c9e596cc890f9070ebc1ab6948'
-          Path('/tmp/kld-morning-text.patch').write_bytes(patch)
+          Path('/tmp/kld-morning-text.patch').write_bytes(patch.replace(b'\r\n', b'\n'))
           Path('tools/test_format_v2_morning_kld.py').write_bytes(test)
           PY
           git apply --whitespace=nowarn /tmp/kld-morning-text.patch
