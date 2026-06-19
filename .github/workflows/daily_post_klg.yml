@@ -119,8 +119,32 @@ jobs:
         shell: bash
         run: |
           python <<'PY'
-          import os, runpy, sys, pendulum, subprocess
+          import asyncio, os, runpy, sys, pendulum, subprocess
           from pathlib import Path
+          from telegram import Bot, constants
+          from post_safety import split_telegram_text
+
+          async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):
+              text = Path(text_path).read_text(encoding="utf-8").strip()
+              chunks = split_telegram_text(text)
+              if not chunks:
+                  raise SystemExit("Extracted FORMAT_V2 text is empty")
+              async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:
+                  for idx, chunk in enumerate(chunks, start=1):
+                      if add_test_label:
+                          prefix = (
+                              f"<b>Test safe post {idx}/{len(chunks)}</b>\n"
+                              if len(chunks) > 1
+                              else "<b>Test safe post</b>\n"
+                          )
+                          chunk = prefix + chunk
+                      await bot.send_message(
+                          chat_id=int(chat_id),
+                          text=chunk,
+                          parse_mode=constants.ParseMode.HTML,
+                          disable_web_page_preview=True,
+                      )
+              print(f"KLD extracted text sent: chunks={len(chunks)}")
 
           print("Morning post (for today)")
           wd = os.getenv("WORK_DATE")
@@ -191,9 +215,9 @@ jobs:
                   print("Running morning image send:", " ".join(img_cmd))
                   subprocess.run(img_cmd, check=True)
 
-                  send_cmd = [sys.executable] + args
-                  print("Sending morning text after image:", " ".join(send_cmd))
-                  subprocess.run(send_cmd, check=True)
+                  add_test_label = to_test and not chat_override and not scheduled_run
+                  print("Sending morning extracted text after image...")
+                  asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))
               else:
                   if image_enabled and not send_chat:
                       print("KLD_MORNING_IMG_ENABLED=1, но нет целевого chat_id — утренняя картинка пропущена.")
@@ -240,8 +264,32 @@ jobs:
         shell: bash
         run: |
           python <<'PY'
-          import os, runpy, sys, pendulum, subprocess
+          import asyncio, os, runpy, sys, pendulum, subprocess
           from pathlib import Path
+          from telegram import Bot, constants
+          from post_safety import split_telegram_text
+
+          async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):
+              text = Path(text_path).read_text(encoding="utf-8").strip()
+              chunks = split_telegram_text(text)
+              if not chunks:
+                  raise SystemExit("Extracted FORMAT_V2 text is empty")
+              async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:
+                  for idx, chunk in enumerate(chunks, start=1):
+                      if add_test_label:
+                          prefix = (
+                              f"<b>Test safe post {idx}/{len(chunks)}</b>\n"
+                              if len(chunks) > 1
+                              else "<b>Test safe post</b>\n"
+                          )
+                          chunk = prefix + chunk
+                      await bot.send_message(
+                          chat_id=int(chat_id),
+                          text=chunk,
+                          parse_mode=constants.ParseMode.HTML,
+                          disable_web_page_preview=True,
+                      )
+              print(f"KLD extracted text sent: chunks={len(chunks)}")
 
           print("Evening post (for tomorrow)")
           wd = os.getenv("WORK_DATE")
@@ -311,9 +359,9 @@ jobs:
                   print("Running image send:", " ".join(img_cmd))
                   subprocess.run(img_cmd, check=True)
 
-                  send_cmd = [sys.executable] + args
-                  print("Sending evening text after image:", " ".join(send_cmd))
-                  subprocess.run(send_cmd, check=True)
+                  add_test_label = to_test and not chat_override and not scheduled_run
+                  print("Sending evening extracted text after image...")
+                  asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))
               else:
                   if image_enabled and not send_chat:
                       print("KLD_IMG_ENABLED=1, но нет целевого chat_id — картинка пропущена.")
