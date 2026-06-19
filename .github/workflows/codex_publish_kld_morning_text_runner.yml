@@ -1,0 +1,69 @@
+name: Codex run KLD morning text update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/codex_publish_kld_morning_text_runner.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Extract and apply exact change set
+        run: |
+          python - <<'PY'
+          import base64
+          import hashlib
+          import re
+          from pathlib import Path
+
+          source = Path('.github/workflows/codex_publish_kld_morning_text.yml').read_text(encoding='utf-8')
+          payloads = re.findall(r"echo '([A-Za-z0-9+/=]+)' \| base64 --decode", source)
+          assert len(payloads) == 2, len(payloads)
+          patch = base64.b64decode(payloads[0])
+          test = base64.b64decode(payloads[1])
+          assert hashlib.sha256(patch).hexdigest() == 'ed713ad9afb332c8e9ca7bbe9ec7a9db71fed7744fbf088712382b045b85dd16'
+          assert hashlib.sha256(test).hexdigest() == 'd0b1c6c185d91bfb7aa12fb837833a3a1e5170c9e596cc890f9070ebc1ab6948'
+          Path('/tmp/kld-morning-text.patch').write_bytes(patch)
+          Path('tools/test_format_v2_morning_kld.py').write_bytes(test)
+          PY
+          git apply --whitespace=nowarn /tmp/kld-morning-text.patch
+
+      - name: Install runtime dependencies
+        run: python -m pip install pendulum python-telegram-bot requests pillow
+
+      - name: Verify KLD morning FORMAT_V2
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -m py_compile safe_test_post.py post_common.py format_v2.py tools/test_format_v2_morning_kld.py
+          python tools/test_format_v2_morning_kld.py
+          python safe_test_post.py --mode morning --format-v2 | tee /tmp/kld-morning-format-v2.log
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('/tmp/kld-morning-format-v2.log').read_text(encoding='utf-8')
+          for marker in ('🌇 Закат сегодня:', '💱 Курсы', '☀️ УФ', '🏭 Воздух', '✅ План', 'Safecast'):
+              assert marker in text, marker
+          PY
+
+      - name: Commit approved files to main
+        run: |
+          git config user.name "codex[bot]"
+          git config user.email "codex[bot]@users.noreply.github.com"
+          git add -- post_common.py format_v2.py safe_test_post.py tools/test_format_v2_morning_kld.py
+          git commit -m "Restore KLD morning FORMAT_V2 utility blocks"
+          git push origin HEAD:main
+          git rev-parse HEAD
