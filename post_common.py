@@ -38,7 +38,7 @@ import pendulum
 from telegram import Bot, constants
 
 from utils   import compass, get_fact
-from weather import get_weather
+from weather import get_sunrise_sunset, get_weather
 from air     import get_air, get_sst, get_kp, get_solar_wind
 from pollen  import get_pollen
 from radiation import get_radiation
@@ -1687,6 +1687,22 @@ def build_message_morning_compact(
     # Курсы
     fx_line = fx_morning_line(pendulum.now(tz_obj), tz_obj)
 
+    # Закат сегодня
+    sunset_line = None
+    try:
+        _sunrise, sunset = get_sunrise_sunset(
+            KLD_LAT,
+            KLD_LON,
+            tz_obj.name,
+            DAY_OFFSET,
+        )
+        if sunset:
+            sunset_line = f"🌇 Закат сегодня: {sunset}"
+        else:
+            logging.info("KLD morning: время заката недоступно")
+    except Exception as e:
+        logging.info("KLD morning: не удалось получить время заката: %s", e)
+
     # Воздух
     air = get_air(KLD_LAT, KLD_LON) or {}
     try:
@@ -1782,6 +1798,8 @@ def build_message_morning_compact(
         P.append(air_line)
         if uvi_line:
             P.append(uvi_line)
+    if sunset_line:
+        P.append(sunset_line)
     if SHOW_SPACE:
         P.append(space_line)
     if storm_line_alert:

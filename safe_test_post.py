@@ -475,8 +475,18 @@ def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
     if not _env_any("FORMAT_V2_SENSOR_LINE", "FORMAT_V2_TEST_SENSOR", "FORMAT_V2_TEST_SAFECAST"):
         return v2_text
     line = _sensor_line_from_legacy(legacy_text)
-    if not line or line in v2_text:
+    if not line:
         return v2_text
+    if "Safecast" in v2_text:
+        out: list[str] = []
+        replaced = False
+        for existing in str(v2_text or "").splitlines():
+            if not replaced and "Safecast" in existing:
+                out.append(line)
+                replaced = True
+            else:
+                out.append(existing)
+        return chr(10).join(out)
     return _insert_before_anchor(v2_text, line, ("🌙 <b>Астроритм", "✅ <b>Рекомендации", "📌 <b>Вывод"))
 
 

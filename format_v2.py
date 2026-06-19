@@ -168,6 +168,8 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     fx = _morning_pick(lines, ("💱",))
     air = [x for x in _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
+    sunset = _morning_pick(lines, ("🌇",))
+    safecast = [x for x in _morning_pick(lines, ("🧪",)) if "Safecast" in x]
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
 
@@ -186,11 +188,15 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(_clean_uv_line(uv[0]))
     if air:
         out.append(air[0])
+    if sunset:
+        out.append(sunset[0])
     if space:
         out.append(_clean_kp_line(space[0]))
+    if safecast:
+        out.append(safecast[0])
 
     tips = _tips_fallback(has_warning, has_rain)
-    out.append("✅ " + " ".join(tips))
+    out.append("✅ План: " + " ".join(tips))
     out.append(tags)
     return "\n".join(out).strip()
 
