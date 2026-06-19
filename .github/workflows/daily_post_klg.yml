@@ -2,9 +2,9 @@ name: Daily VayboMeter (KLD)
 
 on:
   schedule:
-    - cron: '0 5 * * *'
-    - cron: '0 15 * * *'
-    - cron: '0 9 * * *'
+    - cron: '0 2 * * *'
+    - cron: '0 12 * * *'
+    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       run_morning:
