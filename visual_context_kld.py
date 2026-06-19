@@ -156,15 +156,13 @@ def _city_weather_lines(text: str) -> list[str]:
     return out
 
 
-def _detect_weather_from_lines(lines: list[str], *, allow_snow: bool = True) -> WeatherMain:
-    s = "\n".join(lines).lower()
-    if not s:
-        return "unknown"
+def _weather_category_for_line(line: str, *, allow_snow: bool = True) -> WeatherMain:
+    s = line.lower()
 
     if any(x in s for x in ("шторм", "штормовое", "storm", "gale", "squall", "ураган")):
         return "storm"
     if "⛈" in s or "гроза" in s or "thunder" in s:
-        return "rain"
+        return "storm"
     if allow_snow and ("снег" in s or "snow" in s or re.search(r"(?:^|\s)❄️?\s*(?:снег|snow)", s)):
         return "snow"
     if "🌧" in s or "ливн" in s or re.search(r"\bдожд", s) or "rain" in s or "shower" in s:
@@ -173,13 +171,58 @@ def _detect_weather_from_lines(lines: list[str], *, allow_snow: bool = True) -> 
         return "drizzle"
     if "🌫" in s or "туман" in s or "fog" in s or "mist" in s:
         return "fog"
-    if "🌥" in s or "пасм" in s or "☁" in s or "обл" in s or "cloudy" in s:
-        return "cloudy"
     if "⛅" in s or "ч.обл" in s or "переменн" in s or "partly" in s:
         return "partly_cloudy"
+    if "🌥" in s or "пасм" in s or "☁" in s or "обл" in s or "cloudy" in s:
+        return "cloudy"
     if "☀" in s or "ясно" in s or "clear" in s:
         return "clear"
     return "unknown"
+
+
+def _weather_distribution(lines: list[str], *, allow_snow: bool = True) -> dict[str, int]:
+    distribution: dict[str, int] = {}
+    for line in lines:
+        category = _weather_category_for_line(line, allow_snow=allow_snow)
+        distribution[category] = distribution.get(category, 0) + 1
+    return distribution
+
+
+def _resolve_weather_from_distribution(distribution: dict[str, int]) -> WeatherMain:
+    if not distribution:
+        return "unknown"
+
+    if distribution.get("storm", 0) > 0:
+        return "storm"
+
+    known = {k: v for k, v in distribution.items() if k != "unknown" and v > 0}
+    if not known:
+        return "unknown"
+
+    known_total = sum(known.values())
+
+    def dominates(category: str) -> bool:
+        count = known.get(category, 0)
+        if count <= 0:
+            return False
+        others = [v for k, v in known.items() if k != category]
+        return count > max(others or [0]) and count >= max(1, (known_total + 1) // 2)
+
+    # Wet / risky states must really dominate the selected source lines.
+    for category in ("rain", "drizzle", "fog", "snow"):
+        if dominates(category):
+            return category  # type: ignore[return-value]
+
+    # For mixed coastal signals, prefer the dominant dry/cloud layer over one wet city.
+    for category in ("cloudy", "partly_cloudy", "clear"):
+        if known.get(category, 0) == max(known.values()):
+            return category  # type: ignore[return-value]
+
+    return max(known.items(), key=lambda item: item[1])[0]  # type: ignore[return-value]
+
+
+def _detect_weather_from_lines(lines: list[str], *, allow_snow: bool = True) -> WeatherMain:
+    return _resolve_weather_from_distribution(_weather_distribution(lines, allow_snow=allow_snow))
 
 
 def detect_post_type(text: str, override: str | None = None) -> PostType:
@@ -208,18 +251,31 @@ def detect_time_hint(post_type: PostType, text: str) -> TimeHint:
 
 
 def detect_weather_main(text: str, temp_max: Optional[float] = None) -> tuple[WeatherMain, dict[str, Any]]:
-    lines = _city_weather_lines(text)
-    evidence: dict[str, Any] = {"weather_lines": lines[:20]}
-    weather = _detect_weather_from_lines(lines, allow_snow=True)
+    weather_lines = _city_weather_lines(text)
+    coastal_weather_lines = [line for line in weather_lines if "🌊" in line]
+    source_lines = coastal_weather_lines or weather_lines
+    weather_source_used = "coastal" if coastal_weather_lines else "all_city_lines"
+    distribution = _weather_distribution(source_lines, allow_snow=True)
+
+    evidence: dict[str, Any] = {
+        "weather_lines": weather_lines[:20],
+        "coastal_weather_lines": coastal_weather_lines[:20],
+        "weather_source_used": weather_source_used,
+        "weather_distribution": distribution,
+        "weather_distribution_total": len(source_lines),
+    }
+    weather = _resolve_weather_from_distribution(distribution)
 
     # Consistency guard: if a decorative snowflake or a single polluted token gets
     # through while the day is clearly warm, fall back to non-snow interpretation.
     if weather == "snow" and temp_max is not None and temp_max >= 8:
-        fallback = _detect_weather_from_lines(lines, allow_snow=False)
+        fallback_distribution = _weather_distribution(source_lines, allow_snow=False)
+        fallback = _resolve_weather_from_distribution(fallback_distribution)
         evidence["weather_consistency_guard"] = {
             "from": "snow",
             "to": fallback,
             "reason": f"temp_max={temp_max} >= 8; snow is inconsistent",
+            "fallback_distribution": fallback_distribution,
         }
         weather = fallback if fallback != "unknown" else "cloudy"
     return weather, evidence
@@ -241,12 +297,13 @@ def extract_score(text: str) -> Optional[float]:
 def extract_temperatures(text: str) -> tuple[Optional[float], Optional[float], dict[str, Any]]:
     pairs: list[tuple[float, float]] = []
     ignored: list[str] = []
+    city_lines = _city_weather_lines(text)
     for line in _lines(text):
         if _is_sport_or_wetsuit_line(line):
             if re.search(r"\d+(?:[\.,]\d+)?\s*/\s*\d+(?:[\.,]\d+)?", line):
                 ignored.append(line)
             continue
-        if line not in _city_weather_lines(text):
+        if line not in city_lines:
             continue
         m = re.search(r":\s*(-?\d+(?:[\.,]\d+)?)\s*/\s*(-?\d+(?:[\.,]\d+)?)\s*°", line)
         if not m:
