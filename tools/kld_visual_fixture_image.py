@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build or send synthetic KLD visual fixture images.
+"""Build or send KLD visual fixture images.
 
 Side-effect free by default:
 - no weather/marine fetch;
@@ -12,6 +12,7 @@ Examples:
     python tools/kld_visual_fixture_image.py --scenario drizzle
     python tools/kld_visual_fixture_image.py --scenario rain --generate
     python tools/kld_visual_fixture_image.py --scenario storm --send-to-test
+    python tools/kld_visual_fixture_image.py --message-file format_v2_message.txt --generate
 """
 from __future__ import annotations
 
@@ -116,23 +117,22 @@ def _chat_id(value: str) -> int | str:
         return value
 
 
-async def _send_photo(path: str, caption: str) -> None:
+async def _send_photo(path: str, caption: str, *, chat_id_override: str = "") -> None:
     from telegram import Bot  # imported only for explicit send mode
 
     token = os.getenv("TELEGRAM_TOKEN_KLG", "").strip()
-    chat_id_raw = os.getenv("CHANNEL_ID_TEST", "").strip()
+    chat_id_raw = (chat_id_override or os.getenv("CHANNEL_ID_TEST", "")).strip()
     if not token:
         raise SystemExit("TELEGRAM_TOKEN_KLG is required for --send-to-test")
     if not chat_id_raw:
-        raise SystemExit("CHANNEL_ID_TEST is required for --send-to-test")
+        raise SystemExit("CHANNEL_ID_TEST or --chat-id is required for --send-to-test")
 
     with open(path, "rb") as f:
         msg = await Bot(token=token).send_photo(chat_id=_chat_id(chat_id_raw), photo=f, caption=caption)
-    print(f"Sent fixture image to CHANNEL_ID_TEST, message_id={getattr(msg, 'message_id', '?')}")
+    print(f"Sent KLD image, chat={chat_id_raw}, message_id={getattr(msg, 'message_id', '?')}")
 
 
-def build_fixture_payload(scenario: str) -> dict[str, Any]:
-    message = FIXTURES[scenario]
+def build_payload(message: str, label: str) -> dict[str, Any]:
     ctx = build_visual_context(message, post_type="evening")
     cues = apply_visual_rules(ctx)
     diagnostic_prompt = build_prompt_from_cues(cues)
@@ -144,7 +144,7 @@ def build_fixture_payload(scenario: str) -> dict[str, Any]:
         post_type="evening",
     )
     return {
-        "scenario": scenario,
+        "scenario": label,
         "message": message,
         "context": ctx,
         "cues": cues,
@@ -154,14 +154,27 @@ def build_fixture_payload(scenario: str) -> dict[str, Any]:
     }
 
 
+def build_fixture_payload(scenario: str) -> dict[str, Any]:
+    return build_payload(FIXTURES[scenario], scenario)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build/send KLD synthetic visual fixture image")
-    parser.add_argument("--scenario", choices=sorted(FIXTURES), required=True)
+    parser = argparse.ArgumentParser(description="Build/send KLD visual image")
+    parser.add_argument("--scenario", choices=sorted(FIXTURES), default="")
+    parser.add_argument("--message-file", default="", help="Use an already-built FORMAT_V2 message from file instead of fixture")
     parser.add_argument("--generate", action="store_true", help="Generate local image but do not send")
-    parser.add_argument("--send-to-test", action="store_true", help="Generate and send image to CHANNEL_ID_TEST only")
+    parser.add_argument("--send-to-test", action="store_true", help="Generate and send image. Defaults to CHANNEL_ID_TEST unless --chat-id is provided")
+    parser.add_argument("--chat-id", default="", help="Explicit chat id for --send-to-test")
     args = parser.parse_args()
 
-    payload = build_fixture_payload(args.scenario)
+    if args.message_file:
+        message = Path(args.message_file).read_text(encoding="utf-8")
+        payload = build_payload(message, "message_file")
+    elif args.scenario:
+        payload = build_fixture_payload(args.scenario)
+    else:
+        raise SystemExit("Provide --scenario or --message-file")
+
     ctx = payload["context"]
     cues = payload["cues"]
 
@@ -199,11 +212,12 @@ def main() -> None:
         prompt=payload["image_prompt"],
         style_name=payload["style_name"],
     )
-    print(f"Generated fixture image: {img_path}")
+    print(f"Generated KLD image: {img_path}")
 
     if args.send_to_test:
-        caption = f"🧪 KLD fixture image • {args.scenario} • FORMAT_V2 SceneCues"
-        asyncio.run(_send_photo(img_path, caption))
+        suffix = args.scenario or "FORMAT_V2 message"
+        caption = f"🧪 KLD image • {suffix} • FORMAT_V2 SceneCues"
+        asyncio.run(_send_photo(img_path, caption, chat_id_override=args.chat_id))
 
 
 if __name__ == "__main__":
