@@ -165,6 +165,7 @@ def main() -> None:
     parser.add_argument("--generate", action="store_true", help="Generate local image but do not send")
     parser.add_argument("--send-to-test", action="store_true", help="Generate and send image. Defaults to CHANNEL_ID_TEST unless --chat-id is provided")
     parser.add_argument("--chat-id", default="", help="Explicit chat id for --send-to-test")
+    parser.add_argument("--caption", default="", help="Caption for sent image")
     args = parser.parse_args()
 
     if args.message_file:
@@ -215,8 +216,8 @@ def main() -> None:
     print(f"Generated KLD image: {img_path}")
 
     if args.send_to_test:
-        suffix = args.scenario or "FORMAT_V2 message"
-        caption = f"🧪 KLD image • {suffix} • FORMAT_V2 SceneCues"
+        default_suffix = args.scenario or "FORMAT_V2 message"
+        caption = args.caption.strip() or f"🧪 KLD image • {default_suffix} • FORMAT_V2 SceneCues"
         asyncio.run(_send_photo(img_path, caption, chat_id_override=args.chat_id))
 
 
