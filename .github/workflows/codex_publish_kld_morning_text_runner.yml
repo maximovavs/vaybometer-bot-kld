@@ -40,7 +40,7 @@ jobs:
           Path('/tmp/kld-morning-text.patch').write_bytes(patch.replace(b'\r\n', b'\n'))
           Path('tools/test_format_v2_morning_kld.py').write_bytes(test)
           PY
-          git apply --whitespace=nowarn /tmp/kld-morning-text.patch
+          patch --batch --forward -p1 < /tmp/kld-morning-text.patch
 
       - name: Install runtime dependencies
         run: python -m pip install pendulum python-telegram-bot requests pillow
