@@ -86,8 +86,101 @@ def _city_line(lines: list[str], city: str) -> str:
 
 
 def _astro(lines: list[str]) -> list[str]:
-    sec = _section_after(lines, "Астрособытия")
-    return [x for x in sec if x.startswith(("•", "🌙", "✅", "⚫"))][:2]
+    out: list[str] = []
+    capture = False
+    for line in lines:
+        s = line.strip()
+        if "Астрособытия" in s:
+            capture = True
+            continue
+        if not capture:
+            continue
+        if _is_sep(s) or s.startswith(("🧲", "🧪", "🔎", "✅ Сегодня", "#")):
+            break
+        if s.startswith(("•", "🌙", "✅", "💚", "⚫")):
+            out.append(s)
+    return out
+
+
+def _sentence(text: str) -> str:
+    s = re.sub(r"^[^0-9A-Za-zА-Яа-яЁё]+", "", _plain(text))
+    s = re.sub(r"^(?:В целом|Астроритм|Сегодня)\s*:\s*", "", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip(" .;—-")
+    if not s:
+        return ""
+    return s[0].upper() + s[1:] + "."
+
+
+def _moon_line(line: str) -> str:
+    s = _plain(line)
+    s = re.sub(r"^🌙\s*", "", s).strip()
+    pct = ""
+    m_pct = re.search(r"\((\d{1,3}%)\)", s)
+    if m_pct:
+        pct = m_pct.group(1)
+        s = (s[:m_pct.start()] + s[m_pct.end():]).strip()
+    m_sign = re.search(r"([♈♉♊♋♌♍♎♏♐♑♒♓](?:\s+[А-Яа-яЁё]+)?)", s)
+    sign = m_sign.group(1).strip() if m_sign else ""
+    phase = (s[:m_sign.start()] + s[m_sign.end():]).strip() if m_sign else s
+    phase = re.sub(r"\s*[•,]\s*$", "", phase).strip()
+    phase = re.sub(r"\s+,", ",", phase)
+    detail = ", ".join(x for x in (phase, sign) if x)
+    if pct:
+        detail += f" ({pct})"
+    return f"🌙 {detail}".strip()
+
+
+def _astro_plus(moon: str, details: list[str]) -> str:
+    useful = [
+        _sentence(x)
+        for x in details
+        if x.strip().startswith(("•", "💚"))
+        and not re.search(r"отлож|избег|неблагоприят|⛔", x, flags=re.I)
+    ]
+    useful = [x.rstrip(".") for x in useful if x]
+    useful = [(x[0].lower() + x[1:]) if x and x[0].isalpha() else x for x in useful]
+    sign_map = {
+        "♍": "порядок, здоровье и аккуратное планирование",
+        "Дева": "порядок, здоровье и аккуратное планирование",
+        "♌": "творчество, самопрезентация и тёплое общение",
+        "Лев": "творчество, самопрезентация и тёплое общение",
+        "♋": "дом, восстановление и семья",
+        "Рак": "дом, восстановление и семья",
+        "♎": "баланс, красота и договорённости",
+        "Весы": "баланс, красота и договорённости",
+    }
+    plus = next((value for key, value in sign_map.items() if key in moon), None)
+    if useful:
+        directions = useful[:2]
+        if len(directions) < 2 and plus:
+            directions.append(plus)
+        return "💚 В плюсе: " + "; ".join(directions) + "."
+    return f"💚 В плюсе: {plus or 'спокойные планы, восстановление и прогулки'}."
+
+
+def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
+    details = _astro(lines)
+    sunset = next((x.strip() for x in lines if x.strip().startswith("🌇 Закат")), "")
+    moon_source = next((x for x in details if x.strip().startswith("🌙")), "")
+    if not (sunset or moon_source or details):
+        return []
+
+    title = "🌅 <b>Солнце и ритм дня</b>" if morning else "🌅 <b>Солнце и ритм завтрашнего дня</b>"
+    out = [title]
+    if sunset:
+        out.append(sunset)
+    moon = _moon_line(moon_source) if moon_source else ""
+    if moon:
+        out.append(moon)
+
+    advice_source = next(
+        (x for x in details if x.strip().startswith("✅")),
+        next((x for x in details if x.strip().startswith("•")), ""),
+    )
+    advice = _sentence(advice_source) or "Спокойный темп и реалистичный план дня."
+    out.append("✅ Астроритм: " + advice[0].lower() + advice[1:])
+    out.append(_astro_plus(moon, [x for x in details if x != advice_source]))
+    return out[:5]
 
 
 def _tips_fallback(has_storm: bool, has_rain: bool) -> list[str]:
@@ -169,6 +262,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     air = [x for x in _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sunset = _morning_pick(lines, ("🌇",))
+    astro = _astro_block(lines, morning=True)
     safecast = [x for x in _morning_pick(lines, ("🧪",)) if "Safecast" in x]
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
@@ -188,7 +282,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(_clean_uv_line(uv[0]))
     if air:
         out.append(air[0])
-    if sunset:
+    if astro:
+        out.extend(astro)
+    elif sunset:
         out.append(sunset[0])
     if space:
         out.append(_clean_kp_line(space[0]))
@@ -209,8 +305,8 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     kal = _city_line(lines, "Калининград")
     storm = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
     sea = _soften_sea_lines(_section_after(lines, "Морские города"))
-    warm_cold = _section_between(lines, "Тёплые города", ("Астрособытия", "Рекомендации"))
-    astro = _astro(lines)
+    warm_cold = _section_between(lines, "Тёплые города", ("🌇 Закат", "Астрособытия", "Рекомендации"))
+    astro = _astro_block(lines, morning=False)
     has_storm = bool(storm)
     has_rain = "дожд" in safe_legacy_text.lower()
     tips = _recommendations(lines, has_storm, has_rain)
@@ -261,7 +357,6 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     out.append("")
 
     if astro:
-        out.append("🌙 <b>Астроритм</b>")
         out.extend(astro)
         out.append("")
 

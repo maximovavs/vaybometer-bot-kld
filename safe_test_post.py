@@ -487,7 +487,7 @@ def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
             else:
                 out.append(existing)
         return chr(10).join(out)
-    return _insert_before_anchor(v2_text, line, ("🌙 <b>Астроритм", "✅ <b>Рекомендации", "📌 <b>Вывод"))
+    return _insert_before_anchor(v2_text, line, ("🌅 <b>Солнце и ритм", "🌙 <b>Астроритм", "✅ <b>Рекомендации", "📌 <b>Вывод"))
 
 
 def _apply_confidence_polish(v2_text: str) -> str:
@@ -508,12 +508,12 @@ def _apply_astro_cleanup(v2_text: str) -> str:
     astro_details = 0
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith(("🌙 <b>Астроритм", "☀️ <b>Солнце")):
+        if stripped.startswith(("🌙 <b>Астроритм", "☀️ <b>Солнце", "🌅 <b>Солнце и ритм")):
             in_astro = True
             astro_details = 0
             out.append(line)
             continue
-        if in_astro and stripped.startswith(("✅ <b>Рекомендации", "📌 <b>Вывод", "#")):
+        if in_astro and stripped.startswith(("🧲", "🧪", "✅ План:", "✅ <b>Рекомендации", "📌 <b>Вывод", "#")):
             in_astro = False
         if in_astro and stripped:
             if stripped.endswith("для первых") or stripped.endswith("и вдо…"):
@@ -526,7 +526,7 @@ def _apply_astro_cleanup(v2_text: str) -> str:
             if not stripped.startswith(("🌅", "🌙", "✅", "💚")):
                 continue
             astro_details += 1
-            if astro_details > 3:
+            if astro_details > 4:
                 continue
         out.append(line)
     return "\n".join(out)

@@ -1800,6 +1800,7 @@ def build_message_morning_compact(
             P.append(uvi_line)
     if sunset_line:
         P.append(sunset_line)
+    P.append(build_astro_section(date_local=date_local, tz_local=tz_obj.name))
     if SHOW_SPACE:
         P.append(space_line)
     if storm_line_alert:
@@ -1978,10 +1979,22 @@ def build_message_legacy_evening(
 
         P.append("———")
 
-    # Астрособытия
-    tz_nic = pendulum.timezone("Asia/Nicosia")
-    date_for_astro = pendulum.today(tz_nic).add(days=ASTRO_OFFSET)
-    P.append(build_astro_section(date_local=date_for_astro, tz_local="Asia/Nicosia"))
+    # Закат и астрособытия завтрашнего дня
+    try:
+        _sunrise, sunset = get_sunrise_sunset(
+            KLD_LAT,
+            KLD_LON,
+            tz_name,
+            DAY_OFFSET,
+        )
+        if sunset:
+            P.append(f"🌇 Закат завтра: {sunset}")
+        else:
+            logging.info("KLD evening: время заката недоступно")
+    except Exception as e:
+        logging.info("KLD evening: не удалось получить время заката: %s", e)
+    date_for_astro = pendulum.today(tz_obj).add(days=ASTRO_OFFSET)
+    P.append(build_astro_section(date_local=date_for_astro, tz_local=tz_name))
     P.append("———")
 
     # (2) Вечером блоки воздуха/космопогоды/Шумана скрыты — остаются только рекомендации.
