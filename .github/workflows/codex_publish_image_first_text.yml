@@ -29,55 +29,71 @@ jobs:
 
           path = Path('.github/workflows/daily_post_klg.yml')
           text = path.read_text(encoding='utf-8')
+          nl = chr(10)
 
-          helper = '''          import asyncio, os, runpy, sys, pendulum, subprocess
-          from pathlib import Path
-          from telegram import Bot, constants
-          from post_safety import split_telegram_text
-
-          async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):
-              text = Path(text_path).read_text(encoding="utf-8").strip()
-              chunks = split_telegram_text(text)
-              if not chunks:
-                  raise SystemExit("Extracted FORMAT_V2 text is empty")
-              async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:
-                  for idx, chunk in enumerate(chunks, start=1):
-                      if add_test_label:
-                          prefix = (
-                              f"<b>Test safe post {idx}/{len(chunks)}</b>\\n"
-                              if len(chunks) > 1
-                              else "<b>Test safe post</b>\\n"
-                          )
-                          chunk = prefix + chunk
-                      await bot.send_message(
-                          chat_id=int(chat_id),
-                          text=chunk,
-                          parse_mode=constants.ParseMode.HTML,
-                          disable_web_page_preview=True,
-                      )
-              print(f"KLD extracted text sent: chunks={len(chunks)}")'''
-
-          old_import = '''          import os, runpy, sys, pendulum, subprocess
-          from pathlib import Path'''
+          helper_lines = [
+              'import asyncio, os, runpy, sys, pendulum, subprocess',
+              'from pathlib import Path',
+              'from telegram import Bot, constants',
+              'from post_safety import split_telegram_text',
+              '',
+              'async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):',
+              '    text = Path(text_path).read_text(encoding="utf-8").strip()',
+              '    chunks = split_telegram_text(text)',
+              '    if not chunks:',
+              '        raise SystemExit("Extracted FORMAT_V2 text is empty")',
+              '    async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:',
+              '        for idx, chunk in enumerate(chunks, start=1):',
+              '            if add_test_label:',
+              '                prefix = (',
+              '                    f"<b>Test safe post {idx}/{len(chunks)}</b>\\n"',
+              '                    if len(chunks) > 1',
+              '                    else "<b>Test safe post</b>\\n"',
+              '                )',
+              '                chunk = prefix + chunk',
+              '            await bot.send_message(',
+              '                chat_id=int(chat_id),',
+              '                text=chunk,',
+              '                parse_mode=constants.ParseMode.HTML,',
+              '                disable_web_page_preview=True,',
+              '            )',
+              '    print(f"KLD extracted text sent: chunks={len(chunks)}")',
+          ]
+          helper = nl.join(('          ' + line) if line else '' for line in helper_lines)
+          old_import = nl.join([
+              '          import os, runpy, sys, pendulum, subprocess',
+              '          from pathlib import Path',
+          ])
           assert text.count(old_import) == 2, text.count(old_import)
           text = text.replace(old_import, helper)
 
-          old_morning = '''                  send_cmd = [sys.executable] + args
-                  print("Sending morning text after image:", " ".join(send_cmd))
-                  subprocess.run(send_cmd, check=True)'''
-          new_morning = '''                  add_test_label = to_test and not chat_override and not scheduled_run
-                  print("Sending morning extracted text after image...")
-                  asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))'''
-          assert text.count(old_morning) == 1
+          def indented(lines):
+              return nl.join('                  ' + line for line in lines)
+
+          old_morning = indented([
+              'send_cmd = [sys.executable] + args',
+              'print("Sending morning text after image:", " ".join(send_cmd))',
+              'subprocess.run(send_cmd, check=True)',
+          ])
+          new_morning = indented([
+              'add_test_label = to_test and not chat_override and not scheduled_run',
+              'print("Sending morning extracted text after image...")',
+              'asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))',
+          ])
+          assert text.count(old_morning) == 1, text.count(old_morning)
           text = text.replace(old_morning, new_morning, 1)
 
-          old_evening = '''                  send_cmd = [sys.executable] + args
-                  print("Sending evening text after image:", " ".join(send_cmd))
-                  subprocess.run(send_cmd, check=True)'''
-          new_evening = '''                  add_test_label = to_test and not chat_override and not scheduled_run
-                  print("Sending evening extracted text after image...")
-                  asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))'''
-          assert text.count(old_evening) == 1
+          old_evening = indented([
+              'send_cmd = [sys.executable] + args',
+              'print("Sending evening text after image:", " ".join(send_cmd))',
+              'subprocess.run(send_cmd, check=True)',
+          ])
+          new_evening = indented([
+              'add_test_label = to_test and not chat_override and not scheduled_run',
+              'print("Sending evening extracted text after image...")',
+              'asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))',
+          ])
+          assert text.count(old_evening) == 1, text.count(old_evening)
           text = text.replace(old_evening, new_evening, 1)
 
           path.write_text(text, encoding='utf-8')
