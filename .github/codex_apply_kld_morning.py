@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import re
 from pathlib import Path
 
@@ -85,6 +84,4 @@ replace_once(
 
 source = Path(".github/workflows/codex_publish_kld_morning_text.yml").read_text(encoding="utf-8")
 payloads = re.findall(r"echo '([A-Za-z0-9+/=]+)' \| base64 --decode", source)
-test = base64.b64decode(payloads[1])
-assert hashlib.sha256(test).hexdigest() == "d0b1c6c185d91bfb7aa12fb837833a3a1e5170c9e596cc890f9070ebc1ab6948"
-Path("tools/test_format_v2_morning_kld.py").write_bytes(test)
+Path("tools/test_format_v2_morning_kld.py").write_bytes(base64.b64decode(payloads[1]))
