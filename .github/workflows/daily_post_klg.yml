@@ -33,7 +33,7 @@ on:
         default: false
         required: false
       kld_morning_image_enabled:
-        description: "Отправить FORMAT_V2 image после утреннего KLD поста (только для ручного запуска)"
+        description: "Отправить FORMAT_V2 image после утреннего KLD поста (для ручного запуска; по расписанию включено)"
         type: boolean
         default: false
         required: false
@@ -134,7 +134,9 @@ jobs:
           to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
-          image_enabled = os.getenv("KLD_MORNING_IMG_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+          image_enabled = scheduled_run or (
+              os.getenv("KLD_MORNING_IMG_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+          )
 
           if format_v2:
               args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
