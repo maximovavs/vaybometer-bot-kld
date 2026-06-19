@@ -29,12 +29,18 @@ jobs:
       - name: Install runtime dependencies
         run: python -m pip install pendulum python-telegram-bot requests pillow
 
-      - name: Verify KLD morning FORMAT_V2
+      - name: Compile changed Python files
+        run: python -m py_compile safe_test_post.py post_common.py format_v2.py tools/test_format_v2_morning_kld.py
+
+      - name: Run KLD morning regression checks
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tools/test_format_v2_morning_kld.py
+
+      - name: Run KLD morning FORMAT_V2 dry-run
         env:
           PYTHONIOENCODING: utf-8
         run: |
-          python -m py_compile safe_test_post.py post_common.py format_v2.py tools/test_format_v2_morning_kld.py
-          python tools/test_format_v2_morning_kld.py
           python safe_test_post.py --mode morning --format-v2 | tee /tmp/kld-morning-format-v2.log
           python - <<'PY'
           from pathlib import Path
