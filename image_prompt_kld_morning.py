@@ -9,9 +9,10 @@ from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-_TEXT_RESTRICTIONS = (
-    "Text restrictions: no text, no captions, no labels, no logos, "
-    "no numbers, no UI, no watermarks."
+_PURE_SCENE_CUES = (
+    "Pure full-frame natural landscape painting; uninterrupted Baltic scenery; "
+    "clean open sky, beach, dunes, pines and sea filling the whole image; "
+    "calm editorial-free scenic composition."
 )
 
 _TRIGGER_RE = re.compile(
@@ -19,7 +20,11 @@ _TRIGGER_RE = re.compile(
     r"moon|moonlit|lunar|crescent|"
     r"night|evening|sunset|"
     r"boat|sail|sailboat|yacht|mast|"
-    r"sup|paddleboard"
+    r"sup|paddleboard|"
+    r"text|caption|label|logo|watermark|number|numbers|ui|"
+    r"letter|letters|word|words|writing|title|headline|"
+    r"typography|poster|layout|panel|panels|infographic|card|"
+    r"vaye|vaybo|vaybometer"
     r")\b",
     re.IGNORECASE,
 )
@@ -45,7 +50,7 @@ def _fallback_morning_prompt() -> str:
             "Light: soft low-angle morning light and pale cloud layers.",
             "Mood: fresh Baltic morning air and practical weather-for-the-day mood.",
             _SAFE_MORNING_CUES,
-            _TEXT_RESTRICTIONS,
+            _PURE_SCENE_CUES,
         ]
     )
 
@@ -63,10 +68,10 @@ def _remove_trigger_lines(prompt: str) -> str:
 
 
 def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
-    """Remove object/night trigger words from final morning prompt.
+    """Remove object/night/layout trigger words from final morning prompt.
 
     Image generators often treat negative words as objects, so morning prompts use
-    positive daylight scene cues only.
+    positive daylight scenic cues only.
     """
     cleaned = _remove_trigger_lines(prompt)
     parts: list[str] = []
@@ -79,7 +84,7 @@ def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
         parts.append(cleaned)
 
     parts.append(_SAFE_MORNING_CUES)
-    parts.append(_TEXT_RESTRICTIONS)
+    parts.append(_PURE_SCENE_CUES)
 
     final_prompt = "\n".join(parts)
     # Second-pass guard for compound or unexpected trigger remnants.
@@ -103,10 +108,10 @@ def build_kld_morning_prompt(
         cues = apply_visual_rules(ctx)
         prompt = build_prompt_from_cues(cues)
         prompt = _sanitize_morning_prompt(prompt, weather_main=getattr(ctx, "weather_main", ""))
-        return prompt, "format_v2_scene_cues_morning"
+        return prompt, "scenic_baltic_morning_landscape"
     except Exception:
         logger.exception("KLD morning visual pipeline failed; using simple coastal fallback")
-        return _sanitize_morning_prompt(_fallback_morning_prompt()), "format_v2_scene_cues_morning"
+        return _sanitize_morning_prompt(_fallback_morning_prompt()), "scenic_baltic_morning_landscape"
 
 
 __all__ = ["build_kld_morning_prompt"]
