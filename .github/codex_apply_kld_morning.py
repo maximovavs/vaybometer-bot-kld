@@ -76,6 +76,6 @@ replace_once(
                 replaced = True
             else:
                 out.append(existing)
-        return "\n".join(out)
+        return chr(10).join(out)
     return _insert_before_anchor(v2_text, line, ("🌙 <b>Астроритм", "✅ <b>Рекомендации", "📌 <b>Вывод"))""",
 )
