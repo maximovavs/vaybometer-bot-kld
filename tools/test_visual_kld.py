@@ -13,6 +13,7 @@ Run locally or in GitHub Actions:
 """
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from image_prompt_kld import build_kld_evening_prompt  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues  # noqa: E402
 
@@ -247,10 +249,40 @@ def run_case(case: dict[str, Any]) -> None:
     print(f"PASS {name}")
 
 
+def run_image_prompt_bridge_case() -> None:
+    name = "image_prompt_kld_format_v2_bridge"
+    message = CASES[0]["message"]
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 6, 19),
+        marine_mood="legacy marine mood should be ignored when FORMAT_V2 message is provided",
+        inland_mood="legacy inland mood should be ignored when FORMAT_V2 message is provided",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    for needle in [
+        "Create an atmospheric, information-driven weather illustration for VayboMeter Kaliningrad.",
+        "Weather: cloudy Baltic weather.",
+        "Activity cue: small distant paddleboarder only; scale: distant.",
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
+    ]:
+        _assert_contains(name, prompt, needle)
+    for needle in [
+        "legacy marine mood should be ignored",
+        "legacy inland mood should be ignored",
+        "visible rain streaks",
+    ]:
+        _assert_not_contains(name, prompt, needle)
+
+    print(f"PASS {name}")
+
+
 def main() -> None:
     for case in CASES:
         run_case(case)
-    print(f"OK: {len(CASES)} KLD synthetic visual checks passed")
+    run_image_prompt_bridge_case()
+    print(f"OK: {len(CASES) + 1} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":
