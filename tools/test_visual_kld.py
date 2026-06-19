@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from image_prompt_kld import build_kld_evening_prompt  # noqa: E402
+from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues  # noqa: E402
 
@@ -126,6 +127,19 @@ CASES: list[dict[str, Any]] = [
         "prompt_must_contain": [
             "visible rain streaks",
             "wet surfaces",
+            "steady visible rain streaks across the frame",
+            "dense diagonal raindrop streaks",
+            "rain clearly readable in foreground and midground",
+            "wet grey Baltic atmosphere",
+            "dark low rain clouds",
+            "wet shoreline or wet promenade foreground",
+            "overcast sky with no bright sun breaks",
+            "empty coast, no leisure mood",
+            "peaceful postcard beach mood",
+            "bright clearing in the sky",
+            "beautiful bright beach mood",
+            "large sunlit opening in the clouds",
+            "dry sand foreground",
             "visible SUP rider in rain",
             "relaxed SUP holiday mood",
         ],
@@ -153,6 +167,18 @@ CASES: list[dict[str, Any]] = [
         "prompt_must_contain": [
             "dramatic clouds",
             "rough sea",
+            "storm-warning Baltic atmosphere",
+            "rougher choppy sea with white foam",
+            "strong wind visible in dune grass and pines",
+            "dark dramatic cloud shelf",
+            "sea spray or wind-driven rain",
+            "unsafe coastal conditions feeling",
+            "peaceful beach mood",
+            "calm sea surface",
+            "sunny breaks that make the scene feel pleasant",
+            "choppy water with irregular wave texture",
+            "white foam near shoreline",
+            "wind force visible on the sea surface",
             "visible SUP rider in rain",
             "relaxed SUP holiday mood",
         ],
@@ -306,11 +332,94 @@ def run_image_prompt_bridge_case() -> None:
     print(f"PASS {name}")
 
 
+def run_morning_cases() -> None:
+    cases = [
+        {
+            "name": "morning_cloudy_daylight",
+            "message": "\n".join(
+                [
+                    "🌊 Морские города",
+                    "Светлогорск: 17/12 °C • 🌥 пасм • 🌊 14 • 0.2 м",
+                    "Зеленоградск: 17/12 °C • 🌥 пасм • 🌊 14",
+                ]
+            ),
+            "weather": "cloudy",
+            "must_contain": ["cloudy Baltic weather"],
+        },
+        {
+            "name": "morning_rain_no_moon",
+            "message": "\n".join(
+                [
+                    "🌊 Морские города",
+                    "Светлогорск: 15/11 °C • 🌧 дождь • 🌊 14 • 0.4 м",
+                    "Зеленоградск: 15/11 °C • 🌧 дождь • 🌊 14",
+                    "🌙 Луна: полнолуние",
+                ]
+            ),
+            "weather": "rain",
+            "must_contain": [
+                "rainy Baltic weather",
+                "steady visible rain streaks across the frame",
+            ],
+        },
+        {
+            "name": "morning_clear_no_evening_mood",
+            "message": "\n".join(
+                [
+                    "🌊 Морские города",
+                    "Светлогорск: 21/13 °C • ☀️ ясно • 🌊 15 • 0.1 м",
+                    "Зеленоградск: 21/13 °C • ☀️ ясно • 🌊 15",
+                ]
+            ),
+            "weather": "clear",
+            "must_contain": ["clear Baltic weather"],
+        },
+    ]
+
+    common_must_contain = [
+        "daylight, not sunset",
+        "fresh Baltic morning air",
+        "soft low-angle morning light",
+        "practical weather-for-the-day mood",
+        "clear daytime visual language",
+        "sunset colors",
+        "night atmosphere",
+        "mystical evening mood",
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
+    ]
+    forbidden_positive_cues = [
+        "Moon cue:",
+        "bright full moon",
+        "moon reflection on Baltic water",
+        "northern night sky",
+        "sunset light",
+        "mystical evening atmosphere",
+    ]
+
+    for case in cases:
+        ctx = build_visual_context(case["message"], post_type="morning")
+        cues = apply_visual_rules(ctx)
+        prompt, style_name = build_kld_morning_prompt(case["message"])
+
+        _assert_equal(case["name"], "ctx.post_type", ctx.post_type, "morning")
+        _assert_equal(case["name"], "ctx.weather_main", ctx.weather_main, case["weather"])
+        _assert_equal(case["name"], "cues.light_style", cues.light_style, "soft low-angle morning light")
+        _assert_equal(case["name"], "style_name", style_name, "format_v2_scene_cues_morning")
+
+        for needle in common_must_contain + case["must_contain"]:
+            _assert_contains(case["name"], prompt, needle)
+        for needle in forbidden_positive_cues:
+            _assert_not_contains(case["name"], prompt, needle)
+
+        print(f"PASS {case['name']}")
+
+
 def main() -> None:
     for case in CASES:
         run_case(case)
     run_image_prompt_bridge_case()
-    print(f"OK: {len(CASES) + 1} KLD synthetic visual checks passed")
+    run_morning_cases()
+    print(f"OK: {len(CASES) + 4} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":

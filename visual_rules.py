@@ -183,7 +183,20 @@ def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[s
         _add_unique(must_show, "visible rain streaks")
         _add_unique(must_show, "wet surfaces and darker rainy clouds")
         _add_unique(must_show, "puddles or wet promenade if a promenade is visible")
+        _add_unique(must_show, "steady visible rain streaks across the frame")
+        _add_unique(must_show, "dense diagonal raindrop streaks")
+        _add_unique(must_show, "rain clearly readable in foreground and midground")
+        _add_unique(must_show, "wet grey Baltic atmosphere")
+        _add_unique(must_show, "dark low rain clouds")
+        _add_unique(must_show, "wet shoreline or wet promenade foreground")
+        _add_unique(must_show, "overcast sky with no bright sun breaks")
+        _add_unique(must_show, "empty coast, no leisure mood")
         _add_unique(must_avoid, "leisurely dry beach mood")
+        _add_unique(must_avoid, "peaceful postcard beach mood")
+        _add_unique(must_avoid, "bright clearing in the sky")
+        _add_unique(must_avoid, "beautiful bright beach mood")
+        _add_unique(must_avoid, "large sunlit opening in the clouds")
+        _add_unique(must_avoid, "dry sand foreground")
         return "rainy Baltic weather"
 
     if w == "fog":
@@ -202,7 +215,16 @@ def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[s
         _add_unique(must_show, "dramatic clouds")
         _add_unique(must_show, "rough sea")
         _add_unique(must_show, "spray and wave energy")
+        _add_unique(must_show, "storm-warning Baltic atmosphere")
+        _add_unique(must_show, "rougher choppy sea with white foam")
+        _add_unique(must_show, "strong wind visible in dune grass and pines")
+        _add_unique(must_show, "dark dramatic cloud shelf")
+        _add_unique(must_show, "sea spray or wind-driven rain")
+        _add_unique(must_show, "unsafe coastal conditions feeling")
         _add_unique(must_avoid, "relaxed casual sport foreground")
+        _add_unique(must_avoid, "peaceful beach mood")
+        _add_unique(must_avoid, "calm sea surface")
+        _add_unique(must_avoid, "sunny breaks that make the scene feel pleasant")
         return "storm-warning Baltic atmosphere"
 
     return "general Baltic weather mood"
@@ -247,6 +269,9 @@ def _sea_state(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) 
         assert wave_height is not None
         if wave_height >= WAVE_HIGH:
             _add_unique(must_show, "visibly wavy sea")
+            _add_unique(must_show, "choppy water with irregular wave texture")
+            _add_unique(must_show, "white foam near shoreline")
+            _add_unique(must_show, "wind force visible on the sea surface")
             _add_unique(must_avoid, "perfect calm activity mood")
             sea_state = "visibly wavy Baltic sea"
         elif wave_height >= WAVE_MEDIUM:
@@ -374,6 +399,12 @@ def _moon_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]
     post_type = getattr(ctx, "post_type", "unknown")
     time_hint = getattr(ctx, "time_hint", "unknown")
 
+    if post_type == "morning":
+        _add_unique(must_avoid, "moon")
+        _add_unique(must_avoid, "moon emphasis")
+        _add_unique(validation_notes, "Morning: suppress all moon cues")
+        return "not used for morning daylight scene"
+
     if phase == "new":
         _add_unique(must_show, "moonless dark sky if evening or night")
         _add_unique(must_avoid, "visible moon")
@@ -464,6 +495,23 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
     base_scene = "Baltic coast near Kaliningrad, dunes, pines, promenade, sea horizon"
     palette = "cool Baltic grey-blue, muted sand, pine green, restrained northern light"
     light_style = "soft northern light"
+    post_type = getattr(ctx, "post_type", "unknown")
+
+    if post_type == "morning":
+        base_scene = "Baltic coast near Kaliningrad in daylight, dunes, pines, promenade, sea horizon"
+        palette = "fresh Baltic morning grey-blue, muted sand, pine green, natural daylight"
+        light_style = "soft low-angle morning light"
+        _add_unique(must_show, "daylight, not sunset")
+        _add_unique(must_show, "fresh Baltic morning air")
+        _add_unique(must_show, "soft low-angle morning light")
+        _add_unique(must_show, "practical weather-for-the-day mood")
+        _add_unique(must_show, "clear daytime visual language")
+        _add_unique(must_avoid, "moon")
+        _add_unique(must_avoid, "sunset colors")
+        _add_unique(must_avoid, "night atmosphere")
+        _add_unique(must_avoid, "mystical evening mood")
+        _add_unique(must_avoid, "sunset palette")
+        _add_unique(must_avoid, "night sky")
 
     _add_unique(must_show, "recognizable Baltic/Kaliningrad atmosphere")
     _add_unique(must_show, "dunes, pines, promenade, or Baltic sea horizon")
@@ -510,9 +558,10 @@ def build_prompt_from_cues(cues: SceneCues) -> str:
         f"Weather: {cues.weather_visual}.",
         f"Sea and wind state: {cues.sea_state}.",
         f"Activity cue: {cues.activity_visual}; scale: {cues.activity_scale}.",
-        f"Moon cue: {cues.moon_visual}.",
         f"Overall mood: {cues.overall_mood}.",
     ]
+    if cues.post_type != "morning":
+        parts.insert(7, f"Moon cue: {cues.moon_visual}.")
     if cues.must_show:
         parts.append("Must show: " + "; ".join(cues.must_show) + ".")
     if cues.must_avoid:

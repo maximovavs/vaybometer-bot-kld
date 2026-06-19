@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from image_prompt_kld import build_kld_evening_prompt  # noqa: E402
+from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues, to_json  # noqa: E402
 
@@ -132,19 +133,26 @@ async def _send_photo(path: str, caption: str, *, chat_id_override: str = "") ->
     print(f"Sent KLD image, chat={chat_id_raw}, message_id={getattr(msg, 'message_id', '?')}")
 
 
-def build_payload(message: str, label: str) -> dict[str, Any]:
-    ctx = build_visual_context(message, post_type="evening")
+def build_payload(message: str, label: str, *, post_type: str = "evening") -> dict[str, Any]:
+    ctx = build_visual_context(message, post_type=post_type)
     cues = apply_visual_rules(ctx)
     diagnostic_prompt = build_prompt_from_cues(cues)
-    image_prompt, style_name = build_kld_evening_prompt(
-        dt.date(2026, 6, 19),
-        marine_mood="",
-        inland_mood="",
-        final_format_v2_message=message,
-        post_type="evening",
-    )
+    if post_type == "morning":
+        image_prompt, style_name = build_kld_morning_prompt(
+            message,
+            post_type="morning",
+        )
+    else:
+        image_prompt, style_name = build_kld_evening_prompt(
+            dt.date(2026, 6, 19),
+            marine_mood="",
+            inland_mood="",
+            final_format_v2_message=message,
+            post_type="evening",
+        )
     return {
         "scenario": label,
+        "post_type": post_type,
         "message": message,
         "context": ctx,
         "cues": cues,
@@ -154,14 +162,15 @@ def build_payload(message: str, label: str) -> dict[str, Any]:
     }
 
 
-def build_fixture_payload(scenario: str) -> dict[str, Any]:
-    return build_payload(FIXTURES[scenario], scenario)
+def build_fixture_payload(scenario: str, *, post_type: str = "evening") -> dict[str, Any]:
+    return build_payload(FIXTURES[scenario], scenario, post_type=post_type)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build/send KLD visual image")
     parser.add_argument("--scenario", choices=sorted(FIXTURES), default="")
     parser.add_argument("--message-file", default="", help="Use an already-built FORMAT_V2 message from file instead of fixture")
+    parser.add_argument("--post-type", choices=("evening", "morning"), default="evening")
     parser.add_argument("--generate", action="store_true", help="Generate local image but do not send")
     parser.add_argument("--send-to-test", action="store_true", help="Generate and send image. Defaults to CHANNEL_ID_TEST unless --chat-id is provided")
     parser.add_argument("--chat-id", default="", help="Explicit chat id for --send-to-test")
@@ -170,9 +179,9 @@ def main() -> None:
 
     if args.message_file:
         message = Path(args.message_file).read_text(encoding="utf-8")
-        payload = build_payload(message, "message_file")
+        payload = build_payload(message, "message_file", post_type=args.post_type)
     elif args.scenario:
-        payload = build_fixture_payload(args.scenario)
+        payload = build_fixture_payload(args.scenario, post_type=args.post_type)
     else:
         raise SystemExit("Provide --scenario or --message-file")
 
@@ -217,7 +226,11 @@ def main() -> None:
 
     if args.send_to_test:
         default_suffix = args.scenario or "FORMAT_V2 message"
-        caption = args.caption.strip() or f"🧪 KLD image • {default_suffix} • FORMAT_V2 SceneCues"
+        if args.post_type == "morning":
+            default_caption = "🧪 KLD morning image • FORMAT_V2 SceneCues"
+        else:
+            default_caption = f"🧪 KLD image • {default_suffix} • FORMAT_V2 SceneCues"
+        caption = args.caption.strip() or default_caption
         asyncio.run(_send_photo(img_path, caption, chat_id_override=args.chat_id))
 
 
