@@ -165,7 +165,9 @@ def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[s
     if w == "cloudy":
         _add_unique(must_show, "cloud-dominant sky")
         _add_unique(must_show, "diffused light")
+        _add_unique(must_show, "moon, if present, is partly veiled by clouds and not dominant")
         _add_unique(must_avoid, "hard bright sun")
+        _add_unique(must_avoid, "clear moonlit postcard scene")
         return "cloudy Baltic weather"
 
     if w == "drizzle":
@@ -235,8 +237,10 @@ def _sea_state(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) 
     if _has(wind_gust) and wind_gust is not None and wind_gust >= GUST_STRONG:
         _add_unique(must_show, "dynamic sea texture")
         _add_unique(must_show, "windy atmosphere")
+        _add_unique(must_show, "wind is visible in clouds, dune grass, pines, and water texture")
         _add_unique(must_avoid, "mirror-flat sea")
         _add_unique(must_avoid, "full calm visual language")
+        _add_unique(must_avoid, "romantic glassy moon reflection path")
         sea_state = "gusty, dynamic Baltic sea"
 
     if _has(wave_height):
@@ -249,7 +253,7 @@ def _sea_state(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) 
             _add_unique(must_show, "moderately active sea")
             sea_state = "moderately active Baltic sea"
         elif wave_height < WAVE_LOW:
-            _add_unique(must_show, "quite calm sea")
+            _add_unique(must_show, "quite calm sea with light wind texture, not mirror-flat")
             sea_state = "quite calm Baltic sea"
 
     if _has(sea_temp):
@@ -277,6 +281,11 @@ def _activity_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[
         return "no explicit water-sport athlete", "none"
 
     if sport == "sup":
+        _add_unique(must_avoid, "sailboat")
+        _add_unique(must_avoid, "boat or yacht replacing the SUP")
+        _add_unique(must_avoid, "visible sail or mast")
+        _add_unique(must_avoid, "windsurfer sail confused with paddleboard")
+
         if weather_main in ("rain", "storm"):
             _add_unique(must_avoid, "visible SUP rider in rain")
             _add_unique(must_avoid, "relaxed SUP holiday mood")
@@ -285,25 +294,27 @@ def _activity_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[
 
         if weather_main == "drizzle" and level == "experienced_only":
             _add_unique(must_show, "only a tiny distant paddleboard silhouette if visible at all")
+            _add_unique(must_show, "if visible, it is a standing human silhouette with a paddle on a flat board, no sail")
             _add_unique(must_show, "damp coastal atmosphere is more important than the athlete")
             _add_unique(must_avoid, "clear prominent SUP rider")
             _add_unique(must_avoid, "relaxed beginner SUP scene")
             _add_unique(validation_notes, "Drizzle + experienced-only SUP: tiny hint only")
-            return "tiny distant paddleboard silhouette only", "tiny_hint"
+            return "tiny distant standing paddleboard silhouette only, no sail", "tiny_hint"
 
         if level == "excellent":
-            visual = "one visible paddleboarder on relatively calm water"
+            visual = "one visible standing paddleboarder with paddle on relatively calm water"
             scale = "visible_secondary"
-            _add_unique(must_show, "one visible paddleboarder")
+            _add_unique(must_show, "one visible standing paddleboarder with paddle")
             _add_unique(must_show, "relatively calm water around SUP")
         elif level == "good":
-            visual = "one secondary paddleboarder in the midground"
+            visual = "one secondary standing paddleboarder with paddle in the midground"
             scale = "secondary"
-            _add_unique(must_show, "one paddleboarder as a secondary scene element")
+            _add_unique(must_show, "one paddleboarder as a secondary scene element, standing with paddle")
         elif level == "experienced_only":
-            visual = "small distant paddleboarder only"
+            visual = "small distant standing paddleboarder with paddle only, no sail"
             scale = "distant"
-            _add_unique(must_show, "small distant paddleboarder")
+            _add_unique(must_show, "small distant standing paddleboarder with paddle")
+            _add_unique(must_show, "flat paddleboard silhouette, not a boat")
             _add_unique(must_show, "conditions are visually more important than the athlete")
             _add_unique(must_avoid, "relaxed beginner SUP scene")
         else:
@@ -369,17 +380,27 @@ def _moon_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]
         _add_unique(must_avoid, "crescent moon")
         _add_unique(must_avoid, "full moon")
         _add_unique(must_avoid, "lunar disc")
+        _add_unique(must_avoid, "moon reflection on water")
         _add_unique(validation_notes, "New moon: do not draw any visible moon")
         return "no visible moon / moonless sky"
 
     if phase == "waxing_crescent":
-        _add_unique(must_show, "thin waxing crescent moon")
-        return "thin waxing crescent moon"
+        _add_unique(must_show, "small thin waxing crescent moon, not a full circular moon")
+        _add_unique(must_show, "crescent is subtle and secondary behind or between clouds")
+        _add_unique(must_avoid, "full moon")
+        _add_unique(must_avoid, "round moon")
+        _add_unique(must_avoid, "large bright moon")
+        _add_unique(must_avoid, "dominant moon disc")
+        _add_unique(must_avoid, "moon reflection path on water")
+        _add_unique(validation_notes, "Waxing crescent: avoid full/round moon and bright reflection path")
+        return "small thin waxing crescent moon, subtle not dominant"
     if phase == "first_quarter":
         _add_unique(must_show, "half moon")
+        _add_unique(must_avoid, "full moon")
         return "first quarter half moon"
     if phase == "waxing_gibbous":
         _add_unique(must_show, "almost full waxing moon, not full")
+        _add_unique(must_avoid, "perfect full moon")
         return "waxing gibbous moon"
     if phase == "full":
         _add_unique(must_show, "bright full moon")
@@ -388,12 +409,17 @@ def _moon_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]
         return "bright full moon"
     if phase == "waning_gibbous":
         _add_unique(must_show, "bright waning gibbous moon")
+        _add_unique(must_avoid, "perfect full moon")
         return "waning gibbous moon"
     if phase == "last_quarter":
         _add_unique(must_show, "half moon")
+        _add_unique(must_avoid, "full moon")
         return "last quarter half moon"
     if phase == "waning_crescent":
         _add_unique(must_show, "thin waning crescent moon")
+        _add_unique(must_avoid, "full moon")
+        _add_unique(must_avoid, "round moon")
+        _add_unique(must_avoid, "moon reflection path on water")
         return "thin waning crescent moon"
 
     if post_type == "morning":
