@@ -30,7 +30,7 @@ jobs:
 
       - name: Compile visual modules
         run: |
-          python -m py_compile visual_context_kld.py visual_rules.py tools/test_visual_kld.py
+          python -m py_compile image_prompt_kld.py visual_context_kld.py visual_rules.py tools/test_visual_kld.py
 
       - name: Run synthetic KLD visual checks
         run: |
