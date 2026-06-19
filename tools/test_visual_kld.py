@@ -52,9 +52,21 @@ CASES: list[dict[str, Any]] = [
         "expected": {
             "ctx.weather_main": "cloudy",
             "ctx.evidence.weather_source_used": "coastal",
-            "cues.activity_visual": "small distant paddleboarder only",
+            "cues.activity_visual": "small distant standing paddleboarder with paddle only, no sail",
             "cues.activity_scale": "distant",
+            "cues.moon_visual": "small thin waxing crescent moon, subtle not dominant",
         },
+        "prompt_must_contain": [
+            "small thin waxing crescent moon, not a full circular moon",
+            "crescent is subtle and secondary behind or between clouds",
+            "small distant standing paddleboarder with paddle",
+            "flat paddleboard silhouette, not a boat",
+            "sailboat",
+            "visible sail or mast",
+            "full moon",
+            "round moon",
+            "moon reflection path on water",
+        ],
         "prompt_must_not_contain": [
             "visible rain streaks",
             "wet surfaces and darker rainy clouds",
@@ -78,14 +90,15 @@ CASES: list[dict[str, Any]] = [
         "expected": {
             "ctx.weather_main": "drizzle",
             "ctx.evidence.weather_source_used": "coastal",
-            "cues.activity_visual": "tiny distant paddleboard silhouette only",
+            "cues.activity_visual": "tiny distant standing paddleboard silhouette only, no sail",
             "cues.activity_scale": "tiny_hint",
             "cues.overall_mood": "soft cautious Baltic mood",
         },
         "prompt_must_contain": [
             "humid wet Baltic air",
             "subtle drizzle texture",
-            "tiny distant paddleboard silhouette only",
+            "tiny distant standing paddleboard silhouette only, no sail",
+            "standing human silhouette with a paddle on a flat board, no sail",
         ],
     },
     {
@@ -164,6 +177,7 @@ CASES: list[dict[str, Any]] = [
             "visible moon",
             "crescent moon",
             "full moon",
+            "moon reflection on water",
         ],
     },
     {
@@ -264,7 +278,10 @@ def run_image_prompt_bridge_case() -> None:
     for needle in [
         "Create an atmospheric, information-driven weather illustration for VayboMeter Kaliningrad.",
         "Weather: cloudy Baltic weather.",
-        "Activity cue: small distant paddleboarder only; scale: distant.",
+        "Activity cue: small distant standing paddleboarder with paddle only, no sail; scale: distant.",
+        "small thin waxing crescent moon, not a full circular moon",
+        "sailboat",
+        "visible sail or mast",
         "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
     ]:
         _assert_contains(name, prompt, needle)
