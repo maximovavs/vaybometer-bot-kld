@@ -278,10 +278,11 @@ def run_image_prompt_bridge_case() -> None:
     for needle in [
         "Create an atmospheric, information-driven weather illustration for VayboMeter Kaliningrad.",
         "Weather: cloudy Baltic weather.",
-        "Activity cue: small distant standing paddleboarder with paddle only, no sail; scale: distant.",
-        "small thin waxing crescent moon, not a full circular moon",
-        "sailboat",
-        "visible sail or mast",
+        "Sky cue: cloud-dominant evening sky; celestial details hidden by clouds.",
+        "Activity cue: unoccupied shoreline and open Baltic water; scale: none.",
+        "layered cloud cover as the main sky feature",
+        "unoccupied shoreline",
+        "open Baltic water with only natural wave texture",
         "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
     ]:
         _assert_contains(name, prompt, needle)
@@ -289,6 +290,16 @@ def run_image_prompt_bridge_case() -> None:
         "legacy marine mood should be ignored",
         "legacy inland mood should be ignored",
         "visible rain streaks",
+        "full moon",
+        "round moon",
+        "moon reflection path",
+        "sailboat",
+        "boat",
+        "yacht",
+        "sail",
+        "mast",
+        "paddleboard",
+        "SUP",
     ]:
         _assert_not_contains(name, prompt, needle)
 
