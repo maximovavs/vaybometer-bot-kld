@@ -88,6 +88,25 @@ def _score_mood(score: Optional[float]) -> str:
     return "visibly cautious day"
 
 
+def _derived_mood(ctx: VisualContext) -> str:
+    score = getattr(ctx, "score", None)
+    if _has(score):
+        return _score_mood(score)
+
+    weather = getattr(ctx, "weather_main", "unknown")
+    wind_gust = getattr(ctx, "wind_gust", None)
+
+    if weather == "storm":
+        return "visibly cautious day"
+    if weather == "rain":
+        return "mixed, cautious comfort"
+    if weather == "drizzle":
+        return "soft cautious Baltic mood"
+    if _has(wind_gust) and wind_gust is not None and wind_gust >= GUST_STRONG:
+        return "good with wind caveats"
+    return "balanced weather mood"
+
+
 def _normalize_evidence_dict(evidence: dict[str, Any]) -> dict[str, Any]:
     """Keep evidence flat and JSON-clean for logs.
 
@@ -258,6 +277,20 @@ def _activity_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[
         return "no explicit water-sport athlete", "none"
 
     if sport == "sup":
+        if weather_main in ("rain", "storm"):
+            _add_unique(must_avoid, "visible SUP rider in rain")
+            _add_unique(must_avoid, "relaxed SUP holiday mood")
+            _add_unique(validation_notes, "Rain/storm + SUP: remove visible SUP rider")
+            return "no visible paddleboarder", "none"
+
+        if weather_main == "drizzle" and level == "experienced_only":
+            _add_unique(must_show, "only a tiny distant paddleboard silhouette if visible at all")
+            _add_unique(must_show, "damp coastal atmosphere is more important than the athlete")
+            _add_unique(must_avoid, "clear prominent SUP rider")
+            _add_unique(must_avoid, "relaxed beginner SUP scene")
+            _add_unique(validation_notes, "Drizzle + experienced-only SUP: tiny hint only")
+            return "tiny distant paddleboard silhouette only", "tiny_hint"
+
         if level == "excellent":
             visual = "one visible paddleboarder on relatively calm water"
             scale = "visible_secondary"
@@ -288,8 +321,6 @@ def _activity_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[
         if _has(wave_height) and wave_height is not None and wave_height >= 0.8:
             _add_unique(must_avoid, "calm beginner SUP look")
             _add_unique(validation_notes, "SUP with wave >= 0.8 m: avoid calm beginner look")
-        if weather_main in ("rain", "storm"):
-            _add_unique(must_avoid, "relaxed SUP holiday mood")
         return visual, scale
 
     if sport in ("kite", "wing", "windsurf"):
@@ -420,7 +451,7 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
     sea_state = _sea_state(ctx, must_show, must_avoid)
     activity_visual, activity_scale = _activity_visual(ctx, must_show, must_avoid, validation_notes)
     moon_visual = _moon_visual(ctx, must_show, must_avoid, validation_notes)
-    overall_mood = _score_mood(getattr(ctx, "score", None))
+    overall_mood = _derived_mood(ctx)
 
     if getattr(ctx, "score", None) is not None and ctx.score is not None and ctx.score < 6.0:
         _add_unique(must_avoid, "idyllic holiday postcard look")
