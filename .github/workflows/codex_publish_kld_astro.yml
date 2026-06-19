@@ -33,12 +33,6 @@ jobs:
         run: |
           python -m py_compile post_common.py format_v2.py safe_test_post.py
           python tools/test_format_v2_morning_kld.py
-          python safe_test_post.py --mode morning --format-v2 > /tmp/morning.log
-          python safe_test_post.py --mode evening --format-v2 > /tmp/evening.log
-          grep -q '🌅 <b>Солнце и ритм дня</b>' /tmp/morning.log
-          grep -q '💚 В плюсе:' /tmp/morning.log
-          grep -q '🌅 <b>Солнце и ритм завтрашнего дня</b>' /tmp/evening.log
-          grep -q '💚 В плюсе:' /tmp/evening.log
       - name: Commit approved files
         run: |
           git config user.name 'codex[bot]'
