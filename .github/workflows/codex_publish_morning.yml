@@ -20,9 +20,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL https://filebin.net/codex-kld-20260619/publish-morning.zip -o /tmp/publish-morning.zip
-          test "$(sha256sum /tmp/publish-morning.zip | cut -d' ' -f1)" = "560604a901ea2bda7e1e356031f8206f2bcd2ae0b9ddd19733903557cd03b8ca"
-          unzip -oq /tmp/publish-morning.zip -d /tmp/publish-morning
+          curl -fsSL https://filebin.net/codex-kld-20260619/publish-morning.tar.gz -o /tmp/publish-morning.tar.gz
+          test "$(sha256sum /tmp/publish-morning.tar.gz | cut -d' ' -f1)" = "3a40f6cef9e62dab6af95405855db6006d3d33ecb56280f98b2edab1d9c48404"
+          mkdir -p /tmp/publish-morning
+          tar -xzf /tmp/publish-morning.tar.gz -C /tmp/publish-morning
           cp /tmp/publish-morning/image_prompt_kld_morning.py image_prompt_kld_morning.py
           cp /tmp/publish-morning/visual_rules.py visual_rules.py
           cp /tmp/publish-morning/tools/test_visual_kld.py tools/test_visual_kld.py
