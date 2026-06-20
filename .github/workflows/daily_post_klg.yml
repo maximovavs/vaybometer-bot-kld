@@ -28,12 +28,17 @@ on:
         default: true
         required: false
       kld_image_enabled:
-        description: "Отправить FORMAT_V2 image после вечернего KLD поста (для ручного запуска; по расписанию включено)"
+        description: "Отправить FORMAT_V2 image перед вечерним KLD постом (для ручного запуска; по расписанию включено)"
         type: boolean
         default: false
         required: false
       kld_morning_image_enabled:
-        description: "Отправить FORMAT_V2 image после утреннего KLD поста (для ручного запуска; по расписанию включено)"
+        description: "Отправить FORMAT_V2 image перед утренним KLD постом (для ручного запуска; по расписанию включено)"
+        type: boolean
+        default: false
+        required: false
+      publish_to_prod:
+        description: "Публиковать в основной канал?"
         type: boolean
         default: false
         required: false
@@ -70,6 +75,7 @@ env:
   FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
   KLD_IMG_ENABLED: ${{ github.event.inputs.kld_image_enabled == 'true' && '1' || '0' }}
   KLD_MORNING_IMG_ENABLED: ${{ github.event.inputs.kld_morning_image_enabled == 'true' && '1' || '0' }}
+  PUBLISH_TO_PROD: ${{ github.event.inputs.publish_to_prod || 'false' }}
   FORMAT_V2_MORNING_SPACING: "1"
   MORNING_FEELS_LIKE: "1"
   MORNING_BEST_WINDOW: "1"
@@ -94,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 5 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 2 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_morning))
     env:
       POST_MODE: "morning"
@@ -156,6 +162,7 @@ jobs:
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
           format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
+          publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
           image_enabled = scheduled_run or (
@@ -177,8 +184,13 @@ jobs:
               elif scheduled_run and production_chat:
                   args += ["--chat-id", production_chat, "--send", "--no-test-label"]
                   send_chat = production_chat
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  send_chat = production_chat
               else:
-                  print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
+                  print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
 
               if image_enabled and send_chat:
                   preview_args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
@@ -230,6 +242,10 @@ jobs:
               args += ["--chat-id", chat_override]
           elif to_test:
               args.append("--to-test")
+          elif publish_to_prod:
+              if not production_chat:
+                  raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+              args += ["--chat-id", production_chat]
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
@@ -239,7 +255,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 15 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 12 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_evening))
     env:
       POST_MODE: "evening"
@@ -301,6 +317,7 @@ jobs:
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
           format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
+          publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
           image_enabled = scheduled_run or (
@@ -322,8 +339,13 @@ jobs:
               elif scheduled_run and production_chat:
                   args += ["--chat-id", production_chat, "--send", "--no-test-label"]
                   send_chat = production_chat
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  send_chat = production_chat
               else:
-                  print("FORMAT_V2 включён без to_test/channel_override: выполняю dry-run без отправки.")
+                  print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
 
               if image_enabled and send_chat:
                   preview_args = ["safe_test_post.py", "--mode", "evening", "--format-v2"]
@@ -374,6 +396,10 @@ jobs:
               args += ["--chat-id", chat_override]
           elif to_test:
               args.append("--to-test")
+          elif publish_to_prod:
+              if not production_chat:
+                  raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+              args += ["--chat-id", production_chat]
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
@@ -383,7 +409,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 8 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_noon_fx))
     env:
       DISABLE_LLM_DAILY: "1"
@@ -412,8 +438,14 @@ jobs:
               args += ["--chat-id", chat_override.strip()]
           else:
               to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
+              publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
+              production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
               if to_test:
                   args.append("--to-test")
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+                  args += ["--chat-id", production_chat]
           sys.argv = args
           runpy.run_path("post_kld_fx_market_pulse.py", run_name="__main__")
           PY
