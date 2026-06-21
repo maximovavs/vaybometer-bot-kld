@@ -3,7 +3,7 @@ name: Daily VayboMeter (KLD)
 on:
   schedule:
     - cron: '0 2 * * *'
-    - cron: '0 12 * * *'
+    - cron: '0 14 * * *'
     - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
@@ -255,7 +255,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 12 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *') ||
       (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_evening))
     env:
       POST_MODE: "evening"
