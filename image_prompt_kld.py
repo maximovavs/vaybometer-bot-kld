@@ -325,6 +325,74 @@ def _filter_prompt_list(line: str, blocked_tokens: tuple[str, ...], add_items: l
     return prefix + ": " + "; ".join(clean) + "."
 
 
+def _extract_lunar_illumination(text: str) -> Optional[float]:
+    for line in str(text or "").splitlines():
+        low = line.lower()
+        if not any(
+            token in low
+            for token in (
+                "🌙",
+                "moon",
+                "lunar",
+                "луна",
+                "лун",
+                "четверть",
+                "серп",
+                "полнолуние",
+                "новолуние",
+            )
+        ):
+            continue
+        match = re.search(r"\b(\d{1,3}(?:[.,]\d+)?)\s*%", line)
+        if match:
+            value = float(match.group(1).replace(",", "."))
+            if 0 <= value <= 100:
+                return value
+    return None
+
+
+def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
+    """Keep evening moon geometry aligned with the stated lunar phase."""
+    phase = getattr(ctx, "moon_phase", "unknown")
+    if getattr(ctx, "post_type", "unknown") == "morning" or phase in ("unknown", "new", "full"):
+        return prompt
+
+    illumination = _extract_lunar_illumination(source_text)
+    if illumination is not None and illumination >= 97:
+        return prompt
+
+    moon_cues = {
+        "waxing_crescent": "small thin waxing crescent moon, right side illuminated, not a full moon",
+        "first_quarter": "small waxing half-to-gibbous moon, right side illuminated, not a full moon",
+        "waxing_gibbous": "waxing gibbous moon, right side illuminated, visibly not a full round moon",
+        "waning_gibbous": "waning gibbous moon, left side illuminated, visibly not a full round moon",
+        "last_quarter": "small waning half moon, left side illuminated, not a full moon",
+        "waning_crescent": "small thin waning crescent moon, left side illuminated, not a full moon",
+    }
+    cue = moon_cues.get(phase)
+    if not cue:
+        return prompt
+
+    guard_items = [
+        "no full moon unless the actual phase is full moon",
+        "no oversized round moon for quarter or crescent phases",
+    ]
+    out: list[str] = []
+    for line in prompt.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Moon cue:"):
+            out.append(f"Moon cue: {cue}.")
+            continue
+        if stripped.startswith("Must show:"):
+            out.append(_filter_prompt_list(line, (), [cue]))
+            continue
+        if stripped.startswith("Must avoid:"):
+            out.append(_filter_prompt_list(line, (), guard_items))
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _sanitize_format_v2_image_prompt(prompt: str, ctx: Any) -> str:
     """Remove image-generator trigger words from FORMAT_V2 prompts.
 
@@ -486,6 +554,7 @@ def _build_format_v2_visual_prompt(
     ctx = build_visual_context(final_format_v2_message, post_type=post_type)
     cues = apply_visual_rules(ctx)
     prompt = build_prompt_from_cues(cues)
+    prompt = _apply_moon_phase_guard(prompt, ctx, final_format_v2_message)
     prompt = _sanitize_format_v2_image_prompt(prompt, ctx)
     prompt = apply_kld_controlled_variety(
         prompt,

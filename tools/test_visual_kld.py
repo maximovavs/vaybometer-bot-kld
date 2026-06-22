@@ -341,6 +341,38 @@ def run_image_prompt_bridge_case() -> None:
     print(f"PASS {name}")
 
 
+def run_first_quarter_moon_guard_case() -> None:
+    name = "first_quarter_61_percent_moon_guard"
+    message = "\n".join(
+        [
+            "22.06.2026",
+            "🌊 Морские города",
+            "Светлогорск: 20/15 °C • ☀️ ясно • 🌊 15 • 0.2 м",
+            "Зеленоградск: 20/15 °C • ☀️ ясно • 🌊 15",
+            "🌙 Первая четверть, 61%",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 6, 22),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    for needle in [
+        "small waxing half-to-gibbous moon, right side illuminated, not a full moon",
+        "no full moon unless the actual phase is full moon",
+        "no oversized round moon for quarter or crescent phases",
+    ]:
+        _assert_contains(name, prompt, needle)
+    for forbidden in ("large full moon", "round full moon"):
+        _assert_not_contains(name, prompt.lower(), forbidden)
+
+    print(f"PASS {name}")
+
+
 def run_morning_cases() -> None:
     cases = [
         {
@@ -477,9 +509,10 @@ def main() -> None:
     for case in CASES:
         run_case(case)
     run_image_prompt_bridge_case()
+    run_first_quarter_moon_guard_case()
     run_morning_cases()
     run_controlled_variety_cases()
-    print(f"OK: {len(CASES) + 5} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 6} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":
