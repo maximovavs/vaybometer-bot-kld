@@ -377,14 +377,10 @@ def run_morning_cases() -> None:
     ]
 
     common_must_contain = [
-        "daylight, not sunset",
-        "fresh Baltic morning air",
         "soft low-angle morning light",
         "practical weather-for-the-day mood",
-        "clear daytime visual language",
-        "sunset colors",
-        "night atmosphere",
-        "mystical evening mood",
+        "clear daylight sky",
+        "fresh Baltic morning light",
         "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
     ]
     forbidden_positive_cues = [
@@ -394,6 +390,8 @@ def run_morning_cases() -> None:
         "northern night sky",
         "sunset light",
         "mystical evening atmosphere",
+        "night atmosphere",
+        "sunset colors",
     ]
 
     for case in cases:
@@ -414,12 +412,65 @@ def run_morning_cases() -> None:
         print(f"PASS {case['name']}")
 
 
+def run_controlled_variety_cases() -> None:
+    name = "controlled_visual_variety"
+    message = CASES[0]["message"]
+
+    prompt_a1, _ = build_kld_evening_prompt(
+        dt.date(2026, 6, 19),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+    prompt_a2, _ = build_kld_evening_prompt(
+        dt.date(2026, 6, 19),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+    prompt_b, _ = build_kld_evening_prompt(
+        dt.date(2026, 6, 20),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+    _assert_equal(name, "same-date prompt stability", prompt_a1, prompt_a2)
+    if prompt_a1 == prompt_b:
+        raise AssertionError(f"{name}: different dates should select a different composition")
+    _assert_contains(name, prompt_a1, "cloudy Baltic weather")
+    _assert_contains(name, prompt_a1, "Controlled composition:")
+    _assert_contains(
+        name,
+        prompt_a1,
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
+    )
+
+    morning_message_a = "19.06.2026\n" + message
+    morning_message_b = "20.06.2026\n" + message
+    morning_a1, _ = build_kld_morning_prompt(morning_message_a)
+    morning_a2, _ = build_kld_morning_prompt(morning_message_a)
+    morning_b, _ = build_kld_morning_prompt(morning_message_b)
+    _assert_equal(name, "same-date morning stability", morning_a1, morning_a2)
+    if morning_a1 == morning_b:
+        raise AssertionError(f"{name}: different morning dates should select a different composition")
+    _assert_contains(name, morning_a1, "Controlled composition:")
+    _assert_contains(name, morning_a1, "cloudy Baltic weather")
+    for forbidden in ("night", "sunset", "evening", "moon", "lunar", "crescent"):
+        _assert_not_contains(name, morning_a1.lower(), forbidden)
+
+    print(f"PASS {name}")
+
+
 def main() -> None:
     for case in CASES:
         run_case(case)
     run_image_prompt_bridge_case()
     run_morning_cases()
-    print(f"OK: {len(CASES) + 4} KLD synthetic visual checks passed")
+    run_controlled_variety_cases()
+    print(f"OK: {len(CASES) + 5} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":

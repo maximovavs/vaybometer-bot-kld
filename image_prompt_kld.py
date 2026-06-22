@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import random
 import logging
 import json
+import re
 from pathlib import Path
 from typing import Tuple, Optional, List, Dict, Any
 
@@ -383,7 +385,95 @@ def _sanitize_format_v2_image_prompt(prompt: str, ctx: Any) -> str:
     return "\n".join(out)
 
 
-def _build_format_v2_visual_prompt(final_format_v2_message: str, *, post_type: str = "evening") -> Tuple[str, str]:
+_KLD_SCENE_FRAMING = (
+    "dune path leading toward the Baltic shoreline",
+    "seaside promenade facing the Baltic horizon",
+    "pine-framed Baltic shore",
+    "open beach horizon",
+    "elevated promenade view over the coast",
+)
+_KLD_FOREGROUND = (
+    "dune grass in the foreground",
+    "wooden railing in the foreground",
+    "wet sand foreground",
+    "coastal stones in the foreground",
+    "pine branch silhouette framing one edge",
+)
+_KLD_DISTANCE = (
+    "wider coastal panorama",
+    "medium coastal scene",
+    "closer shoreline texture",
+)
+_KLD_EVENING_DETAIL = (
+    "layered cloud bands remain subordinate to the stated weather",
+    "subtle celestial detail only when allowed by the lunar and cloud cues",
+    "shoreline texture carries the composition without changing the sea state",
+)
+_KLD_MORNING_DETAIL = (
+    "broad daylight depth with a clearly readable horizon",
+    "fresh daylight separation between shore, sea, and sky",
+    "practical daytime shoreline emphasis",
+)
+
+
+def _extract_prompt_date(text: str, fallback: dt.date | None = None) -> str:
+    value = str(text or "")
+    match = re.search(r"\b(\d{2})[./-](\d{2})[./-](\d{4})\b", value)
+    if match:
+        return f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
+    match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", value)
+    if match:
+        return match.group(0)
+    return fallback.isoformat() if fallback else "undated"
+
+
+def _stable_variant(seed: str, dimension: str, options: tuple[str, ...]) -> str:
+    digest = hashlib.sha256(f"{seed}|{dimension}".encode("utf-8")).digest()
+    return options[int.from_bytes(digest[:8], "big") % len(options)]
+
+
+def apply_kld_controlled_variety(
+    prompt: str,
+    ctx: Any,
+    *,
+    date_key: str,
+    post_type: str,
+) -> str:
+    """Add deterministic composition variety without changing weather rules."""
+    mode = (post_type or "evening").strip().lower()
+    seed = "|".join(
+        [
+            date_key,
+            mode,
+            str(getattr(ctx, "weather_main", "unknown")),
+            str(getattr(ctx, "moon_phase", "unknown")),
+            str(getattr(ctx, "sport", "none")),
+            str(getattr(ctx, "region", "kaliningrad")),
+        ]
+    )
+    detail_options = _KLD_MORNING_DETAIL if mode == "morning" else _KLD_EVENING_DETAIL
+    variety_line = (
+        "Controlled composition: "
+        f"{_stable_variant(seed, 'framing', _KLD_SCENE_FRAMING)}; "
+        f"{_stable_variant(seed, 'foreground', _KLD_FOREGROUND)}; "
+        f"{_stable_variant(seed, 'distance', _KLD_DISTANCE)}; "
+        f"{_stable_variant(seed, 'time-detail', detail_options)}."
+    )
+    lines = str(prompt or "").splitlines()
+    insert_at = next(
+        (index for index, line in enumerate(lines) if line.startswith("Text restrictions:")),
+        len(lines),
+    )
+    lines.insert(insert_at, variety_line)
+    return "\n".join(lines)
+
+
+def _build_format_v2_visual_prompt(
+    final_format_v2_message: str,
+    *,
+    post_type: str = "evening",
+    date: Optional[dt.date] = None,
+) -> Tuple[str, str]:
     """Build KLD FORMAT_V2 image prompt through VisualContext -> SceneCues.
 
     This path is deterministic and side-effect free: it parses the already built
@@ -397,6 +487,12 @@ def _build_format_v2_visual_prompt(final_format_v2_message: str, *, post_type: s
     cues = apply_visual_rules(ctx)
     prompt = build_prompt_from_cues(cues)
     prompt = _sanitize_format_v2_image_prompt(prompt, ctx)
+    prompt = apply_kld_controlled_variety(
+        prompt,
+        ctx,
+        date_key=_extract_prompt_date(final_format_v2_message, date),
+        post_type=post_type,
+    )
     logger.info(
         "KLD_FORMAT_V2_IMG_PROMPT: post_type=%s weather=%s sport=%s/%s moon=%s source=%s",
         getattr(ctx, "post_type", post_type),
@@ -582,7 +678,11 @@ def build_kld_evening_prompt(
     """
     if final_format_v2_message and final_format_v2_message.strip():
         try:
-            return _build_format_v2_visual_prompt(final_format_v2_message, post_type=post_type or "evening")
+            return _build_format_v2_visual_prompt(
+                final_format_v2_message,
+                post_type=post_type or "evening",
+                date=date,
+            )
         except Exception:
             logger.exception("KLD_FORMAT_V2_IMG_PROMPT failed; falling back to legacy image prompt")
 

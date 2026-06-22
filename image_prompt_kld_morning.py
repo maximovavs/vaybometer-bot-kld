@@ -3,11 +3,17 @@
 """Prompt builder for KLD FORMAT_V2 morning weather images."""
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
+
+_TEXT_RESTRICTIONS = (
+    "Text restrictions: no text, no captions, no labels, no logos, "
+    "no numbers, no UI, no watermarks."
+)
 
 _PURE_SCENE_CUES = (
     "Pure full-frame natural landscape painting; uninterrupted Baltic scenery; "
@@ -61,6 +67,16 @@ def _remove_trigger_lines(prompt: str) -> str:
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith(("Must show:", "Must avoid:")):
+            prefix, raw_items = line.split(":", 1)
+            items = [item.strip().rstrip(".") for item in raw_items.split(";") if item.strip()]
+            safe_items = [item for item in items if not _TRIGGER_RE.search(item)]
+            if safe_items:
+                cleaned.append(prefix + ": " + "; ".join(safe_items) + ".")
+            continue
+        if line.startswith("Activity cue:") and _TRIGGER_RE.search(line):
+            cleaned.append("Activity cue: empty Baltic shoreline and natural sea surface; scale: none.")
+            continue
         if _TRIGGER_RE.search(line):
             continue
         cleaned.append(line)
@@ -91,7 +107,7 @@ def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
     final_prompt = _TRIGGER_RE.sub("", final_prompt)
     final_prompt = re.sub(r"[ \t]{2,}", " ", final_prompt)
     final_prompt = re.sub(r"\n{3,}", "\n\n", final_prompt).strip()
-    return final_prompt
+    return final_prompt + "\n" + _TEXT_RESTRICTIONS
 
 
 def build_kld_morning_prompt(
@@ -108,10 +124,18 @@ def build_kld_morning_prompt(
         cues = apply_visual_rules(ctx)
         prompt = build_prompt_from_cues(cues)
         prompt = _sanitize_morning_prompt(prompt, weather_main=getattr(ctx, "weather_main", ""))
-        return prompt, "scenic_baltic_morning_landscape"
+        from image_prompt_kld import _extract_prompt_date, apply_kld_controlled_variety
+
+        prompt = apply_kld_controlled_variety(
+            prompt,
+            ctx,
+            date_key=_extract_prompt_date(final_format_v2_message, dt.date.today()),
+            post_type="morning",
+        )
+        return prompt, "format_v2_scene_cues_morning"
     except Exception:
         logger.exception("KLD morning visual pipeline failed; using simple coastal fallback")
-        return _sanitize_morning_prompt(_fallback_morning_prompt()), "scenic_baltic_morning_landscape"
+        return _sanitize_morning_prompt(_fallback_morning_prompt()), "format_v2_scene_cues_morning"
 
 
 __all__ = ["build_kld_morning_prompt"]
