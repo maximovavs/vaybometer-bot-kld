@@ -291,7 +291,16 @@ def run_case(case: dict[str, Any]) -> None:
 
 def run_image_prompt_bridge_case() -> None:
     name = "image_prompt_kld_format_v2_bridge"
-    message = CASES[0]["message"]
+    message = "\n".join(
+        [
+            "🌊 Морские города",
+            "Светлогорск: 20/15 °C • 🌥 пасм • 🌊 15 • 0.2 м",
+            "Зеленоградск: 20/15 °C • 🌥 пасм • 🌊 15",
+            BASE_WIND_LINE,
+            BASE_SPORT_LINE,
+            BASE_MOON_LINE,
+        ]
+    )
     prompt, style_name = build_kld_evening_prompt(
         dt.date(2026, 6, 19),
         marine_mood="legacy marine mood should be ignored when FORMAT_V2 message is provided",
