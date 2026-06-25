@@ -14,6 +14,7 @@ Run locally or in GitHub Actions:
 from __future__ import annotations
 
 import datetime as dt
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -254,6 +255,11 @@ def _assert_not_contains(case_name: str, prompt: str, needle: str) -> None:
         raise AssertionError(f"{case_name}: prompt must not contain {needle!r}")
 
 
+def _assert_no_trigger_word(case_name: str, prompt: str, trigger: str) -> None:
+    if re.search(rf"\b{re.escape(trigger)}\b", prompt, flags=re.IGNORECASE):
+        raise AssertionError(f"{case_name}: prompt must not contain trigger word {trigger!r}")
+
+
 def run_case(case: dict[str, Any]) -> None:
     name = case["name"]
     ctx = build_visual_context(case["message"], post_type="evening")
@@ -437,7 +443,9 @@ def run_morning_cases() -> None:
         "practical weather-for-the-day mood",
         "clear daylight sky",
         "fresh Baltic morning light",
-        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
+        "Final image: clean unmarked natural Baltic landscape only",
+        "open sky, sea, dunes, pines, clouds and daylight",
+        "pure scenic painting without graphic overlay elements",
     ]
     forbidden_positive_cues = [
         "Moon cue:",
@@ -464,6 +472,28 @@ def run_morning_cases() -> None:
             _assert_contains(case["name"], prompt, needle)
         for needle in forbidden_positive_cues:
             _assert_not_contains(case["name"], prompt, needle)
+        for forbidden in (
+            "text",
+            "caption",
+            "label",
+            "logo",
+            "watermark",
+            "number",
+            "numbers",
+            "ui",
+            "letter",
+            "word",
+            "writing",
+            "title",
+            "headline",
+            "typography",
+            "moon",
+            "lunar",
+            "night",
+            "evening",
+            "sunset",
+        ):
+            _assert_no_trigger_word(case["name"], prompt, forbidden)
 
         print(f"PASS {case['name']}")
 
@@ -514,8 +544,30 @@ def run_controlled_variety_cases() -> None:
         raise AssertionError(f"{name}: different morning dates should select a different composition")
     _assert_contains(name, morning_a1, "Controlled composition:")
     _assert_contains(name, morning_a1, "cloudy Baltic weather")
-    for forbidden in ("night", "sunset", "evening", "moon", "lunar", "crescent"):
-        _assert_not_contains(name, morning_a1.lower(), forbidden)
+    _assert_contains(name, morning_a1, "Final image: clean unmarked natural Baltic landscape only")
+    for forbidden in (
+        "text",
+        "caption",
+        "label",
+        "logo",
+        "watermark",
+        "number",
+        "numbers",
+        "ui",
+        "letter",
+        "word",
+        "writing",
+        "title",
+        "headline",
+        "typography",
+        "night",
+        "sunset",
+        "evening",
+        "moon",
+        "lunar",
+        "crescent",
+    ):
+        _assert_no_trigger_word(name, morning_a1, forbidden)
 
     print(f"PASS {name}")
 

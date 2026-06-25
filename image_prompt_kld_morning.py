@@ -10,9 +10,10 @@ from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-_TEXT_RESTRICTIONS = (
-    "Text restrictions: no text, no captions, no labels, no logos, "
-    "no numbers, no UI, no watermarks."
+_SCENIC_ONLY_GUARD = (
+    "Final image: clean unmarked natural Baltic landscape only; open sky, sea, "
+    "dunes, pines, clouds and daylight; pure scenic painting without graphic "
+    "overlay elements."
 )
 
 _PURE_SCENE_CUES = (
@@ -107,7 +108,7 @@ def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
     final_prompt = _TRIGGER_RE.sub("", final_prompt)
     final_prompt = re.sub(r"[ \t]{2,}", " ", final_prompt)
     final_prompt = re.sub(r"\n{3,}", "\n\n", final_prompt).strip()
-    return final_prompt + "\n" + _TEXT_RESTRICTIONS
+    return final_prompt + "\n" + _SCENIC_ONLY_GUARD
 
 
 def build_kld_morning_prompt(
