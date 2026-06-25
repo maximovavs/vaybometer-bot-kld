@@ -362,13 +362,28 @@ def run_first_quarter_moon_guard_case() -> None:
 
     _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
     for needle in [
-        "small waxing half-to-gibbous moon, right side illuminated, not a full moon",
+        "a small non-dominant waxing half-to-gibbous Moon with the right side illuminated, not a full moon",
+        "small",
+        "non-dominant",
+        "not a full moon",
         "no full moon unless the actual phase is full moon",
+        "no oversized moon",
+        "no dominant focal moon",
+        "no large bright round moon",
         "no oversized round moon for quarter or crescent phases",
     ]:
         _assert_contains(name, prompt, needle)
-    for forbidden in ("large full moon", "round full moon"):
-        _assert_not_contains(name, prompt.lower(), forbidden)
+    positive_lines = "\n".join(
+        line for line in prompt.splitlines() if not line.strip().startswith("Must avoid:")
+    ).lower()
+    for forbidden in (
+        "large full moon",
+        "round full moon",
+        "large bright round moon",
+        "oversized moon",
+        "dominant focal moon",
+    ):
+        _assert_not_contains(name, positive_lines, forbidden)
 
     print(f"PASS {name}")
 

@@ -362,12 +362,12 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
         return prompt
 
     moon_cues = {
-        "waxing_crescent": "small thin waxing crescent moon, right side illuminated, not a full moon",
-        "first_quarter": "small waxing half-to-gibbous moon, right side illuminated, not a full moon",
-        "waxing_gibbous": "waxing gibbous moon, right side illuminated, visibly not a full round moon",
-        "waning_gibbous": "waning gibbous moon, left side illuminated, visibly not a full round moon",
-        "last_quarter": "small waning half moon, left side illuminated, not a full moon",
-        "waning_crescent": "small thin waning crescent moon, left side illuminated, not a full moon",
+        "waxing_crescent": "a small non-dominant thin waxing crescent Moon with the right side illuminated, not a full moon",
+        "first_quarter": "a small non-dominant waxing half-to-gibbous Moon with the right side illuminated, not a full moon",
+        "waxing_gibbous": "a small non-dominant waxing gibbous Moon with the right side illuminated, visibly not a full round moon",
+        "waning_gibbous": "a small non-dominant waning gibbous Moon with the left side illuminated, visibly not a full round moon",
+        "last_quarter": "a small non-dominant waning half-to-gibbous Moon with the left side illuminated, not a full moon",
+        "waning_crescent": "a small non-dominant thin waning crescent Moon with the left side illuminated, not a full moon",
     }
     cue = moon_cues.get(phase)
     if not cue:
@@ -375,8 +375,17 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
 
     guard_items = [
         "no full moon unless the actual phase is full moon",
+        "no oversized moon",
+        "no dominant focal moon",
+        "no large bright round moon",
         "no oversized round moon for quarter or crescent phases",
     ]
+    weather = getattr(ctx, "weather_main", "unknown")
+    wind_gust = getattr(ctx, "wind_gust", None)
+    cloud_softener = "the moon may be faint or partially obscured by clouds"
+    allow_cloud_softener = weather in ("cloudy", "drizzle", "rain", "storm") or (
+        isinstance(wind_gust, (int, float)) and wind_gust >= 12
+    )
     out: list[str] = []
     for line in prompt.splitlines():
         stripped = line.strip()
@@ -384,7 +393,10 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
             out.append(f"Moon cue: {cue}.")
             continue
         if stripped.startswith("Must show:"):
-            out.append(_filter_prompt_list(line, (), [cue]))
+            add_items = [cue]
+            if allow_cloud_softener:
+                add_items.append(cloud_softener)
+            out.append(_filter_prompt_list(line, (), add_items))
             continue
         if stripped.startswith("Must avoid:"):
             out.append(_filter_prompt_list(line, (), guard_items))
