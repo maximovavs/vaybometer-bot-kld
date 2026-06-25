@@ -42,6 +42,7 @@ from weather import get_sunrise_sunset, get_weather
 from air     import get_air, get_sst, get_kp, get_solar_wind
 from pollen  import get_pollen
 from radiation import get_radiation
+from earthquakes import build_kld_quake_line, get_recent_earthquakes_kld
 
 try:
     from gpt import gpt_blurb, gpt_complete  # type: ignore
@@ -928,6 +929,31 @@ def radiation_line(lat: float, lon: float) -> Optional[str]:
     return None
 
 # ────────────────────────── UVI ──────────────────────────
+def _kld_quake_line_24h() -> Optional[str]:
+    if os.getenv("KLD_QUAKES_24H", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    show_calm = os.getenv("KLD_QUAKE_SHOW_CALM", "0").strip().lower() in ("1", "true", "yes", "on")
+    try:
+        hours = int(float(os.getenv("KLD_QUAKE_HOURS", "24")))
+    except Exception:
+        hours = 24
+    try:
+        radius_km = float(os.getenv("KLD_QUAKE_RADIUS_KM", "500"))
+    except Exception:
+        radius_km = 500.0
+    try:
+        min_mag = float(os.getenv("KLD_QUAKE_MIN_MAG", "2.0"))
+    except Exception:
+        min_mag = 2.0
+    try:
+        events = get_recent_earthquakes_kld(hours=hours, radius_km=radius_km, min_mag=min_mag)
+        if events is None:
+            return None
+        return build_kld_quake_line(events, tz=os.getenv("TZ", "Europe/Kaliningrad"), show_calm=show_calm)
+    except Exception:
+        return None
+
+
 def uvi_label(x: float) -> str:
     if x < 3:
         return "низкий"
@@ -1810,6 +1836,9 @@ def build_message_morning_compact(
         P.append(" • ".join(sc_block_parts))
     if schu_line:
         P.append(schu_line)
+    quake_line = _kld_quake_line_24h()
+    if quake_line:
+        P.append(quake_line)
 
     P.append("")
     P.append(itogo)
@@ -2000,6 +2029,10 @@ def build_message_legacy_evening(
     # (2) Вечером блоки воздуха/космопогоды/Шумана скрыты — остаются только рекомендации.
     air = get_air(KLD_LAT, KLD_LON) or {}
     schu_state = {} if (DISABLE_SCHUMANN) else get_schumann_with_fallback()
+    quake_line = _kld_quake_line_24h()
+    if quake_line:
+        P.append(quake_line)
+        P.append("———")
 
     P.append("✅ <b>Рекомендации</b>")
 

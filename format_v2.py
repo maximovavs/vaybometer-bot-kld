@@ -260,6 +260,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     warning = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
     fx = _morning_pick(lines, ("💱",))
     air = [x for x in _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
+    quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     sunset = _morning_pick(lines, ("🌇",))
     astro = _astro_block(lines, morning=True)
@@ -282,6 +283,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(_clean_uv_line(uv[0]))
     if air:
         out.append(air[0])
+    for line in quakes:
+        if line not in out:
+            out.append(line)
     if astro:
         out.extend(astro)
     elif sunset:
@@ -307,6 +311,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     sea = _soften_sea_lines(_section_after(lines, "Морские города"))
     warm_cold = _section_between(lines, "Тёплые города", ("🌇 Закат", "Астрособытия", "Рекомендации"))
     astro = _astro_block(lines, morning=False)
+    quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     has_storm = bool(storm)
     has_rain = "дожд" in safe_legacy_text.lower()
     tips = _recommendations(lines, has_storm, has_rain)
@@ -358,6 +363,12 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if astro:
         out.extend(astro)
+        out.append("")
+
+    if quakes:
+        for line in quakes:
+            if line not in out:
+                out.append(line)
         out.append("")
 
     if tips:
