@@ -102,6 +102,17 @@ def _astro(lines: list[str]) -> list[str]:
     return out
 
 
+def _is_moon_phase_line(line: str) -> bool:
+    s = _plain(line)
+    if not s.startswith("🌙"):
+        return False
+    if re.search(r"\(\d{1,3}%\)", s):
+        return True
+    if any(word in s.lower() for word in ("луна", "серп", "четверть", "полнолу", "новолу", "растущ", "убыва")):
+        return True
+    return bool(re.search(r"[♈♉♊♋♌♍♎♏♐♑♒♓]", s))
+
+
 def _sentence(text: str) -> str:
     s = re.sub(r"^[^0-9A-Za-zА-Яа-яЁё]+", "", _plain(text))
     s = re.sub(r"^(?:В целом|Астроритм|Сегодня)\s*:\s*", "", s, flags=re.I)
@@ -161,7 +172,7 @@ def _astro_plus(moon: str, details: list[str]) -> str:
 def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
     details = _astro(lines)
     sunset = next((x.strip() for x in lines if x.strip().startswith("🌇 Закат")), "")
-    moon_source = next((x for x in details if x.strip().startswith("🌙")), "")
+    moon_source = next((x for x in details if _is_moon_phase_line(x.strip())), "")
     if not (sunset or moon_source or details):
         return []
 
@@ -173,13 +184,16 @@ def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
     if moon:
         out.append(moon)
 
-    advice_source = next(
-        (x for x in details if x.strip().startswith("✅")),
-        next((x for x in details if x.strip().startswith("•")), ""),
-    )
-    advice = _sentence(advice_source) or "Спокойный темп и реалистичный план дня."
-    out.append("✅ Астроритм: " + advice[0].lower() + advice[1:])
-    out.append(_astro_plus(moon, [x for x in details if x != advice_source]))
+    plus_source = next((x.strip() for x in details if x.strip().startswith("💚 В плюсе:")), "")
+    period_source = next((x.strip() for x in details if x.strip().startswith("🌙 В этот период")), "")
+    voc_source = next((x.strip() for x in details if x.strip().startswith("⚫")), "")
+    if plus_source:
+        out.append(plus_source)
+    else:
+        out.append(_astro_plus(moon, [x for x in details if x != moon_source]))
+    for extra in (period_source, voc_source):
+        if extra and extra not in out and len(out) < 5:
+            out.append(extra)
     return out[:5]
 
 
@@ -232,6 +246,11 @@ def _morning_pick(lines: list[str], prefixes: tuple[str, ...]) -> list[str]:
     return [x.strip() for x in lines if x.strip().startswith(prefixes)]
 
 
+def _first_morning_pick(lines: list[str], prefixes: tuple[str, ...]) -> str:
+    picked = _morning_pick(lines, prefixes)
+    return picked[0] if picked else ""
+
+
 def _clean_uv_line(line: str) -> str:
     s = str(line or "").strip()
     s = re.sub(r"^☀️\s*УФ:\s*", "☀️ УФ ", s)
@@ -242,12 +261,47 @@ def _clean_uv_line(line: str) -> str:
 
 def _clean_kp_line(line: str) -> str:
     s = str(line or "").strip()
-    # Remove text assessment and stale minute marker after numeric Kp/Kr value.
-    # Example: "Кр 0.3 (умеренно, 🕓 4 мин назад)" -> "Kp 0.3".
-    s = re.sub(r"(\b(?:Кр|Kp)\s*\d+(?:[\.,]\d+)?)\s*\([^)]*\)", r"\1", s, flags=re.I)
-    s = re.sub(r"\bКр\b", "Kp", s)
-    s = re.sub(r"\s{2,}", " ", s).strip()
+    m = re.search(r"\b(?:Кр|Kp)\s*[:=]?\s*(\d+(?:[\.,]\d+)?)", s, flags=re.I)
+    kp = None
+    if m:
+        try:
+            kp = float(m.group(1).replace(",", "."))
+        except Exception:
+            kp = None
+    alert = bool(re.search(r"бур|шторм|возмущ|alert|storm", s, flags=re.I))
+    if kp is not None:
+        mood = "спокойно" if kp < 4 and not alert else "возмущённо"
+        return f"🧲 Космопогода: {mood}, Kp {kp:.1f}."
+    return "🧲 Космопогода: спокойно."
+
+
+def _clean_safecast_line(line: str) -> str:
+    s = str(line or "").strip()
+    low = s.lower()
+    if re.search(r"выше|повыш|alert|⚠️|🟡|🔴", low):
+        return "🧪 Радиационный фон: выше обычного по датчику; сверяем с динамикой."
+    if re.search(r"норм|спокой|🟢", low):
+        return "🧪 Радиационный фон: спокойно."
+    return "🧪 Радиационный фон: есть свежий датчик; сверяем с динамикой."
+
+
+def _clean_morning_weather_line(line: str) -> str:
+    s = _normalize_weather_line(line)
+    s = s.replace("🏙️", "🏙")
+    s = re.sub(r"^🏙\s*Калининград:", "🏙 Калининград —", s)
+    s = re.sub(r"^Калининград:", "🏙 Калининград —", s)
     return s
+
+
+def _final_plan_line(lines: list[str], has_warning: bool, has_rain: bool) -> str:
+    for line in lines:
+        s = line.strip()
+        if s.startswith("✅ План:"):
+            return s
+        if s.startswith("✅ Сегодня:"):
+            return "✅ План: " + s.split(":", 1)[1].strip()
+    tips = _tips_fallback(has_warning, has_rain)
+    return "✅ План: " + " ".join(tips)
 
 
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
@@ -258,6 +312,11 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     weather = _city_line(lines, "Калининград")
     warning = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
+    score = _first_morning_pick(lines, ("✨ VayboMeter", "✨"))
+    scenario = _first_morning_pick(lines, ("🧭",))
+    feels = _first_morning_pick(lines, ("🌡 Ощущается", "🌡️ Ощущается"))
+    best_window = _first_morning_pick(lines, ("🕘 Лучшее окно",))
+    main_nuance = _first_morning_pick(lines, ("⚠️ Главный нюанс",))
     fx = _morning_pick(lines, ("💱",))
     air = [x for x in _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
     quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
@@ -273,12 +332,20 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     out: list[str] = [f"<b>🌅 Калининград сегодня{title_date}</b>"]
 
+    for line in (score, scenario):
+        if line and line not in out:
+            out.append(line)
     if weather:
-        out.append(weather)
+        out.append(_clean_morning_weather_line(weather))
+    for line in (feels, best_window):
+        if line:
+            out.append(line)
+    if main_nuance:
+        out.append(main_nuance)
+    elif warning:
+        out.append("⚠️ " + warning)
     if fx:
         out.append(fx[0])
-    if warning:
-        out.append("⚠️ " + warning)
     if uv:
         out.append(_clean_uv_line(uv[0]))
     if air:
@@ -293,10 +360,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if space:
         out.append(_clean_kp_line(space[0]))
     if safecast:
-        out.append(safecast[0])
+        out.append(_clean_safecast_line(safecast[0]))
 
-    tips = _tips_fallback(has_warning, has_rain)
-    out.append("✅ План: " + " ".join(tips))
+    out.append(_final_plan_line(lines, has_warning, has_rain))
     out.append(tags)
     return "\n".join(out).strip()
 

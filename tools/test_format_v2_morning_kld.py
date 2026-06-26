@@ -3,7 +3,6 @@
 """Regression checks for KLD morning FORMAT_V2 utility blocks."""
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -15,14 +14,23 @@ from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: 
 
 
 LEGACY_FIXTURE = """<b>🌅 Калининградская область: погода на сегодня (19.06.2026)</b>
+✨ VayboMeter сегодня: 7.4/10 — нормальный день с морской поправкой.
+🧭 Главный сценарий: мягко, облачно, у воды свежее.
 Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 4.0 м/с • 🔹 1014 гПа.
+🌡 Ощущается: комфортно в городе, свежее у воды.
+🕘 Лучшее окно: 10:00–13:00.
+⚠️ Главный нюанс: у моря ветер ощущается сильнее.
 💱 Курсы (утро): USD 90.00 ₽ • EUR 98.00 ₽ • CNY 12.00 ₽
 ☀️ УФ: 4 — умеренный
 🏭 Воздух: 🟢 низкий (AQI 22) • PM₂.₅ 5 / PM₁₀ 10
+🌍 Сейсмика 24ч: M2.3, 5 км от Калининграда, глубина 8 км, 12:30.
 🌇 Закат сегодня: 21:32
 📻 <b>Астрособытия</b>
 🌙 🌒 Растущий серп (30%) • ♍ Дева
 • День подходит для спокойного планирования и аккуратных решений.
+💚 В плюсе: порядок, здоровье, аккуратность.
+🌙 В этот период лучше закрывать мелкие дела без рывков.
+🧲 Космопогода: Кр 2.0 (спокойно), v 529 км/с, n 0.5 см⁻³.
 🧪 Safecast: 0.12 мкЗв/ч — фон спокойный.
 ✅ Сегодня: прогулка в удобное окно.
 #Калининград #погода #здоровье #сегодня #море
@@ -55,7 +63,7 @@ def kld_morning_astro_block_has_sun_and_rhythm_title() -> None:
     text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
     assert "🌅 <b>Солнце и ритм дня</b>" in text
     assert "🌙 🌒 Растущий серп, ♍ Дева (30%)" in text
-    assert "✅ Астроритм:" in text
+    assert "✅ Астроритм:" not in text
     assert "💚 В плюсе:" in text
 
 
@@ -81,7 +89,7 @@ def kld_astro_block_stays_compact() -> None:
 def kld_daily_keeps_weather_blocks() -> None:
     morning = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
     evening = build_evening_format_v2("Калининградская область", EVENING_FIXTURE)
-    assert "🏙️ Калининград" in morning
+    assert "🏙 Калининград" in morning
     assert "💱 Курсы" in morning
     assert "🏙 <b>Калининград</b>" in evening
     assert "🌊 <b>Морские города</b>" in evening
@@ -94,13 +102,9 @@ def kld_morning_has_sunset() -> None:
 
 
 def kld_morning_keeps_safecast() -> None:
-    os.environ["FORMAT_V2_SENSOR_LINE"] = "1"
-    from safe_test_post import _inject_sensor_line
-
     text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
-    text = _inject_sensor_line(text, LEGACY_FIXTURE)
-    assert "Safecast" in text
-    assert text.count("Safecast") == 1
+    assert "🧪 Радиационный фон: спокойно." in text
+    assert "мкЗв" not in text
 
 
 def kld_morning_keeps_fx_uv_air_plan() -> None:
@@ -109,12 +113,41 @@ def kld_morning_keeps_fx_uv_air_plan() -> None:
         assert marker in text
 
 
+def kld_morning_has_only_one_plan() -> None:
+    text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
+    assert text.count("✅ План:") == 1
+
+
+def kld_morning_astro_block_has_moon_and_plus() -> None:
+    text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
+    astro = "\n".join(_astro_lines(text))
+    assert "🌙 🌒 Растущий серп, ♍ Дева (30%)" in astro
+    assert "💚 В плюсе:" in astro
+    assert "🌙 В этот период" in astro
+
+
+def kld_morning_preserves_quake_line() -> None:
+    text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
+    assert "🌍 Сейсмика 24ч:" in text
+
+
+def kld_morning_cosmoweather_is_compact() -> None:
+    text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
+    assert "🧲 Космопогода: спокойно, Kp 2.0." in text
+    assert "v 529 км/с" not in text
+    assert "n 0.5 см" not in text
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
         kld_morning_keeps_safecast,
         kld_morning_keeps_fx_uv_air_plan,
+        kld_morning_has_only_one_plan,
         kld_morning_astro_block_has_sun_and_rhythm_title,
+        kld_morning_astro_block_has_moon_and_plus,
+        kld_morning_preserves_quake_line,
+        kld_morning_cosmoweather_is_compact,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,
