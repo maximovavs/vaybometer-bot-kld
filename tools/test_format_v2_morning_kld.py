@@ -91,7 +91,7 @@ def kld_daily_keeps_weather_blocks() -> None:
     evening = build_evening_format_v2("Калининградская область", EVENING_FIXTURE)
     assert "🏙 Калининград" in morning
     assert "💱 Курсы" in morning
-    assert "🏙 <b>Калининград</b>" in evening
+    assert "🏙 Калининград" in evening
     assert "🌊 <b>Морские города</b>" in evening
 
 

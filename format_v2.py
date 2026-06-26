@@ -51,6 +51,14 @@ def _section_between(lines: list[str], start_marker: str, stop_markers: tuple[st
     return out
 
 
+def _first_line_starts(lines: list[str], prefixes: tuple[str, ...]) -> str:
+    for line in lines:
+        s = line.strip()
+        if s.startswith(prefixes):
+            return s
+    return ""
+
+
 def _first_line_contains(lines: list[str], word: str) -> str:
     for line in lines:
         s = line.strip()
@@ -172,12 +180,15 @@ def _astro_plus(moon: str, details: list[str]) -> str:
 def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
     details = _astro(lines)
     sunset = next((x.strip() for x in lines if x.strip().startswith("🌇 Закат")), "")
+    sunrise = next((x.strip() for x in lines if x.strip().startswith("🌅 Рассвет")), "")
     moon_source = next((x for x in details if _is_moon_phase_line(x.strip())), "")
-    if not (sunset or moon_source or details):
+    if not (sunrise or sunset or moon_source or details):
         return []
 
     title = "🌅 <b>Солнце и ритм дня</b>" if morning else "🌅 <b>Солнце и ритм завтрашнего дня</b>"
     out = [title]
+    if not morning and sunrise:
+        out.append(sunrise)
     if sunset:
         out.append(sunset)
     moon = _moon_line(moon_source) if moon_source else ""
@@ -231,6 +242,125 @@ def _soften_sea_lines(lines: list[str]) -> list[str]:
             out.append("🧜‍♂️ SUP: только для опытных и короткой сессии" + suit)
         else:
             out.append(s)
+    return out
+
+
+def _has_any(text: str, words: tuple[str, ...]) -> bool:
+    low = _plain(text).lower()
+    return any(word in low for word in words)
+
+
+def _max_temperature_c(text: str) -> float | None:
+    values: list[float] = []
+    for m in re.finditer(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°C", text):
+        try:
+            values.append(float(m.group(1).replace(",", ".")))
+        except Exception:
+            continue
+    return max(values) if values else None
+
+
+def _max_wind_ms(text: str) -> float | None:
+    values: list[float] = []
+    for m in re.finditer(r"(?:порывы\s*(?:до\s*)?)?(\d+(?:[\.,]\d+)?)\s*м/с", text, flags=re.I):
+        try:
+            values.append(float(m.group(1).replace(",", ".")))
+        except Exception:
+            continue
+    return max(values) if values else None
+
+
+def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
+    text = "\n".join(lines)
+    max_temp = _max_temperature_c(text)
+    max_wind = _max_wind_ms(text)
+    return {
+        "storm": bool(storm) or _has_any(text, ("шторм", "предупреждение")),
+        "rain": _has_any(text, ("дожд", "морось", "ливн", "осад")),
+        "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
+        "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
+        "contrast": _has_any(text, ("тёплые города", "холодные города", "восток", "внутри области", "контраст")) or (isinstance(max_temp, (int, float)) and max_temp >= 25),
+        "local": _has_any(text, ("локаль", "местами", "неравномер", "по области", "проверить утром")),
+        "chill": _has_any(text, ("свеже", "холод", "прохлад", "ветровка")),
+    }
+
+
+def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
+    if flags["storm"]:
+        return "🧭 Главное завтра: главный фактор — ветер, порывы и осторожность у воды."
+    if flags["rain"] and flags["wind"]:
+        return "🧭 Главное завтра: влажный и ветреный день, особенно заметный на побережье."
+    if flags["rain"]:
+        return "🧭 Главное завтра: осадки важнее средних температур — держи маршрут гибким."
+    if flags["wind"]:
+        return "🧭 Главное завтра: у воды главный фактор — ветер и порывы."
+    if flags["contrast"]:
+        return "🧭 Главное завтра: заметен контраст побережья, Калининграда и востока области."
+    if flags["chill"]:
+        return "🧭 Главное завтра: день ощущается свежим, особенно у открытой воды."
+    if score_line:
+        reason = re.sub(r"^.*?—\s*", "", score_line).strip(" .")
+        if reason:
+            return "🧭 Главное завтра: " + reason[0].lower() + reason[1:] + "."
+    return "🧭 Главное завтра: спокойный областной день без резких погодных акцентов."
+
+
+def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_region: bool) -> str:
+    if flags["storm"]:
+        return "⚠️ Нюанс: пирсы, открытый берег и водные активности — только после проверки фактического ветра."
+    if flags["rain"] and flags["wind"]:
+        return "⚠️ Нюанс: у моря дождь и порывы ощущаются резче, чем в городе."
+    if flags["rain"]:
+        return "⚠️ Нюанс: дождь может идти неравномерно — лучше проверить радар утром."
+    if flags["wind"] and has_sea:
+        return "⚠️ Нюанс: на побережье ощущение меняют порывы, а не только градусы."
+    if flags["waves"]:
+        return "⚠️ Нюанс: волна и холодная вода важнее формальной температуры воздуха."
+    if flags["contrast"] and has_region:
+        return "⚠️ Нюанс: восток области может быть заметно теплее/холоднее берега."
+    return ""
+
+
+def _evening_confidence_line(flags: dict[str, bool]) -> str:
+    if flags["storm"] or flags["rain"] or flags["local"]:
+        return "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром."
+    return ""
+
+
+def _evening_plan(flags: dict[str, bool]) -> str:
+    if flags["storm"]:
+        return "✅ План завтра: короткий маршрут, защита от ветра/дождя и без риска на пирсах."
+    if flags["rain"] and flags["wind"]:
+        return "✅ План завтра: непромокаемый слой, закрытая обувь и запасной indoor-вариант."
+    if flags["rain"]:
+        return "✅ План завтра: зонт/дождевик и гибкое окно для прогулки."
+    if flags["wind"]:
+        return "✅ План завтра: у моря выбирать защищённые променады и сверить порывы утром."
+    if flags["contrast"]:
+        return "✅ План завтра: не усреднять область — берег, город и восток проверить отдельно."
+    return "✅ План завтра: обычные дела и прогулки, с короткой проверкой ветра у воды утром."
+
+
+def _limit_warm_cold(lines: list[str], per_group: int = 3) -> list[str]:
+    out: list[str] = []
+    item_count = 0
+    in_group = False
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if "Тёплые города" in s or "Холодные города" in s:
+            out.append(s)
+            item_count = 0
+            in_group = True
+            continue
+        if s.startswith("•"):
+            if not in_group or item_count >= per_group:
+                continue
+            out.append(s)
+            item_count += 1
+            continue
+        out.append(s)
     return out
 
 
@@ -375,34 +505,27 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     kal = _city_line(lines, "Калининград")
     storm = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
     sea = _soften_sea_lines(_section_after(lines, "Морские города"))
-    warm_cold = _section_between(lines, "Тёплые города", ("🌇 Закат", "Астрособытия", "Рекомендации"))
+    warm_cold = _section_between(lines, "Тёплые города", ("🌅 Рассвет", "🌇 Закат", "Астрособытия", "Рекомендации"))
     astro = _astro_block(lines, morning=False)
     quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
-    has_storm = bool(storm)
-    has_rain = "дожд" in safe_legacy_text.lower()
-    tips = _recommendations(lines, has_storm, has_rain)
+    score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
+    flags = _evening_flags(lines, storm=storm)
+    nuance = _evening_nuance(flags, bool(sea), bool(warm_cold))
+    confidence = _evening_confidence_line(flags)
 
-    out: list[str] = [f"<b>🌅 Калининградская область завтра: берег, город и восток — разные сценарии{title_date}</b>", ""]
+    out: list[str] = [f"<b>🌅 Калининградская область завтра{title_date}</b>"]
 
-    out.append("🧭 <b>Главный сценарий</b>")
-    if has_storm:
-        out.append("Главный фактор — ветер/порывы и осадки. У моря ощущение будет свежее и резче, чем в городе и внутри области.")
-    elif has_rain:
-        out.append("День прохладный и влажный: у моря свежее, в Калининграде мягче, восток области может отличаться по температуре и осадкам.")
-    else:
-        out.append("Типичный областной контраст: побережье живёт морским ветром, Калининград — более мягким городским сценарием, восток области — своим температурным режимом.")
-    out.append("")
-
-    out.append("🎯 <b>Уверенность прогноза</b>")
-    out.append("✅ Температура: высокая — общий диапазон надёжный.")
-    out.append("🟡 Морской ветер: средняя — порывы и ощущение у воды лучше перепроверить утром.")
-    out.append("🟡 Осадки: локально — дождь может идти неравномерно по области.")
-    out.append("✅ Разница берег/внутри области: учитывать обязательно.")
+    if score:
+        out.append(score)
+    out.append(_evening_main_scenario(flags, score))
+    if nuance:
+        out.append(nuance)
+    if confidence:
+        out.append(confidence)
     out.append("")
 
     if kal:
-        out.append("🏙 <b>Калининград</b>")
-        out.append(kal)
+        out.append(_clean_morning_weather_line(kal))
         out.append("")
 
     if storm:
@@ -417,15 +540,8 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if warm_cold:
         out.append("🌡 <b>Внутри области</b>")
-        out.extend(warm_cold)
+        out.extend(_limit_warm_cold(warm_cold))
         out.append("")
-
-    out.append("🌊 <b>Морская поправка</b>")
-    if has_storm:
-        out.append("У воды ориентируйся не на температуру, а на ветер, порывы и волну. Для прогулок лучше короткий маршрут и защита от дождя/ветра.")
-    else:
-        out.append("На побережье одинаковые градусы ощущаются холоднее: ветер и влажность быстро меняют комфорт, особенно вечером.")
-    out.append("")
 
     if astro:
         out.extend(astro)
@@ -437,17 +553,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
                 out.append(line)
         out.append("")
 
-    if tips:
-        out.append("✅ <b>Рекомендации</b>")
-        out.extend(tips)
-        out.append("")
-
-    out.append("📌 <b>Вывод</b>")
-    if has_storm:
-        out.append("День лучше планировать с запасом: море — осторожно, город — по погоде, поездки по области — с проверкой дождя и порывов утром.")
-    else:
-        out.append("Главная идея — не усреднять область: берег, Калининград и восточные города завтра могут ощущаться как разные погодные сценарии.")
-    out.append("")
+    out.append(_evening_plan(flags))
     out.append("#Калининград #погода #здоровье #море")
     return "\n".join(out).strip()
 
