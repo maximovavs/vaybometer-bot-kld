@@ -91,14 +91,17 @@ def parse_cbr_rates(data: Dict[str, Any]) -> Dict[str, Any]:
 def _fmt_delta(x: Optional[float]) -> str:
     if x is None:
         return "0.00"
-    sign = "−" if x < 0 else ""
-    return f"{sign}{abs(x):.2f}"
+    if x > 0:
+        return f"↑{abs(x):.2f}"
+    if x < 0:
+        return f"↓{abs(x):.2f}"
+    return "→0.00"
 
 
 def format_rates_line(rates: Dict[str, Any]) -> str:
     """
     Делает компактную строку вида:
-    USD: 94.12 ₽ (−0.35) • EUR: 101.43 ₽ (−0.27) • CNY: 12.90 ₽ (0.00)
+    USD 94.12 ₽ ↓0.35 • EUR 101.43 ₽ ↓0.27 • CNY 12.90 ₽ →0.00
     """
     def item(code: str) -> str:
         r = rates.get(code) or {}
@@ -107,7 +110,7 @@ def format_rates_line(rates: Dict[str, Any]) -> str:
             vs = f"{float(v):.2f}"
         except Exception:
             vs = "—"
-        return f"{code}: {vs} ₽ ({_fmt_delta(r.get('delta'))})"
+        return f"{code} {vs} ₽ {_fmt_delta(r.get('delta'))}"
 
     return " • ".join([item("USD"), item("EUR"), item("CNY")])
 

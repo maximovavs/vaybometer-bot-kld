@@ -300,6 +300,7 @@ def _dashboard_palette(ctx: KldImageContext) -> str:
 
 _NO_TEXT_GUARD = (
     "No text, no captions, no labels, no UI, no logos, no watermarks, "
+    "no watermark, no logo, no signature, no text, no letters, no brand marks, "
     "absolutely no letters or numbers anywhere."
 )
 
@@ -354,11 +355,13 @@ def _extract_lunar_illumination(text: str) -> Optional[float]:
 def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
     """Keep evening moon geometry aligned with the stated lunar phase."""
     phase = getattr(ctx, "moon_phase", "unknown")
-    if getattr(ctx, "post_type", "unknown") == "morning" or phase in ("unknown", "new", "full"):
+    if getattr(ctx, "post_type", "unknown") == "morning" or phase in ("unknown", "new"):
         return prompt
 
     illumination = _extract_lunar_illumination(source_text)
-    if illumination is not None and illumination >= 97:
+    if phase == "full" and (illumination is None or illumination >= 97):
+        return prompt
+    if phase != "full" and illumination is not None and illumination >= 97:
         return prompt
 
     moon_cues = {
@@ -369,17 +372,31 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
         "last_quarter": "a small non-dominant waning half-to-gibbous Moon with the left side illuminated, not a full moon",
         "waning_crescent": "a small non-dominant thin waning crescent Moon with the left side illuminated, not a full moon",
     }
-    cue = moon_cues.get(phase)
+    if illumination is not None and 90 <= illumination < 97:
+        cue = "a realistic waxing gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon"
+    else:
+        cue = moon_cues.get(phase)
     if not cue:
         return prompt
 
     guard_items = [
         "no full moon unless the actual phase is full moon",
+        "no perfect full moon when illumination is below 97 percent",
+        "no oversized full circular moon",
+        "no fantasy supermoon",
         "no oversized moon",
         "no dominant focal moon",
         "no large bright round moon",
         "no oversized round moon for quarter or crescent phases",
     ]
+    positive_moon_blocked = (
+        "bright full moon",
+        "full moon",
+        "perfect full moon",
+        "large bright round moon",
+        "oversized full circular moon",
+        "fantasy supermoon",
+    )
     weather = getattr(ctx, "weather_main", "unknown")
     wind_gust = getattr(ctx, "wind_gust", None)
     cloud_softener = "the moon may be faint or partially obscured by clouds"
@@ -396,7 +413,7 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
             add_items = [cue]
             if allow_cloud_softener:
                 add_items.append(cloud_softener)
-            out.append(_filter_prompt_list(line, (), add_items))
+            out.append(_filter_prompt_list(line, positive_moon_blocked, add_items))
             continue
         if stripped.startswith("Must avoid:"):
             out.append(_filter_prompt_list(line, (), guard_items))

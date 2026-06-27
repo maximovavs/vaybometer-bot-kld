@@ -566,7 +566,10 @@ def build_prompt_from_cues(cues: SceneCues) -> str:
         parts.append("Must show: " + "; ".join(cues.must_show) + ".")
     if cues.must_avoid:
         parts.append("Must avoid: " + "; ".join(cues.must_avoid) + ".")
-    parts.append("Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.")
+    parts.append(
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, "
+        "no watermarks, no watermark, no logo, no signature, no letters, no brand marks."
+    )
     return "\n".join(parts)
 
 

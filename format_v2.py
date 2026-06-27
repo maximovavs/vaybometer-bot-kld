@@ -235,14 +235,23 @@ def _soften_sea_lines(lines: list[str]) -> list[str]:
     for line in lines:
         s = line.strip()
         if "🧜‍♂️" in s and "SUP" in s:
-            suit = ""
-            m = re.search(r"(гидрокостюм[^•]*)", s)
-            if m:
-                suit = " • " + m.group(1).strip()
-            out.append("🧜‍♂️ SUP: только для опытных и короткой сессии" + suit)
+            continue
         else:
-            out.append(s)
+            out.append(s.replace("гидрокостюм шорти 2 мм", "короткий гидрокостюм 2 мм"))
     return out
+
+
+def _common_sup_water_line(lines: list[str]) -> str:
+    text = "\n".join(lines)
+    if "SUP" not in text and "гидрокостюм" not in text and "шорти" not in text:
+        return ""
+    suit = "короткий гидрокостюм 2 мм"
+    m = re.search(r"((?:короткий\s+)?гидрокостюм\s*[^•\n]*мм|shorty\s*2\s*мм)", text, flags=re.I)
+    if m:
+        suit = m.group(1).strip()
+    suit = suit.replace("гидрокостюм шорти 2 мм", "короткий гидрокостюм 2 мм")
+    suit = suit.replace("шорти 2 мм", "короткий гидрокостюм 2 мм")
+    return f"🏄 SUP/вода: только опытным, короткая сессия; {suit}. Главный риск — порывы ветра."
 
 
 def _has_any(text: str, words: tuple[str, ...]) -> bool:
@@ -408,11 +417,47 @@ def _clean_kp_line(line: str) -> str:
 def _clean_safecast_line(line: str) -> str:
     s = str(line or "").strip()
     low = s.lower()
-    if re.search(r"выше|повыш|alert|⚠️|🟡|🔴", low):
-        return "🧪 Радиационный фон: выше обычного по датчику; сверяем с динамикой."
+    if re.search(r"alert|опасн|превыш|🔴", low):
+        return "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения."
+    if re.search(r"выше|повыш|⚠️|🟡", low):
+        return "🧪 Фон по частному датчику: выше обычной точки наблюдения; смотрим динамику, не разовое значение."
     if re.search(r"норм|спокой|🟢", low):
-        return "🧪 Радиационный фон: спокойно."
-    return "🧪 Радиационный фон: есть свежий датчик; сверяем с динамикой."
+        return "🧪 Фон по частному датчику: спокойно."
+    return "🧪 Фон по частному датчику: есть свежий замер; смотрим динамику, не разовое значение."
+
+
+def _clean_fx_line(line: str) -> str:
+    s = str(line or "").strip()
+
+    def repl(match: re.Match[str]) -> str:
+        code = match.group(1)
+        raw_value = match.group(2).replace(",", ".")
+        raw_delta = match.group(3)
+        try:
+            value = f"{float(raw_value):.2f}"
+        except Exception:
+            value = raw_value
+        if raw_delta is None:
+            delta = "→0.00"
+        else:
+            raw = raw_delta.replace("−", "-").replace(",", ".")
+            try:
+                d = float(raw)
+                if d > 0:
+                    delta = f"↑{abs(d):.2f}"
+                elif d < 0:
+                    delta = f"↓{abs(d):.2f}"
+                else:
+                    delta = "→0.00"
+            except Exception:
+                delta = raw_delta
+        return f"{code} {value} ₽ {delta}"
+
+    pattern = r"\b(USD|EUR|CNY)\s*:?\s*(\d+(?:[\.,]\d+)?)\s*₽(?:\s*\(([-−+]?\d+(?:[\.,]\d+)?)\))?"
+    cleaned = re.sub(pattern, repl, s)
+    cleaned = cleaned.replace("−", "↓")
+    cleaned = re.sub(r"\+\s*(\d)", r"↑\1", cleaned)
+    return cleaned
 
 
 def _clean_morning_weather_line(line: str) -> str:
@@ -475,7 +520,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     elif warning:
         out.append("⚠️ " + warning)
     if fx:
-        out.append(fx[0])
+        out.append(_clean_fx_line(fx[0]))
     if uv:
         out.append(_clean_uv_line(uv[0]))
     if air:
@@ -504,7 +549,9 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     kal = _city_line(lines, "Калининград")
     storm = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
-    sea = _soften_sea_lines(_section_after(lines, "Морские города"))
+    raw_sea = _section_after(lines, "Морские города")
+    sea = _soften_sea_lines(raw_sea)
+    sup_water = _common_sup_water_line(raw_sea)
     warm_cold = _section_between(lines, "Тёплые города", ("🌅 Рассвет", "🌇 Закат", "Астрособытия", "Рекомендации"))
     astro = _astro_block(lines, morning=False)
     quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
@@ -536,6 +583,8 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if sea:
         out.append("🌊 <b>Морские города</b>")
         out.extend(sea)
+        if sup_water:
+            out.append(sup_water)
         out.append("")
 
     if warm_cold:

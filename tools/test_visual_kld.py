@@ -324,7 +324,7 @@ def run_image_prompt_bridge_case() -> None:
         "layered cloud cover as the main sky feature",
         "unoccupied shoreline",
         "open Baltic water with only natural wave texture",
-        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks, no watermark, no logo, no signature, no letters, no brand marks.",
     ]:
         _assert_contains(name, prompt, needle)
     for needle in [
@@ -389,6 +389,42 @@ def run_first_quarter_moon_guard_case() -> None:
         "oversized moon",
         "dominant focal moon",
     ):
+        _assert_not_contains(name, positive_lines, forbidden)
+
+    print(f"PASS {name}")
+
+
+def run_not_quite_full_moon_guard_case() -> None:
+    name = "full_phase_95_percent_renders_gibbous"
+    message = "\n".join(
+        [
+            "22.06.2026",
+            "🌊 Морские города",
+            "Светлогорск: 20/15 °C • ☀️ ясно • 🌊 15 • 0.2 м",
+            "Зеленоградск: 20/15 °C • ☀️ ясно • 🌊 15",
+            "🌙 Луна: полнолуние, 95%",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 6, 22),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    for needle in [
+        "a realistic waxing gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon",
+        "no perfect full moon when illumination is below 97 percent",
+        "no oversized full circular moon",
+        "no fantasy supermoon",
+    ]:
+        _assert_contains(name, prompt, needle)
+    positive_lines = "\n".join(
+        line for line in prompt.splitlines() if not line.strip().startswith("Must avoid:")
+    ).lower()
+    for forbidden in ("bright full moon", "fantasy supermoon", "oversized full circular moon"):
         _assert_not_contains(name, positive_lines, forbidden)
 
     print(f"PASS {name}")
@@ -531,7 +567,7 @@ def run_controlled_variety_cases() -> None:
     _assert_contains(
         name,
         prompt_a1,
-        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks.",
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks, no watermark, no logo, no signature, no letters, no brand marks.",
     )
 
     morning_message_a = "19.06.2026\n" + message
@@ -577,9 +613,10 @@ def main() -> None:
         run_case(case)
     run_image_prompt_bridge_case()
     run_first_quarter_moon_guard_case()
+    run_not_quite_full_moon_guard_case()
     run_morning_cases()
     run_controlled_variety_cases()
-    print(f"OK: {len(CASES) + 6} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 7} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":

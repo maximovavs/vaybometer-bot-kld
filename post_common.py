@@ -1018,7 +1018,7 @@ def wetsuit_hint_by_sst(sst: Optional[float]) -> Optional[str]:
     if t >= WSUIT_NONE:
         return None
     if t >= WSUIT_SHORTY:
-        return "гидрокостюм шорти 2 мм"
+        return "короткий гидрокостюм 2 мм"
     if t >= WSUIT_32:
         return "гидрокостюм 3/2 мм"
     if t >= WSUIT_43:
@@ -1047,7 +1047,17 @@ def fx_morning_line(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Opt
             vs = f"{float(val):.2f}"
         except Exception:
             vs = "н/д"
-        return f"{name} {vs} {RUB} ({_fmt_delta(dlt)})"
+        try:
+            delta = float(dlt)
+        except Exception:
+            delta = 0.0
+        if delta > 0:
+            ds = f"↑{abs(delta):.2f}"
+        elif delta < 0:
+            ds = f"↓{abs(delta):.2f}"
+        else:
+            ds = "→0.00"
+        return f"{name} {vs} {RUB} {ds}"
 
     return "💱 Курсы (утро): " + " • ".join(
         [token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")]
