@@ -65,13 +65,28 @@ FX_CACHE_PATH = Path("fx_cache.json")
 
 def _fmt_delta(x: float | int | None) -> str:
     if x is None:
-        return "0.00"
+        return "→0.00"
     try:
         x = float(x)
     except Exception:
-        return "0.00"
-    sign = "−" if x < 0 else ""
-    return f"{sign}{abs(x):.2f}"
+        return "→0.00"
+    if x > 0:
+        return f"↑{abs(x):.2f}"
+    if x < 0:
+        return f"↓{abs(x):.2f}"
+    return "→0.00"
+
+
+def _ruble_summary(deltas: list[float]) -> str:
+    if not deltas:
+        return "🧭 Рынок смешанный: валюты движутся разнонаправленно."
+    positives = sum(1 for x in deltas if x > 0)
+    negatives = sum(1 for x in deltas if x < 0)
+    if positives > len(deltas) / 2:
+        return "🧭 Рубль слабее: основные валюты подросли к ₽."
+    if negatives > len(deltas) / 2:
+        return "🧭 Рубль крепче: основные валюты снизились к ₽."
+    return "🧭 Рынок смешанный: валюты движутся разнонаправленно."
 
 def _load_fx_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dict[str, Any]:
     try:
@@ -85,21 +100,26 @@ def _load_fx_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dict
 
 def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Tuple[str, Dict[str, Any]]:
     rates = _load_fx_rates(date_local, tz)
+    shown_deltas: list[float] = []
 
     def token(code: str, name: str) -> str:
         r = rates.get(code) or {}
         val = r.get("value"); dlt = r.get("delta")
         if val is None:
-            return f"{name}: — ₽ (—)"
+            return f"{name} — ₽"
         try:
             val_s = f"{float(val):.2f}"
         except Exception:
             val_s = "—"
-        return f"{name}: {val_s} ₽ ({_fmt_delta(dlt)})"
+        try:
+            shown_deltas.append(float(dlt))
+        except Exception:
+            pass
+        return f"{name} {val_s} ₽ {_fmt_delta(dlt)}"
 
-    line = " • ".join([token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")])
-    title = "💱 <b>Курсы валют</b>"
-    return f"{title}\n{line}", rates
+    line = " · ".join([token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")])
+    title = "💱 <b>Курсы ЦБ РФ</b>"
+    return f"{title}\n{line}\n{_ruble_summary(shown_deltas)}", rates
 
 def _normalize_cbr_date(raw) -> Optional[str]:
     if raw is None:

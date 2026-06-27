@@ -52,8 +52,11 @@ def _fmt_usd_compact(value: float | None) -> str:
 def _fmt_pct(value: float | None) -> str:
     if value is None:
         return ""
-    sign = "+" if value >= 0 else "−"
-    return f" ({sign}{abs(value):.1f}% 24ч)"
+    if value > 0:
+        return f" ↑{abs(value):.1f}%"
+    if value < 0:
+        return f" ↓{abs(value):.1f}%"
+    return " →0.0%"
 
 
 def _fetch_crypto() -> list[str]:
@@ -79,10 +82,13 @@ def _fetch_crypto() -> list[str]:
     eth = data.get("ethereum") or {}
     btc_usd = _to_float(btc.get("usd"))
     eth_usd = _to_float(eth.get("usd"))
+    bits: list[str] = []
     if btc_usd is not None:
-        out.append(f"₿ BTC {_fmt_usd_compact(btc_usd)}{_fmt_pct(_to_float(btc.get('usd_24h_change')))}")
+        bits.append(f"BTC {_fmt_usd_compact(btc_usd)}{_fmt_pct(_to_float(btc.get('usd_24h_change')))}")
     if eth_usd is not None:
-        out.append(f"Ξ ETH {_fmt_usd_compact(eth_usd)}{_fmt_pct(_to_float(eth.get('usd_24h_change')))}")
+        bits.append(f"ETH {_fmt_usd_compact(eth_usd)}{_fmt_pct(_to_float(eth.get('usd_24h_change')))}")
+    if bits:
+        out.append("24ч: " + " · ".join(bits))
     return out
 
 
@@ -142,19 +148,19 @@ def _fetch_gold() -> list[str]:
             if price is not None:
                 break
     if price is not None:
-        return [f"🥇 Gold {_fmt_usd_compact(price)}"]
-    return ["🥇 Gold н/д"]
+        return [f"Gold/oz: {_fmt_usd_compact(price)}"]
+    return ["Gold/oz: н/д"]
 
 
 def build_market_pulse_block() -> str:
     items = _fetch_crypto() + _fetch_gold()
     if not items:
         return ""
-    return "📊 <b>Market Pulse</b>\n• " + "\n• ".join(items) + "\n<i>Пульс рынка, не инвестсовет.</i>"
+    return "📊 <b>Пульс рынков</b>\n" + "\n".join(items) + "\n<i>Инфо-ориентир, не инвестрекомендация.</i>"
 
 
 def inject_market_pulse(fx_text: str, block: str) -> str:
-    if not block or "<b>Market Pulse</b>" in fx_text:
+    if not block or "<b>Market Pulse</b>" in fx_text or "<b>Пульс рынков</b>" in fx_text:
         return fx_text
     return fx_text.rstrip() + "\n\n" + block + "\n\n#Калининград #курсы_валют #рынки"
 
