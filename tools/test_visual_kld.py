@@ -415,7 +415,7 @@ def run_not_quite_full_moon_guard_case() -> None:
 
     _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
     for needle in [
-        "a realistic waxing gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon",
+        "a realistic gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon",
         "no perfect full moon when illumination is below 97 percent",
         "no oversized full circular moon",
         "no fantasy supermoon",
@@ -426,6 +426,41 @@ def run_not_quite_full_moon_guard_case() -> None:
     ).lower()
     for forbidden in ("bright full moon", "fantasy supermoon", "oversized full circular moon"):
         _assert_not_contains(name, positive_lines, forbidden)
+
+    print(f"PASS {name}")
+
+
+def run_waning_gibbous_moon_guard_case() -> None:
+    name = "waning_gibbous_94_percent_guard"
+    message = "\n".join(
+        [
+            "22.06.2026",
+            "🌊 Морские города",
+            "Светлогорск: 20/15 °C • ☀️ ясно • 🌊 15 • 0.2 м",
+            "Зеленоградск: 20/15 °C • ☀️ ясно • 🌊 15",
+            "🌙 Убывающая Луна, 94%",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 6, 22),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    _assert_contains(
+        name,
+        prompt,
+        "a realistic waning gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon",
+    )
+    _assert_contains(name, prompt, "no perfect full moon when illumination is below 97 percent")
+    _assert_not_contains(
+        name,
+        "\n".join(line for line in prompt.splitlines() if not line.strip().startswith("Must avoid:")),
+        "a realistic waxing gibbous Moon, 90-96 percent illuminated",
+    )
 
     print(f"PASS {name}")
 
@@ -614,9 +649,10 @@ def main() -> None:
     run_image_prompt_bridge_case()
     run_first_quarter_moon_guard_case()
     run_not_quite_full_moon_guard_case()
+    run_waning_gibbous_moon_guard_case()
     run_morning_cases()
     run_controlled_variety_cases()
-    print(f"OK: {len(CASES) + 7} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 8} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":

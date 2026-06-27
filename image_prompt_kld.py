@@ -372,8 +372,15 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
         "last_quarter": "a small non-dominant waning half-to-gibbous Moon with the left side illuminated, not a full moon",
         "waning_crescent": "a small non-dominant thin waning crescent Moon with the left side illuminated, not a full moon",
     }
-    if illumination is not None and 90 <= illumination < 97:
+    source_low = str(source_text or "").lower()
+    is_waning_gibbous = phase == "waning_gibbous" or "убывающ" in source_low or "waning" in source_low
+    is_waxing_gibbous = phase == "waxing_gibbous" or "растущ" in source_low or "waxing" in source_low
+    if illumination is not None and 90 <= illumination < 97 and is_waning_gibbous:
+        cue = "a realistic waning gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon"
+    elif illumination is not None and 90 <= illumination < 97 and is_waxing_gibbous:
         cue = "a realistic waxing gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon"
+    elif illumination is not None and 90 <= illumination < 97:
+        cue = "a realistic gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon"
     else:
         cue = moon_cues.get(phase)
     if not cue:

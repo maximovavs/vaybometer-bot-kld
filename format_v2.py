@@ -432,12 +432,15 @@ def _clean_fx_line(line: str) -> str:
     def repl(match: re.Match[str]) -> str:
         code = match.group(1)
         raw_value = match.group(2).replace(",", ".")
-        raw_delta = match.group(3)
+        arrow_delta = match.group(3)
+        raw_delta = match.group(4)
         try:
             value = f"{float(raw_value):.2f}"
         except Exception:
             value = raw_value
-        if raw_delta is None:
+        if arrow_delta:
+            delta = arrow_delta.replace("−", "↓")
+        elif raw_delta is None:
             delta = "→0.00"
         else:
             raw = raw_delta.replace("−", "-").replace(",", ".")
@@ -453,7 +456,11 @@ def _clean_fx_line(line: str) -> str:
                 delta = raw_delta
         return f"{code} {value} ₽ {delta}"
 
-    pattern = r"\b(USD|EUR|CNY)\s*:?\s*(\d+(?:[\.,]\d+)?)\s*₽(?:\s*\(([-−+]?\d+(?:[\.,]\d+)?)\))?"
+    pattern = (
+        r"\b(USD|EUR|CNY)\s*:?\s*(\d+(?:[\.,]\d+)?)\s*₽"
+        r"(?:\s*([↑↓→][+-]?\d+(?:[\.,]\d+)?))?"
+        r"(?:\s*\(([-−+]?\d+(?:[\.,]\d+)?)\))?"
+    )
     cleaned = re.sub(pattern, repl, s)
     cleaned = cleaned.replace("−", "↓")
     cleaned = re.sub(r"\+\s*(\d)", r"↑\1", cleaned)

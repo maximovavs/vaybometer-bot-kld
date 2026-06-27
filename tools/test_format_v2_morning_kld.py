@@ -116,6 +116,17 @@ def kld_morning_keeps_fx_uv_air_plan() -> None:
     assert "CNY 12.00 ₽ →0.00" in text
 
 
+def kld_morning_fx_cleaner_is_idempotent() -> None:
+    fixture = LEGACY_FIXTURE.replace(
+        "💱 Курсы (утро): USD 90.00 ₽ (1.43) • EUR 98.00 ₽ (-0.22) • CNY 12.00 ₽ (0.00)",
+        "💱 Курсы (утро): USD 90.00 ₽ ↑1.43 • EUR 98.00 ₽ ↓0.22 • CNY 12.00 ₽ →0.00",
+    )
+    text = build_morning_format_v2("Калининградская область", fixture)
+    assert "USD 90.00 ₽ ↑1.43 • EUR 98.00 ₽ ↓0.22 • CNY 12.00 ₽ →0.00" in text
+    assert "→0.00 ↓0.22" not in text
+    assert "→0.00 ↑1.43" not in text
+
+
 def kld_morning_safecast_above_observation_is_soft() -> None:
     fixture = LEGACY_FIXTURE.replace(
         "🧪 Safecast: 0.12 мкЗв/ч — фон спокойный.",
@@ -157,6 +168,7 @@ def main() -> None:
         kld_morning_has_sunset,
         kld_morning_keeps_safecast,
         kld_morning_keeps_fx_uv_air_plan,
+        kld_morning_fx_cleaner_is_idempotent,
         kld_morning_safecast_above_observation_is_soft,
         kld_morning_has_only_one_plan,
         kld_morning_astro_block_has_sun_and_rhythm_title,
