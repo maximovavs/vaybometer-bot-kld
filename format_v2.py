@@ -63,6 +63,8 @@ def _first_line_contains(lines: list[str], word: str) -> str:
     for line in lines:
         s = line.strip()
         low = s.lower()
+        if s.startswith("#"):
+            break
         if "без шторма" in low or "доброе утро" in low or s.startswith("🌾"):
             continue
         if not (s.startswith("⚠️") or "предупреждение" in low):
@@ -79,6 +81,8 @@ def _normalize_weather_line(line: str) -> str:
     s = re.sub(r"\bпорывы\s+до\s+(\d+)\s*м/с\s*(\d+)\s*м/с\b", r"порывы до \1\2 м/с", s, flags=re.I)
     s = re.sub(r"\bпорывы\s*[—-]\s*(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", s, flags=re.I)
     s = re.sub(r"\bпорывы\s+до\s+(\d+(?:[\.,]\d+)?)(?![\d\.,])(?:\s*м/с)?", r"порывы до \1 м/с", s, flags=re.I)
+    s = re.sub(r"💧\s*(?=\d{3,4}\s*гПа)", "давл. ", s, flags=re.I)
+    s = re.sub(r"💧\s*давл\.", "давл.", s, flags=re.I)
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
 
@@ -133,6 +137,7 @@ def _sentence(text: str) -> str:
 def _moon_line(line: str) -> str:
     s = _plain(line)
     s = re.sub(r"^🌙\s*", "", s).strip()
+    s = re.sub(r"^[🟡⚪⚫️🌑🌒🌓🌔🌕🌖🌗🌘]\s*", "", s).strip()
     pct = ""
     m_pct = re.search(r"\((\d{1,3}%)\)", s)
     if m_pct:
@@ -143,10 +148,36 @@ def _moon_line(line: str) -> str:
     phase = (s[:m_sign.start()] + s[m_sign.end():]).strip() if m_sign else s
     phase = re.sub(r"\s*[•,]\s*$", "", phase).strip()
     phase = re.sub(r"\s+,", ",", phase)
-    detail = ", ".join(x for x in (phase, sign) if x)
+    phase_low = phase.lower()
     if pct:
-        detail += f" ({pct})"
-    return f"🌙 {detail}".strip()
+        pct_num_match = re.search(r"\d{1,3}", pct)
+        pct_num = int(pct_num_match.group(0)) if pct_num_match else 0
+    else:
+        pct_num = 0
+    if "полнолу" in phase_low:
+        moon_emoji = "🌕"
+        phase_text = "Почти полная Луна" if 90 <= pct_num < 97 else "Полнолуние"
+    elif "новолу" in phase_low:
+        moon_emoji = "🌑"
+        phase_text = "Новолуние"
+    elif "растущ" in phase_low and "серп" in phase_low:
+        moon_emoji = "🌒"
+        phase_text = "Растущий серп"
+    elif "растущ" in phase_low:
+        moon_emoji = "🌔"
+        phase_text = phase
+    elif "убыва" in phase_low:
+        moon_emoji = "🌖"
+        phase_text = phase
+    else:
+        moon_emoji = "🌙"
+        phase_text = phase
+    detail = phase_text
+    if sign:
+        detail += f" в {sign}"
+    if pct:
+        detail += f" — {pct} освещённости."
+    return f"{moon_emoji} {detail}".strip()
 
 
 def _astro_plus(moon: str, details: list[str]) -> str:
@@ -185,7 +216,7 @@ def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
     if not (sunrise or sunset or moon_source or details):
         return []
 
-    title = "🌅 <b>Солнце и ритм дня</b>" if morning else "🌅 <b>Солнце и ритм завтрашнего дня</b>"
+    title = "🌇 <b>Солнце, Луна и ритм дня</b>" if morning else "🌇 <b>Солнце, Луна и ритм завтрашнего дня</b>"
     out = [title]
     if not morning and sunrise:
         out.append(sunrise)
@@ -205,7 +236,7 @@ def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
     for extra in (period_source, voc_source):
         if extra and extra not in out and len(out) < 5:
             out.append(extra)
-    return out[:5]
+    return out[:6]
 
 
 def _tips_fallback(has_storm: bool, has_rain: bool) -> list[str]:
@@ -280,12 +311,18 @@ def _max_wind_ms(text: str) -> float | None:
 
 
 def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
-    text = "\n".join(lines)
+    effective_lines = []
+    for line in lines:
+        if line.strip().startswith("#"):
+            break
+        effective_lines.append(line)
+    text = "\n".join(effective_lines)
     max_temp = _max_temperature_c(text)
     max_wind = _max_wind_ms(text)
     return {
         "storm": bool(storm) or _has_any(text, ("шторм", "предупреждение")),
         "rain": _has_any(text, ("дожд", "морось", "ливн", "осад")),
+        "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
         "contrast": _has_any(text, ("тёплые города", "холодные города", "восток", "внутри области", "контраст")) or (isinstance(max_temp, (int, float)) and max_temp >= 25),
@@ -297,6 +334,10 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
     if flags["storm"]:
         return "🧭 Главное завтра: главный фактор — ветер, порывы и осторожность у воды."
+    if flags["heat"] and flags["wind"]:
+        return "🧭 Главное завтра: днём жара, у воды — ветер; активность лучше утром/вечером."
+    if flags["heat"]:
+        return "🧭 Главное завтра: главный фактор — дневная жара, дела лучше сместить на утро и вечер."
     if flags["rain"] and flags["wind"]:
         return "🧭 Главное завтра: влажный и ветреный день, особенно заметный на побережье."
     if flags["rain"]:
@@ -317,6 +358,8 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
 def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_region: bool) -> str:
     if flags["storm"]:
         return "⚠️ Нюанс: пирсы, открытый берег и водные активности — только после проверки фактического ветра."
+    if flags["heat"] and flags["wind"]:
+        return ""
     if flags["rain"] and flags["wind"]:
         return "⚠️ Нюанс: у моря дождь и порывы ощущаются резче, чем в городе."
     if flags["rain"]:
@@ -339,6 +382,10 @@ def _evening_confidence_line(flags: dict[str, bool]) -> str:
 def _evening_plan(flags: dict[str, bool]) -> str:
     if flags["storm"]:
         return "✅ План завтра: короткий маршрут, защита от ветра/дождя и без риска на пирсах."
+    if flags["heat"] and flags["wind"]:
+        return "✅ План завтра: основные дела утром/вечером, днём — тень и вода; у моря учитывать порывы."
+    if flags["heat"]:
+        return "✅ План завтра: активность утром/вечером, днём — вода, тень и паузы."
     if flags["rain"] and flags["wind"]:
         return "✅ План завтра: непромокаемый слой, закрытая обувь и запасной indoor-вариант."
     if flags["rain"]:
@@ -359,6 +406,8 @@ def _limit_warm_cold(lines: list[str], per_group: int = 3) -> list[str]:
         if not s:
             continue
         if "Тёплые города" in s or "Холодные города" in s:
+            if "Холодные города" in s:
+                s = "❄️ <b>Самые прохладные ночи</b>"
             out.append(s)
             item_count = 0
             in_group = True
@@ -475,6 +524,16 @@ def _clean_morning_weather_line(line: str) -> str:
     return s
 
 
+def _clean_evening_score_line(line: str, flags: dict[str, bool]) -> str:
+    s = str(line or "").strip()
+    if flags.get("heat") and flags.get("wind"):
+        s = re.sub(r"—\s*отлично\b[^.\n]*\.?", "— жарко; у моря порывы.", s, flags=re.I)
+        s = re.sub(r"—\s*хорошо\b[^.\n]*\.?", "— жарко; у моря порывы.", s, flags=re.I)
+    elif flags.get("heat"):
+        s = re.sub(r"—\s*отлично\b[^.\n]*\.?", "— днём жарко; активность лучше утром/вечером.", s, flags=re.I)
+    return s
+
+
 def _final_plan_line(lines: list[str], has_warning: bool, has_rain: bool) -> str:
     for line in lines:
         s = line.strip()
@@ -570,7 +629,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     out: list[str] = [f"<b>🌅 Калининградская область завтра{title_date}</b>"]
 
     if score:
-        out.append(score)
+        out.append(_clean_evening_score_line(score, flags))
     out.append(_evening_main_scenario(flags, score))
     if nuance:
         out.append(nuance)

@@ -97,12 +97,12 @@ def kld_evening_preserves_city_and_marine_lines() -> None:
 def kld_evening_preserves_compact_astro() -> None:
     text = build_evening_format_v2("Калининградская область", NORMAL_EVENING)
     lines = text.splitlines()
-    start = lines.index("🌅 <b>Солнце и ритм завтрашнего дня</b>")
-    block = [line for line in lines[start:start + 5] if line.strip()]
+    start = lines.index("🌇 <b>Солнце, Луна и ритм завтрашнего дня</b>")
+    block = [line for line in lines[start:start + 6] if line.strip()]
     assert "🌅 Рассвет завтра: 04:08" in block
     assert "🌇 Закат завтра: 21:33" in block
-    assert "🌙 🌒 Растущий серп, ♎ Весы (34%)" in block
-    assert len(block) <= 5
+    assert "🌒 Растущий серп в ♎ Весы — 34% освещённости." in block
+    assert len(block) <= 6
 
 
 def kld_evening_preserves_quake_line() -> None:
@@ -130,6 +130,47 @@ def kld_evening_title_is_compact() -> None:
     assert text.splitlines()[0] == "<b>🌅 Калининградская область завтра (20.06.2026)</b>"
 
 
+HEAT_GUST_EVENING = """<b>🌅 Калининградская область: погода на завтра (20.06.2026)</b>
+✨ VayboMeter завтра: 9.0/10 — отлично для прогулок.
+Погода: 🏙️ Калининград — 39/23 °C • ясно • 💨 6 м/с • порывы до 12 м/с • 💧 1014 гПа ↓.
+🌊 <b>Морские города</b>
+Балтийск: 31/21 °C • ясно • 💨 7 м/с • порывы до 12 м/с • 🌊 18 • 0.5 м
+Зеленоградск: 33/22 °C • ясно • 💨 6 м/с • порывы до 11 м/с • 🌊 19 • 0.4 м
+———
+🌡 <b>Тёплые города</b>
+• Черняховск: 39/24 °C • ясно
+• Гусев: 38/23 °C • ясно
+❄️ <b>Холодные города</b>
+• Неман: 35/17 °C • ясно
+• Балтийск: 31/21 °C • ясно
+🌅 Рассвет завтра: 04:08
+🌇 Закат завтра: 21:33
+📻 <b>Астрособытия</b>
+🌙 🟡 Полнолуние, ♐ (96%)
+💚 В плюсе: планы, обучение.
+#Калининград #погода #здоровье #море
+⚠️ Предупреждение: жара и порывы у моря требуют осторожности.
+"""
+
+
+def kld_evening_heat_gust_polish() -> None:
+    text = build_evening_format_v2("Калининградская область", HEAT_GUST_EVENING)
+    lines = text.splitlines()
+    tag_index = lines.index("#Калининград #погода #здоровье #море")
+    assert tag_index == len(lines) - 1
+    assert not any(line.startswith("⚠️") for line in lines[tag_index + 1:])
+    assert "отлично" not in text.lower()
+    assert "жарко; у моря порывы" in text or "днём жара, у воды — ветер" in text
+    assert "✅ План завтра: основные дела утром/вечером" in text
+    assert "🌙 🟡" not in text
+    assert "🌕 Почти полная Луна в ♐ — 96% освещённости." in text
+    assert "❄️ <b>Холодные города</b>" not in text
+    assert "❄️ <b>Самые прохладные ночи</b>" in text
+    assert "Неман: 35/17 °C" in text
+    assert "💧 1014 гПа" not in text
+    assert "давл. 1014 гПа" in text
+
+
 def main() -> None:
     checks = (
         kld_evening_normal_no_generic_confidence,
@@ -142,6 +183,7 @@ def main() -> None:
         kld_evening_uncertain_has_short_confidence_line,
         kld_evening_sup_guidance_is_common_block,
         kld_evening_title_is_compact,
+        kld_evening_heat_gust_polish,
     )
     for check in checks:
         check()
