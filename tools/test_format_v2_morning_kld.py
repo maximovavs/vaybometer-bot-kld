@@ -53,7 +53,10 @@ EVENING_FIXTURE = """<b>🌅 Калининградская область: по
 """
 
 HOT_MORNING_FIXTURE = """<b>🌅 Калининградская область: погода на сегодня (28.06.2026)</b>
+✨ VayboMeter: 7.2/10 — хорошо для прогулок.
 Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🔷 1015 гПа ↓.
+🕘 Лучшее окно: позднее утро и время ближе к закату.
+🕘 Лучшее окно: вечером, когда будет свежее.
 💱 Курсы (утро): USD 94.12 ₽ ↑0.35 • EUR 101.43 ₽ ↑0.27 • CNY 12.90 ₽ →0.00
 ☀️ УФ: 7 — высокий
 🏭 Воздух: 🟡 умеренный (AQI 58) • PM₂.₅ 12 / PM₁₀ 24 • 🌿 пыльца: умеренная
@@ -63,8 +66,8 @@ HOT_MORNING_FIXTURE = """<b>🌅 Калининградская область: 
 🌙 🟡 Полнолуние, ♐ (96%)
 💚 В плюсе: планы, обучение.
 ⚫ VoC: 00:00–00:00.
+🧪 Радиационный фон: высокий по частному датчику.
 🧪 Safecast: 0.22 мкЗв/ч — выше обычного по датчику.
-🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику, не разовое значение.
 ✅ План: прогулка днём, вечером взять лёгкий слой.
 #Калининград #погода #здоровье #сегодня #море
 """
@@ -182,9 +185,11 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     text = build_morning_format_v2("Калининградская область", HOT_MORNING_FIXTURE)
     lines = text.splitlines()
     assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
-    assert lines[1].startswith("✨ VayboMeter:")
+    vaybo_lines = [line for line in lines if line.startswith("✨ VayboMeter")]
+    window_lines = [line for line in lines if line.startswith("🕘 Лучшее окно")]
+    assert vaybo_lines == ["✨ VayboMeter: 7.2/10 — с оговорками; жара и высокий УФ."]
+    assert window_lines == ["🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень."]
     assert "🌡 Ощущается: жарко; на солнце высокая нагрузка." in lines[:5]
-    assert "🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень." in text
     assert "⚠️ Главный нюанс: жара и УФ важнее формальной облачности." in text
     assert "давл. 1015 гПа ↓" in text
     assert "🔷 1015 гПа" not in text
@@ -201,7 +206,9 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     sensor_i = next(i for i, line in enumerate(lines) if line.startswith("🧪"))
     fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
     weather_i = next(i for i, line in enumerate(lines) if line.startswith("🏙 Калининград"))
-    assert weather_i < uv_i < air_i < sensor_i < fx_i
+    feels_i = lines.index("🌡 Ощущается: жарко; на солнце высокая нагрузка.")
+    window_i = lines.index("🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень.")
+    assert weather_i < feels_i < window_i < uv_i < air_i < sensor_i < fx_i
     assert fx_i > weather_i + 1
     assert "🌿 пыльца: умеренная" in text
 

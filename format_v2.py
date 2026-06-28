@@ -474,7 +474,7 @@ def _clean_safecast_line(line: str) -> str:
     low = s.lower()
     if re.search(r"critical|alert|опасн|🔴", low):
         return "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения."
-    if re.search(r"выше|повыш|⚠️|🟡", low):
+    if re.search(r"выше|повыш|высок|⚠️|🟡", low):
         return "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику, не разовое значение."
     if re.search(r"норм|спокой|🟢", low):
         return "🧪 Частный датчик: спокойно."
@@ -567,7 +567,16 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
 
 def _morning_score_line(source: str, flags: dict[str, bool]) -> str:
     if source:
-        return source.strip()
+        s = source.strip()
+        s = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", s, flags=re.I)
+        if flags["heat"] or flags["uv_high"]:
+            s = re.sub(
+                r"—\s*(?:хорошо|отлично)\b[^.\n]*\.?",
+                "— с оговорками; жара и высокий УФ.",
+                s,
+                flags=re.I,
+            )
+        return s
     if flags["heat"] or flags["uv_high"]:
         return "✨ VayboMeter: с оговорками; жара и высокий УФ."
     if flags["wind"]:
@@ -586,10 +595,10 @@ def _morning_feels_line(source: str, flags: dict[str, bool]) -> str:
 
 
 def _morning_best_window_line(source: str, flags: dict[str, bool]) -> str:
-    if source:
-        return source.strip()
     if flags["heat"] or flags["uv_high"]:
         return "🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень."
+    if source:
+        return source.strip()
     if flags["wind"]:
         return "🕘 Лучшее окно: сверить порывы утром, прогулку держать гибкой."
     return "🕘 Лучшее окно: первая половина дня."
@@ -667,9 +676,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     for line in (_morning_score_line(score, flags), scenario):
         if line and line not in out:
             out.append(line)
-    out.append(_morning_feels_line(feels, flags))
     if weather:
         out.append(_clean_morning_weather_line(weather))
+    out.append(_morning_feels_line(feels, flags))
     out.append(_morning_best_window_line(best_window, flags))
     nuance = _morning_main_nuance_line(main_nuance, warning, flags)
     if nuance:
