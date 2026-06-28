@@ -470,11 +470,12 @@ def _insert_main_nuance(v2_text: str) -> str:
 def _city_temperature_pairs(text: str) -> list[tuple[str, float, float]]:
     out: list[tuple[str, float, float]] = []
     for line in str(text or "").splitlines():
-        s = _plain(line).lstrip("• ").strip()
+        s = _plain(line).replace("\u00a0", " ").lstrip("• ").strip()
         s = re.sub(r"^Погода:\s*", "", s, flags=re.I)
+        s = re.sub(r"^\s*(?:[-–—*•]+|\d+[.)])\s*", "", s)
         s = re.sub(r"^[^A-Za-zА-Яа-яЁё]+", "", s).strip()
         m = re.match(
-            r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40})[:—]\s*(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°C",
+            r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40}?)(?:[:—-]|\s+)\s*(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°?\s*C",
             s,
         )
         if not m:
@@ -498,19 +499,75 @@ def _regional_context_from_source(source_text: str) -> str:
 
 
 def _kp_line_from_source(source_text: str) -> str:
-    s = str(source_text or "")
-    if re.search(r"\b(?:Кр|Kp)\s*[:=]?\s*н/д\b", s, flags=re.I):
-        return ""
-    m = re.search(r"\b(?:Кр|Kp)\s*[:=]?\s*(\d+(?:[\.,]\d+)?)", s, flags=re.I)
-    if not m:
-        return ""
-    try:
-        kp = float(m.group(1).replace(",", "."))
-    except Exception:
-        return ""
-    alert = bool(re.search(r"бур|шторм|возмущ|alert|storm", s, flags=re.I))
-    mood = "спокойно" if kp < 4 and not alert else "возмущённо"
-    return f"🧲 Космопогода: {mood}, Kp {kp:.1f}."
+    for raw in str(source_text or "").splitlines():
+        s = _plain(raw).replace("\u00a0", " ")
+        if not re.search(r"\b(?:Кр|Kp)\b|Kp[-\s]?index|индекс\s*Kp", s, flags=re.I):
+            continue
+        if re.search(r"\b(?:Кр|Kp)\s*[:=]?\s*н/д\b", s, flags=re.I):
+            continue
+        m = re.search(
+            r"(?:\b(?:Кр|Kp)\b|Kp[-\s]?index|индекс\s*Kp)\s*(?:[:=—-])?\s*(\d+(?:[\.,]\d+)?)",
+            s,
+            flags=re.I,
+        )
+        if not m:
+            continue
+        try:
+            kp = float(m.group(1).replace(",", "."))
+        except Exception:
+            continue
+        alert = bool(re.search(r"бур|шторм|возмущ|alert|storm", s, flags=re.I))
+        mood = "спокойно" if kp < 4 and not alert else "возмущённо"
+        return f"🧲 Космопогода: {mood}, Kp {kp:.1f}."
+    return ""
+
+
+def _baltic_line_from_source(source_text: str) -> str:
+    for raw in str(source_text or "").splitlines():
+        s = _plain(raw).replace("\u00a0", " ").strip()
+        low = s.lower()
+        if "морские города" in low:
+            continue
+        if not any(marker in low for marker in ("балтика", "море", "вода", "волна", "🌊")):
+            continue
+
+        water: float | None = None
+        wave: float | None = None
+        water_match = re.search(r"(?:вода|море)[^\d-]{0,20}(-?\d+(?:[\.,]\d+)?)\s*°?\s*C?", s, flags=re.I)
+        if water_match:
+            try:
+                water = float(water_match.group(1).replace(",", "."))
+            except Exception:
+                water = None
+        wave_match = re.search(r"(?:волна|wave)[^\d]{0,20}(\d+(?:[\.,]\d+)?)\s*м", s, flags=re.I)
+        if wave_match:
+            try:
+                wave = float(wave_match.group(1).replace(",", "."))
+            except Exception:
+                wave = None
+
+        if "🌊" in s:
+            tail = s.split("🌊", 1)[1]
+            nums: list[float] = []
+            for num in re.findall(r"(\d+(?:[\.,]\d+)?)", tail):
+                try:
+                    nums.append(float(num.replace(",", ".")))
+                except Exception:
+                    pass
+            if water is None and nums and 5 <= nums[0] <= 30:
+                water = nums[0]
+            if wave is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
+                wave = nums[1]
+
+        if water is None and wave is None:
+            continue
+        parts: list[str] = []
+        if water is not None:
+            parts.append(f"вода {_fmt_num(water)}°C")
+        if wave is not None:
+            parts.append(f"волна {_fmt_num(wave)} м")
+        return "🌊 Балтика: " + "; ".join(parts) + "; у открытой воды ветер заметнее."
+    return ""
 
 
 def _replace_or_insert_line(v2_text: str, line_to_add: str, *, prefix: str, anchors: tuple[str, ...]) -> str:
@@ -538,6 +595,17 @@ def _insert_kp_line(v2_text: str, line_to_add: str) -> str:
     return "\n".join(out)
 
 
+def _replace_or_insert_baltic_line(v2_text: str, line_to_add: str) -> str:
+    if not line_to_add:
+        return v2_text
+    lines = [line for line in str(v2_text or "").splitlines() if not line.strip().startswith("🌊 Балтика:")]
+    return _insert_before_anchor(
+        "\n".join(lines),
+        line_to_add,
+        ("💱", "🌇 <b>Солнце", "🌅 <b>Солнце", "🌙 <b>Астроритм", "✅ План:", "#"),
+    )
+
+
 def _apply_morning_raw_context(v2_text: str, raw_text: str, mode: str) -> str:
     if not mode.startswith("morn"):
         return v2_text
@@ -561,6 +629,17 @@ def _sensor_line_from_legacy(legacy_text: str) -> str:
     return ""
 
 
+def _replace_sensor_lines(v2_text: str, line_to_add: str) -> str:
+    if not line_to_add:
+        return v2_text
+    lines = [line for line in str(v2_text or "").splitlines() if not line.strip().startswith("🧪")]
+    return _insert_before_anchor(
+        "\n".join(lines),
+        line_to_add,
+        ("🧲", "🌊 Балтика", "💱", "🌇 <b>Солнце", "🌅 <b>Солнце", "🌙 <b>Астроритм", "✅ План:", "✅ <b>Рекомендации", "📌 <b>Вывод", "#"),
+    )
+
+
 def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
     if not _env_any("FORMAT_V2_SENSOR_LINE", "FORMAT_V2_TEST_SENSOR", "FORMAT_V2_TEST_SAFECAST"):
         return v2_text
@@ -568,16 +647,7 @@ def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
     if not line:
         return v2_text
     if any(existing.strip().startswith("🧪") for existing in str(v2_text or "").splitlines()):
-        out: list[str] = []
-        replaced = False
-        for existing in str(v2_text or "").splitlines():
-            if existing.strip().startswith("🧪"):
-                if not replaced:
-                    out.append(line)
-                    replaced = True
-                continue
-            out.append(existing)
-        return "\n".join(out)
+        return _replace_sensor_lines(v2_text, line)
     if "Safecast" in v2_text:
         out: list[str] = []
         replaced = False
@@ -589,6 +659,29 @@ def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
                 out.append(existing)
         return chr(10).join(out)
     return _insert_before_anchor(v2_text, line, ("🧲", "🌊 Балтика", "💱", "🌇 <b>Солнце", "🌅 <b>Солнце", "🌙 <b>Астроритм", "✅ План:", "✅ <b>Рекомендации", "📌 <b>Вывод"))
+
+
+def _finalize_kld_morning_safe_text(v2_text: str, raw_msg: str, legacy_text: str, mode: str) -> str:
+    if not mode.startswith("morn"):
+        return v2_text
+    out = v2_text
+
+    regional = _regional_context_from_source(raw_msg) or _regional_context_from_source(legacy_text)
+    if regional:
+        out = _replace_or_insert_line(out, regional, prefix="🌡 По области:", anchors=("✨ VayboMeter",))
+
+    sensor = _sensor_line_from_legacy(raw_msg) or _sensor_line_from_legacy(legacy_text) or _sensor_line_from_legacy(out)
+    if sensor:
+        out = _replace_sensor_lines(out, sensor)
+
+    kp_line = _kp_line_from_source(raw_msg) or _kp_line_from_source(legacy_text) or _kp_line_from_source(out)
+    out = _insert_kp_line(out, kp_line)
+
+    baltic = _baltic_line_from_source(raw_msg) or _baltic_line_from_source(legacy_text)
+    if baltic:
+        out = _replace_or_insert_baltic_line(out, baltic)
+
+    return out
 
 
 def _apply_confidence_polish(v2_text: str) -> str:
@@ -799,6 +892,7 @@ def _apply_format_v2_safe_postprocess(v2_raw: str, raw_msg: str, legacy_text: st
     out = _apply_score_conclusion(out)
     out = _inject_morning_smart_plan(out, mode)
     out = _apply_compact(out)
+    out = _finalize_kld_morning_safe_text(out, raw_msg, legacy_text, mode)
     return out
 
 
@@ -899,6 +993,9 @@ async def main() -> None:
         v2_raw = build_format_v2("Калининградская область", mode, legacy_result.text)
         v2_raw = _apply_format_v2_safe_postprocess(v2_raw, raw_msg, legacy_result.text, mode)
         final_result = sanitize_post_text(v2_raw)
+        final_text = _finalize_kld_morning_safe_text(final_result.text, raw_msg, legacy_result.text, mode)
+        if final_text != final_result.text:
+            final_result = type(final_result)(text=final_text, issues=final_result.issues)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
         print(v2_raw)
