@@ -170,7 +170,7 @@ def kld_morning_safecast_above_observation_is_soft() -> None:
         "🧪 Safecast: 0.22 мкЗв/ч — выше обычного по датчику.",
     )
     text = build_morning_format_v2("Калининградская область", fixture)
-    wanted = "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику, не разовое значение."
+    wanted = "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику."
     assert wanted in text
     assert text.count("🧪") == 1
 
@@ -207,6 +207,8 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     vaybo_lines = [line for line in lines if line.startswith("✨ VayboMeter")]
     window_lines = [line for line in lines if line.startswith("🕘 Лучшее окно")]
     assert vaybo_lines == ["✨ VayboMeter: 7.2/10 — с оговорками; жара и высокий УФ."]
+    assert "7.2/10" in vaybo_lines[0]
+    assert "🌡 По области: жарко; у Балтики свежее, но ветер заметнее." in lines
     assert window_lines == ["🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень."]
     assert "🌡 Ощущается: жарко; на солнце высокая нагрузка." in lines[:5]
     assert "⚠️ Главный нюанс: жара и УФ важнее формальной облачности." in text
@@ -214,6 +216,7 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     assert "🔷 1015 гПа" not in text
     assert "💧 1015 гПа" not in text
     assert text.count("🧪") == 1
+    assert "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику." in text
     assert "Safecast:" not in text
     assert "Радиационный фон: высокий" not in text
     assert "VoC: 00:00–00:00" not in text
@@ -223,13 +226,22 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     uv_i = lines.index("☀️ УФ 7 — высокий")
     air_i = next(i for i, line in enumerate(lines) if line.startswith("🏭 Воздух:"))
     sensor_i = next(i for i, line in enumerate(lines) if line.startswith("🧪"))
+    baltic_i = next(i for i, line in enumerate(lines) if line.startswith("🌊 Балтика:"))
     fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
+    astro_i = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна"))
     weather_i = next(i for i, line in enumerate(lines) if line.startswith("🏙 Калининград"))
     feels_i = lines.index("🌡 Ощущается: жарко; на солнце высокая нагрузка.")
     window_i = lines.index("🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень.")
-    assert weather_i < feels_i < window_i < uv_i < air_i < sensor_i < fx_i
+    context_i = lines.index("🌡 По области: жарко; у Балтики свежее, но ветер заметнее.")
+    assert context_i < weather_i < feels_i < window_i < uv_i < air_i < sensor_i < baltic_i < fx_i < astro_i
     assert fx_i > weather_i + 1
     assert "🌿 пыльца: умеренная" in text
+
+
+def kld_morning_adds_baltic_fallback_when_sea_missing() -> None:
+    fixture = HOT_MORNING_FIXTURE.replace("🌊 Балтика: вода 18 °C • волна 0.4 м.\n", "")
+    text = build_morning_format_v2("Калининградская область", fixture)
+    assert "🌊 Балтика: у воды свежее, но ветер заметнее; прогулки — по защищённым променадам." in text
 
 
 def kld_morning_postprocess_does_not_reintroduce_duplicates() -> None:
@@ -267,10 +279,11 @@ def kld_morning_postprocess_does_not_reintroduce_duplicates() -> None:
     assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
 
     sensor_i = next(i for i, line in enumerate(lines) if line.startswith("🧪"))
+    baltic_i = next(i for i, line in enumerate(lines) if line.startswith("🌊 Балтика:"))
     fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
     astro_i = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна"))
     plan_i = next(i for i, line in enumerate(lines) if line.startswith("✅ План:"))
-    assert sensor_i < fx_i
+    assert sensor_i < baltic_i < fx_i
     assert astro_i < plan_i
     plan = lines[plan_i]
     for word in ("вода", "тень", "SPF"):
@@ -290,6 +303,7 @@ def main() -> None:
         kld_morning_preserves_quake_line,
         kld_morning_cosmoweather_is_compact,
         kld_morning_hot_day_uses_cyprus_style_skeleton,
+        kld_morning_adds_baltic_fallback_when_sea_missing,
         kld_morning_postprocess_does_not_reintroduce_duplicates,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,

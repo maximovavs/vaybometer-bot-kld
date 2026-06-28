@@ -306,6 +306,23 @@ def _max_temperature_c(text: str) -> float | None:
     return max(values) if values else None
 
 
+def _city_temperature_pairs(lines: list[str]) -> list[tuple[str, float, float]]:
+    out: list[tuple[str, float, float]] = []
+    for line in lines:
+        p = _plain(line).lstrip("• ").strip()
+        m = re.match(
+            r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40})[:—]\s*(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°C",
+            p,
+        )
+        if not m:
+            continue
+        try:
+            out.append((m.group("city").strip(), float(m.group("hi").replace(",", ".")), float(m.group("lo").replace(",", "."))))
+        except Exception:
+            continue
+    return out
+
+
 def _max_wind_ms(text: str) -> float | None:
     values: list[float] = []
     for m in re.finditer(r"(?:порывы\s*(?:до\s*)?)?(\d+(?:[\.,]\d+)?)\s*м/с", text, flags=re.I):
@@ -475,7 +492,7 @@ def _clean_safecast_line(line: str) -> str:
     if re.search(r"critical|alert|опасн|🔴", low):
         return "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения."
     if re.search(r"выше|повыш|высок|⚠️|🟡", low):
-        return "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику, не разовое значение."
+        return "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику."
     if re.search(r"норм|спокой|🟢", low):
         return "🧪 Частный датчик: спокойно."
     return "🧪 Частный датчик: есть свежий замер; смотрим динамику, не разовое значение."
@@ -620,6 +637,18 @@ def _morning_plan_line(lines: list[str], flags: dict[str, bool], has_warning: bo
     return _final_plan_line(lines, has_warning, has_rain)
 
 
+def _morning_region_context_line(lines: list[str], flags: dict[str, bool]) -> str:
+    pairs = _city_temperature_pairs(lines)
+    if len(pairs) >= 2:
+        warm = max(pairs, key=lambda item: item[1])
+        cool = min(pairs, key=lambda item: item[1])
+        if warm[0] != cool[0] and abs(warm[1] - cool[1]) >= 2:
+            return f"🌡 По области: теплее — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°)."
+    if flags["heat"]:
+        return "🌡 По области: жарко; у Балтики свежее, но ветер заметнее."
+    return ""
+
+
 def _morning_sea_lines(lines: list[str]) -> list[str]:
     out: list[str] = []
     for line in lines:
@@ -628,7 +657,9 @@ def _morning_sea_lines(lines: list[str]) -> list[str]:
             out.append(_normalize_weather_line(s))
         elif s.startswith(("Балтика:", "Море:")):
             out.append("🌊 " + _normalize_weather_line(s))
-    return out[:2]
+    if out:
+        return out[:1]
+    return ["🌊 Балтика: у воды свежее, но ветер заметнее; прогулки — по защищённым променадам."]
 
 
 def _final_plan_line(lines: list[str], has_warning: bool, has_rain: bool) -> str:
@@ -676,6 +707,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     for line in (_morning_score_line(score, flags), scenario):
         if line and line not in out:
             out.append(line)
+    region_context = _morning_region_context_line(lines, flags)
+    if region_context:
+        out.append(region_context)
     if weather:
         out.append(_clean_morning_weather_line(weather))
     out.append(_morning_feels_line(feels, flags))
