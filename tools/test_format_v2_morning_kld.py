@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
+from format_v2 import build_evening_format_v2, build_format_v2, build_morning_format_v2  # noqa: E402
 
 pendulum_stub = types.ModuleType("pendulum")
 pendulum_stub.DateTime = object
@@ -25,6 +25,7 @@ sys.modules.setdefault("telegram", telegram_stub)
 
 from post_safety import sanitize_post_text  # noqa: E402
 from safe_test_post import (  # noqa: E402
+    _apply_format_v2_safe_postprocess,
     _inject_morning_best_window,
     _inject_morning_score,
     _inject_morning_smart_plan,
@@ -92,6 +93,39 @@ HOT_MORNING_FIXTURE = """<b>🌅 Калининградская область: 
 🧪 Радиационный фон: высокий по частному датчику.
 🧪 Safecast: 0.22 мкЗв/ч — выше обычного по датчику.
 🧲 Космопогода: Kp 0.3 (спокойно), v 420 км/с.
+✅ План: прогулка днём, вечером взять лёгкий слой.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
+REAL_RAW_WITH_REGION = """<b>🌅 Калининградская область: погода на сегодня (28.06.2026)</b>
+Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🔷 1015 гПа ↓.
+🌡 <b>Тёплые города</b>
+Балтийск: 31/22 °C • ясно • 💨 7 м/с
+Гвардейск: 39/21 °C • ясно
+Неман: 35/17 °C • ясно
+☀️ УФ: 7 — высокий
+🏭 Воздух: 🟡 умеренный (AQI 58) • PM₂.₅ 12 / PM₁₀ 24
+🌊 Балтика: вода 18 °C • волна 0.4 м.
+🌇 Закат сегодня: 21:34
+📻 <b>Астрособытия</b>
+🌙 🟡 Полнолуние, ♐ (96%)
+💚 В плюсе: планы, обучение.
+🧪 Safecast: 0.22 мкЗв/ч — выше обычного по датчику.
+🧲 Космопогода: Kp 0.3 (спокойно), v 420 км/с.
+✅ План: прогулка днём, вечером взять лёгкий слой.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
+REAL_LEGACY_WITHOUT_REGION = """<b>🌅 Калининградская область: погода на сегодня (28.06.2026)</b>
+Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🔷 1015 гПа ↓.
+☀️ УФ: 7 — высокий
+🏭 Воздух: 🟡 умеренный (AQI 58) • PM₂.₅ 12 / PM₁₀ 24
+🌊 Балтика: вода 18 °C • волна 0.4 м.
+🌇 Закат сегодня: 21:34
+📻 <b>Астрособытия</b>
+🌙 🟡 Полнолуние, ♐ (96%)
+💚 В плюсе: планы, обучение.
+🧪 Радиационный фон: высокий по частному датчику.
 ✅ План: прогулка днём, вечером взять лёгкий слой.
 #Калининград #погода #здоровье #сегодня #море
 """
@@ -310,6 +344,43 @@ def kld_morning_postprocess_does_not_reintroduce_duplicates() -> None:
         assert word in plan
 
 
+def kld_morning_real_safe_pipeline_uses_raw_context() -> None:
+    env_names = (
+        "FORMAT_V2",
+        "MORNING_BEST_WINDOW",
+        "MORNING_VAYBOMETER_SCORE",
+        "MORNING_SMART_PLAN",
+        "FORMAT_V2_SENSOR_LINE",
+    )
+    old_env = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        legacy_result = sanitize_post_text(REAL_LEGACY_WITHOUT_REGION)
+        v2 = build_format_v2("Калининградская область", "morning", legacy_result.text)
+        text = _apply_format_v2_safe_postprocess(v2, REAL_RAW_WITH_REGION, legacy_result.text, "morning")
+        text = sanitize_post_text(text).text
+    finally:
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    lines = text.splitlines()
+    assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
+    assert any(line.startswith("✨ VayboMeter: 7.") and "/10 — с оговорками; жара и высокий УФ." in line for line in lines)
+    assert "✨ VayboMeter: с оговорками; жара и высокий УФ." not in text
+    assert "🌡 По области: теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°), диапазон 31–39°." in text
+    assert "🌡 По области: жарко; у Балтики обычно свежее" not in text
+    assert text.count("🧪") == 1
+    assert "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику." in text
+    assert "Радиационный фон: высокий" not in text
+    assert "Safecast:" not in text
+    assert "🧲 Космопогода: спокойно, Kp 0.3." in text
+    assert "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы." in text
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
@@ -326,6 +397,7 @@ def main() -> None:
         kld_morning_adds_baltic_fallback_when_sea_missing,
         kld_morning_region_context_fallback_when_only_kaliningrad,
         kld_morning_postprocess_does_not_reintroduce_duplicates,
+        kld_morning_real_safe_pipeline_uses_raw_context,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,

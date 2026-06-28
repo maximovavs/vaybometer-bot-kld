@@ -103,7 +103,7 @@ def _score_label(score: float) -> str:
 
 def _kld_weather_line(v2_text: str) -> str:
     lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
-    return next((x for x in lines if x.startswith("🏙️ Калининград")), "")
+    return next((x for x in lines if x.startswith(("🏙️ Калининград", "🏙 Калининград", "Калининград"))), "")
 
 
 def _kld_conditions(v2_text: str) -> dict[str, float | bool | None]:
@@ -214,6 +214,10 @@ def _kld_score_line(v2_text: str) -> str:
     elif isinstance(wind, (int, float)) and wind >= 3:
         score -= 0.5; reasons.append("ветер")
     if isinstance(tmax, (int, float)):
+        if tmax >= 35:
+            score -= 1.2; reasons.append("жара")
+        elif tmax >= 30:
+            score -= 0.6; reasons.append("жарко")
         if tmax <= 14:
             score -= 1.0; reasons.append("прохладно")
         elif tmax <= 16:
@@ -226,6 +230,9 @@ def _kld_score_line(v2_text: str) -> str:
         score -= 0.8; reasons.append("воздух похуже")
 
     score = max(1.0, min(10.0, score))
+    if (isinstance(tmax, (int, float)) and tmax >= 35) or (isinstance(uv, (int, float)) and uv >= 6):
+        score = min(score, 7.9)
+        return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
     label = _score_label(score)
     if reasons:
         return f"✨ VayboMeter: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
@@ -460,6 +467,88 @@ def _insert_main_nuance(v2_text: str) -> str:
     return _inject_after_anchor(v2_text, _kld_main_nuance(v2_text), ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
 
 
+def _city_temperature_pairs(text: str) -> list[tuple[str, float, float]]:
+    out: list[tuple[str, float, float]] = []
+    for line in str(text or "").splitlines():
+        s = _plain(line).lstrip("• ").strip()
+        s = re.sub(r"^Погода:\s*", "", s, flags=re.I)
+        s = re.sub(r"^[^A-Za-zА-Яа-яЁё]+", "", s).strip()
+        m = re.match(
+            r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40})[:—]\s*(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°C",
+            s,
+        )
+        if not m:
+            continue
+        try:
+            out.append((m.group("city").strip(), float(m.group("hi").replace(",", ".")), float(m.group("lo").replace(",", "."))))
+        except Exception:
+            continue
+    return out
+
+
+def _regional_context_from_source(source_text: str) -> str:
+    pairs = _city_temperature_pairs(source_text)
+    if len(pairs) < 2:
+        return ""
+    warm = max(pairs, key=lambda item: item[1])
+    cool = min(pairs, key=lambda item: item[1])
+    if warm[0] == cool[0] or abs(warm[1] - cool[1]) < 2:
+        return ""
+    return f"🌡 По области: теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°), диапазон {cool[1]:.0f}–{warm[1]:.0f}°."
+
+
+def _kp_line_from_source(source_text: str) -> str:
+    s = str(source_text or "")
+    if re.search(r"\b(?:Кр|Kp)\s*[:=]?\s*н/д\b", s, flags=re.I):
+        return ""
+    m = re.search(r"\b(?:Кр|Kp)\s*[:=]?\s*(\d+(?:[\.,]\d+)?)", s, flags=re.I)
+    if not m:
+        return ""
+    try:
+        kp = float(m.group(1).replace(",", "."))
+    except Exception:
+        return ""
+    alert = bool(re.search(r"бур|шторм|возмущ|alert|storm", s, flags=re.I))
+    mood = "спокойно" if kp < 4 and not alert else "возмущённо"
+    return f"🧲 Космопогода: {mood}, Kp {kp:.1f}."
+
+
+def _replace_or_insert_line(v2_text: str, line_to_add: str, *, prefix: str, anchors: tuple[str, ...]) -> str:
+    if not line_to_add:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out = [line for line in lines if not line.strip().startswith(prefix)]
+    text = "\n".join(out)
+    return _inject_after_anchor(text, line_to_add, anchors)
+
+
+def _insert_kp_line(v2_text: str, line_to_add: str) -> str:
+    if not line_to_add:
+        return v2_text
+    lines = [line for line in str(v2_text or "").splitlines() if not line.strip().startswith("🧲")]
+    out: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and line.strip().startswith(("🌊 Балтика:", "💱", "🌇 <b>Солнце", "🌅 <b>Солнце", "✅ План:", "#")):
+            out.append(line_to_add)
+            inserted = True
+        out.append(line)
+    if not inserted:
+        out.append(line_to_add)
+    return "\n".join(out)
+
+
+def _apply_morning_raw_context(v2_text: str, raw_text: str, mode: str) -> str:
+    if not mode.startswith("morn"):
+        return v2_text
+    out = v2_text
+    regional = _regional_context_from_source(raw_text)
+    if regional:
+        out = _replace_or_insert_line(out, regional, prefix="🌡 По области:", anchors=("✨ VayboMeter",))
+    out = _insert_kp_line(out, _kp_line_from_source(raw_text))
+    return out
+
+
 def _sensor_line_from_legacy(legacy_text: str) -> str:
     marker = "Safe" + "cast"
     for line in str(legacy_text or "").splitlines():
@@ -475,11 +564,20 @@ def _sensor_line_from_legacy(legacy_text: str) -> str:
 def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
     if not _env_any("FORMAT_V2_SENSOR_LINE", "FORMAT_V2_TEST_SENSOR", "FORMAT_V2_TEST_SAFECAST"):
         return v2_text
-    if any(line.strip().startswith("🧪") for line in str(v2_text or "").splitlines()):
-        return v2_text
-    line = _sensor_line_from_legacy(legacy_text)
+    line = _sensor_line_from_legacy(legacy_text) or _sensor_line_from_legacy(v2_text)
     if not line:
         return v2_text
+    if any(existing.strip().startswith("🧪") for existing in str(v2_text or "").splitlines()):
+        out: list[str] = []
+        replaced = False
+        for existing in str(v2_text or "").splitlines():
+            if existing.strip().startswith("🧪"):
+                if not replaced:
+                    out.append(line)
+                    replaced = True
+                continue
+            out.append(existing)
+        return "\n".join(out)
     if "Safecast" in v2_text:
         out: list[str] = []
         replaced = False
@@ -490,7 +588,7 @@ def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
             else:
                 out.append(existing)
         return chr(10).join(out)
-    return _insert_before_anchor(v2_text, line, ("🌅 <b>Солнце и ритм", "🌙 <b>Астроритм", "✅ <b>Рекомендации", "📌 <b>Вывод"))
+    return _insert_before_anchor(v2_text, line, ("🧲", "🌊 Балтика", "💱", "🌇 <b>Солнце", "🌅 <b>Солнце", "🌙 <b>Астроритм", "✅ План:", "✅ <b>Рекомендации", "📌 <b>Вывод"))
 
 
 def _apply_confidence_polish(v2_text: str) -> str:
@@ -638,9 +736,36 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
 def _inject_morning_score(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_VAYBOMETER_SCORE")):
         return v2_text
-    if "VayboMeter" in v2_text:
-        return v2_text
     score = _kld_score_line(v2_text)
+    lines = str(v2_text or "").splitlines()
+    score_indexes = [idx for idx, line in enumerate(lines) if "VayboMeter" in line]
+    if score_indexes:
+        c = _kld_conditions(v2_text)
+        heat_or_uv = (
+            (isinstance(c.get("tmax"), (int, float)) and c.get("tmax") >= 35)
+            or (isinstance(c.get("uv"), (int, float)) and c.get("uv") >= 6)
+        )
+        out: list[str] = []
+        replaced = False
+        for idx, line in enumerate(lines):
+            if idx in score_indexes:
+                if not replaced:
+                    if "/10" in line:
+                        cleaned = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", line.strip(), flags=re.I)
+                        if heat_or_uv:
+                            cleaned = re.sub(
+                                r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
+                                r"\1с оговорками; жара и высокий УФ.",
+                                cleaned,
+                                flags=re.I,
+                            )
+                        out.append(cleaned)
+                    else:
+                        out.append(score)
+                    replaced = True
+                continue
+            out.append(line)
+        return "\n".join(out)
     if "🕒 Лучшее окно:" in v2_text:
         return _inject_after_anchor(v2_text, score, ("🕒 Лучшее окно:",))
     if "🌡 Ощущается:" in v2_text:
@@ -658,6 +783,23 @@ def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_SMART_PLAN")):
         return v2_text
     return _replace_plan(v2_text, _kld_smart_plan_line(v2_text))
+
+
+def _apply_format_v2_safe_postprocess(v2_raw: str, raw_msg: str, legacy_text: str, mode: str) -> str:
+    out = _apply_morning_raw_context(v2_raw, raw_msg, mode)
+    out = _inject_morning_feels(out, mode)
+    out = _inject_morning_best_window(out, mode)
+    out = _inject_morning_score(out, mode)
+    out = _inject_evening_score(out, mode)
+    out = _inject_sensor_line(out, raw_msg or legacy_text)
+    out = _apply_format_v2_test_polish(out)
+    out = _apply_confidence_polish(out)
+    out = _insert_main_nuance(out)
+    out = _apply_astro_cleanup(out)
+    out = _apply_score_conclusion(out)
+    out = _inject_morning_smart_plan(out, mode)
+    out = _apply_compact(out)
+    return out
 
 
 def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
@@ -755,18 +897,7 @@ async def main() -> None:
     if use_format_v2:
         from format_v2 import build_format_v2
         v2_raw = build_format_v2("Калининградская область", mode, legacy_result.text)
-        v2_raw = _inject_morning_feels(v2_raw, mode)
-        v2_raw = _inject_morning_best_window(v2_raw, mode)
-        v2_raw = _inject_morning_score(v2_raw, mode)
-        v2_raw = _inject_evening_score(v2_raw, mode)
-        v2_raw = _inject_sensor_line(v2_raw, legacy_result.text)
-        v2_raw = _apply_format_v2_test_polish(v2_raw)
-        v2_raw = _apply_confidence_polish(v2_raw)
-        v2_raw = _insert_main_nuance(v2_raw)
-        v2_raw = _apply_astro_cleanup(v2_raw)
-        v2_raw = _apply_score_conclusion(v2_raw)
-        v2_raw = _inject_morning_smart_plan(v2_raw, mode)
-        v2_raw = _apply_compact(v2_raw)
+        v2_raw = _apply_format_v2_safe_postprocess(v2_raw, raw_msg, legacy_result.text, mode)
         final_result = sanitize_post_text(v2_raw)
         final_label = "FORMAT_V2 MESSAGE"
         print("\n===== FORMAT_V2 RAW BEGIN =====\n")
