@@ -310,6 +310,8 @@ def _city_temperature_pairs(lines: list[str]) -> list[tuple[str, float, float]]:
     out: list[tuple[str, float, float]] = []
     for line in lines:
         p = _plain(line).lstrip("• ").strip()
+        p = re.sub(r"^Погода:\s*", "", p, flags=re.I)
+        p = re.sub(r"^[^A-Za-zА-Яа-яЁё]+", "", p).strip()
         m = re.match(
             r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40})[:—]\s*(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°C",
             p,
@@ -643,10 +645,34 @@ def _morning_region_context_line(lines: list[str], flags: dict[str, bool]) -> st
         warm = max(pairs, key=lambda item: item[1])
         cool = min(pairs, key=lambda item: item[1])
         if warm[0] != cool[0] and abs(warm[1] - cool[1]) >= 2:
-            return f"🌡 По области: теплее — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°)."
+            return f"🌡 По области: теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°), диапазон {cool[1]:.0f}–{warm[1]:.0f}°."
     if flags["heat"]:
-        return "🌡 По области: жарко; у Балтики свежее, но ветер заметнее."
+        return "🌡 По области: жарко; у Балтики обычно свежее, но ветер заметнее."
     return ""
+
+
+def _clean_baltic_line(line: str) -> str:
+    s = _normalize_weather_line(line)
+    water = ""
+    wave = ""
+    water_match = re.search(r"(?:вода|море)[^\d-]{0,20}(-?\d+(?:[\.,]\d+)?)\s*°?\s*C?", s, flags=re.I)
+    if not water_match:
+        water_match = re.search(r"🌊\s*(-?\d+(?:[\.,]\d+)?)(?:\s*(?:°?\s*C|•|$))", s, flags=re.I)
+    if water_match:
+        water = water_match.group(1).replace(",", ".")
+    wave_match = re.search(r"(?:волна|wave)[^\d]{0,20}(\d+(?:[\.,]\d+)?)\s*м", s, flags=re.I)
+    if not wave_match:
+        wave_match = re.search(r"•\s*(\d+(?:[\.,]\d+)?)\s*м\b", s)
+    if wave_match:
+        wave = wave_match.group(1).replace(",", ".")
+    if water or wave:
+        parts = []
+        if water:
+            parts.append(f"вода {water}°C")
+        if wave:
+            parts.append(f"волна {wave} м")
+        return "🌊 Балтика: " + "; ".join(parts) + "; у открытой воды ветер заметнее."
+    return s
 
 
 def _morning_sea_lines(lines: list[str]) -> list[str]:
@@ -654,9 +680,9 @@ def _morning_sea_lines(lines: list[str]) -> list[str]:
     for line in lines:
         s = line.strip()
         if s.startswith("🌊") and "Морские города" not in s:
-            out.append(_normalize_weather_line(s))
+            out.append(_clean_baltic_line(s))
         elif s.startswith(("Балтика:", "Море:")):
-            out.append("🌊 " + _normalize_weather_line(s))
+            out.append(_clean_baltic_line("🌊 " + s))
     if out:
         return out[:1]
     return ["🌊 Балтика: у воды свежее, но ветер заметнее; прогулки — по защищённым променадам."]
@@ -723,14 +749,14 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(air[0])
     if safecast:
         out.append(_clean_safecast_line(safecast[0]))
+    if space:
+        out.append(_clean_kp_line(space[0]))
     for line in sea:
         if line not in out:
             out.append(line)
     for line in quakes:
         if line not in out:
             out.append(line)
-    if space:
-        out.append(_clean_kp_line(space[0]))
     if fx:
         out.append(_clean_fx_line(fx[0]))
     if astro:
