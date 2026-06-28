@@ -52,17 +52,34 @@ EVENING_FIXTURE = """<b>🌅 Калининградская область: по
 #Калининград #погода #здоровье #море
 """
 
+HOT_MORNING_FIXTURE = """<b>🌅 Калининградская область: погода на сегодня (28.06.2026)</b>
+Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🔷 1015 гПа ↓.
+💱 Курсы (утро): USD 94.12 ₽ ↑0.35 • EUR 101.43 ₽ ↑0.27 • CNY 12.90 ₽ →0.00
+☀️ УФ: 7 — высокий
+🏭 Воздух: 🟡 умеренный (AQI 58) • PM₂.₅ 12 / PM₁₀ 24 • 🌿 пыльца: умеренная
+🌊 Балтика: вода 18 °C • волна 0.4 м.
+🌇 Закат сегодня: 21:34
+📻 <b>Астрособытия</b>
+🌙 🟡 Полнолуние, ♐ (96%)
+💚 В плюсе: планы, обучение.
+⚫ VoC: 00:00–00:00.
+🧪 Safecast: 0.22 мкЗв/ч — выше обычного по датчику.
+🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику, не разовое значение.
+✅ План: прогулка днём, вечером взять лёгкий слой.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
 
 def _astro_lines(text: str) -> list[str]:
     lines = text.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.startswith("🌅 <b>Солнце и ритм"))
-    return [line for line in lines[start:start + 5] if line.strip()]
+    start = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна и ритм"))
+    return [line for line in lines[start:start + 6] if line.strip()]
 
 
 def kld_morning_astro_block_has_sun_and_rhythm_title() -> None:
     text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
-    assert "🌅 <b>Солнце и ритм дня</b>" in text
-    assert "🌙 🌒 Растущий серп, ♍ Дева (30%)" in text
+    assert "🌇 <b>Солнце, Луна и ритм дня</b>" in text
+    assert "🌒 Растущий серп в ♍ Дева — 30% освещённости." in text
     assert "✅ Астроритм:" not in text
     assert "💚 В плюсе:" in text
 
@@ -74,7 +91,7 @@ def kld_morning_astro_block_has_sunset_if_available() -> None:
 
 def kld_evening_astro_block_has_tomorrow_wording() -> None:
     text = build_evening_format_v2("Калининградская область", EVENING_FIXTURE)
-    assert "🌅 <b>Солнце и ритм завтрашнего дня</b>" in text
+    assert "🌇 <b>Солнце, Луна и ритм завтрашнего дня</b>" in text
     assert "🌇 Закат завтра: 21:33" in text
 
 
@@ -83,7 +100,7 @@ def kld_astro_block_stays_compact() -> None:
         build_morning_format_v2("Калининградская область", LEGACY_FIXTURE),
         build_evening_format_v2("Калининградская область", EVENING_FIXTURE),
     ):
-        assert len(_astro_lines(text)) <= 5
+        assert len(_astro_lines(text)) <= 6
 
 
 def kld_daily_keeps_weather_blocks() -> None:
@@ -103,7 +120,7 @@ def kld_morning_has_sunset() -> None:
 
 def kld_morning_keeps_safecast() -> None:
     text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
-    assert "🧪 Фон по частному датчику: спокойно." in text
+    assert "🧪 Частный датчик: спокойно." in text
     assert "мкЗв" not in text
 
 
@@ -111,9 +128,7 @@ def kld_morning_keeps_fx_uv_air_plan() -> None:
     text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
     for marker in ("💱 Курсы", "☀️ УФ", "🏭 Воздух", "✅ План:"):
         assert marker in text
-    assert "USD 90.00 ₽ ↑1.43" in text
-    assert "EUR 98.00 ₽ ↓0.22" in text
-    assert "CNY 12.00 ₽ →0.00" in text
+    assert "💱 Курсы: USD 90.00 ₽ ↑1.43 · EUR 98.00 ₽ ↓0.22 · CNY 12.00 ₽ →0.00" in text
 
 
 def kld_morning_fx_cleaner_is_idempotent() -> None:
@@ -122,7 +137,7 @@ def kld_morning_fx_cleaner_is_idempotent() -> None:
         "💱 Курсы (утро): USD 90.00 ₽ ↑1.43 • EUR 98.00 ₽ ↓0.22 • CNY 12.00 ₽ →0.00",
     )
     text = build_morning_format_v2("Калининградская область", fixture)
-    assert "USD 90.00 ₽ ↑1.43 • EUR 98.00 ₽ ↓0.22 • CNY 12.00 ₽ →0.00" in text
+    assert "USD 90.00 ₽ ↑1.43 · EUR 98.00 ₽ ↓0.22 · CNY 12.00 ₽ →0.00" in text
     assert "→0.00 ↓0.22" not in text
     assert "→0.00 ↑1.43" not in text
 
@@ -133,7 +148,7 @@ def kld_morning_safecast_above_observation_is_soft() -> None:
         "🧪 Safecast: 0.22 мкЗв/ч — выше обычного по датчику.",
     )
     text = build_morning_format_v2("Калининградская область", fixture)
-    wanted = "🧪 Фон по частному датчику: выше обычной точки наблюдения; смотрим динамику, не разовое значение."
+    wanted = "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику, не разовое значение."
     assert wanted in text
     assert text.count("🧪") == 1
 
@@ -146,7 +161,7 @@ def kld_morning_has_only_one_plan() -> None:
 def kld_morning_astro_block_has_moon_and_plus() -> None:
     text = build_morning_format_v2("Калининградская область", LEGACY_FIXTURE)
     astro = "\n".join(_astro_lines(text))
-    assert "🌙 🌒 Растущий серп, ♍ Дева (30%)" in astro
+    assert "🌒 Растущий серп в ♍ Дева — 30% освещённости." in astro
     assert "💚 В плюсе:" in astro
     assert "🌙 В этот период" in astro
 
@@ -163,6 +178,34 @@ def kld_morning_cosmoweather_is_compact() -> None:
     assert "n 0.5 см" not in text
 
 
+def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
+    text = build_morning_format_v2("Калининградская область", HOT_MORNING_FIXTURE)
+    lines = text.splitlines()
+    assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
+    assert lines[1].startswith("✨ VayboMeter:")
+    assert "🌡 Ощущается: жарко; на солнце высокая нагрузка." in lines[:5]
+    assert "🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень." in text
+    assert "⚠️ Главный нюанс: жара и УФ важнее формальной облачности." in text
+    assert "давл. 1015 гПа ↓" in text
+    assert "🔷 1015 гПа" not in text
+    assert "💧 1015 гПа" not in text
+    assert text.count("🧪") == 1
+    assert "Safecast:" not in text
+    assert "Радиационный фон: высокий" not in text
+    assert "VoC: 00:00–00:00" not in text
+    assert "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы." in text
+    assert "лёгкий слой" not in text
+
+    uv_i = lines.index("☀️ УФ 7 — высокий")
+    air_i = next(i for i, line in enumerate(lines) if line.startswith("🏭 Воздух:"))
+    sensor_i = next(i for i, line in enumerate(lines) if line.startswith("🧪"))
+    fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
+    weather_i = next(i for i, line in enumerate(lines) if line.startswith("🏙 Калининград"))
+    assert weather_i < uv_i < air_i < sensor_i < fx_i
+    assert fx_i > weather_i + 1
+    assert "🌿 пыльца: умеренная" in text
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
@@ -175,6 +218,7 @@ def main() -> None:
         kld_morning_astro_block_has_moon_and_plus,
         kld_morning_preserves_quake_line,
         kld_morning_cosmoweather_is_compact,
+        kld_morning_hot_day_uses_cyprus_style_skeleton,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,
