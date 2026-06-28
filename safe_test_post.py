@@ -172,7 +172,10 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     has_rain = bool(c.get("rain"))
     windy = (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)
     uv = c.get("uv")
+    tmax = c.get("tmax")
 
+    if (isinstance(tmax, (int, float)) and tmax >= 35) or (isinstance(uv, (int, float)) and uv >= 6):
+        return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
     if has_rain and windy:
         return "✅ План: дождевик/капюшон надёжнее зонта; закрытая обувь; выходы короткими блоками между дождём; у воды осторожнее с порывами."
     if has_rain:
@@ -460,19 +463,19 @@ def _insert_main_nuance(v2_text: str) -> str:
 def _sensor_line_from_legacy(legacy_text: str) -> str:
     marker = "Safe" + "cast"
     for line in str(legacy_text or "").splitlines():
-        if marker.lower() not in line.lower():
+        low = line.lower()
+        if marker.lower() not in low and "радиационный фон" not in low and "частный датчик" not in low:
             continue
-        s = line.strip()
-        s = re.sub(r"^\s*🧪\s*", "", s)
-        s = re.sub(r"\s*—\s*(?:🔴\s*)?высокий.*$", " — выше обычного по датчику; сверяем с динамикой и официальным фоном.", s, flags=re.I)
-        if "—" not in s:
-            s += " — сверяем с динамикой и официальным фоном."
-        return "🧪 " + s
+        if re.search(r"critical|alert|опасн|🔴", low):
+            return "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения."
+        return "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику, не разовое значение."
     return ""
 
 
 def _inject_sensor_line(v2_text: str, legacy_text: str) -> str:
     if not _env_any("FORMAT_V2_SENSOR_LINE", "FORMAT_V2_TEST_SENSOR", "FORMAT_V2_TEST_SAFECAST"):
+        return v2_text
+    if any(line.strip().startswith("🧪") for line in str(v2_text or "").splitlines()):
         return v2_text
     line = _sensor_line_from_legacy(legacy_text)
     if not line:
@@ -598,7 +601,7 @@ def _replace_plan(v2_text: str, new_plan: str) -> str:
     out: list[str] = []
     replaced = False
     for line in lines:
-        if not replaced and line.strip().startswith("✅"):
+        if not replaced and line.strip().startswith(("✅ План:", "✅ Сегодня:")):
             out.append(new_plan)
             replaced = True
         else:
@@ -611,6 +614,8 @@ def _replace_plan(v2_text: str, new_plan: str) -> str:
 def _inject_morning_feels(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_FEELS_LIKE")):
         return v2_text
+    if "🌡 Ощущается:" in v2_text:
+        return v2_text
     feels = _kld_feels_line(v2_text)
     if not feels:
         return v2_text
@@ -619,6 +624,8 @@ def _inject_morning_feels(v2_text: str, mode: str) -> str:
 
 def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_BEST_WINDOW")):
+        return v2_text
+    if "Лучшее окно:" in v2_text:
         return v2_text
     window = _kld_best_window_line(v2_text)
     if not window:
@@ -630,6 +637,8 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
 
 def _inject_morning_score(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_VAYBOMETER_SCORE")):
+        return v2_text
+    if "VayboMeter" in v2_text:
         return v2_text
     score = _kld_score_line(v2_text)
     if "🕒 Лучшее окно:" in v2_text:

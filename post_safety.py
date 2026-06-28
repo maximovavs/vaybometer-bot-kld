@@ -220,6 +220,8 @@ def _polish_sup_wording(text: str) -> str:
 
 
 def _move_safecast_before_hashtags(text: str) -> str:
+    if _env_on("FORMAT_V2") and "Калининград сегодня" in str(text or ""):
+        return text
     lines = str(text or "").splitlines()
     safecast = [line for line in lines if line.strip().startswith("🧪")]
     if not safecast:

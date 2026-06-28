@@ -3,7 +3,9 @@
 """Regression checks for KLD morning FORMAT_V2 utility blocks."""
 from __future__ import annotations
 
+import os
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +13,23 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
+
+pendulum_stub = types.ModuleType("pendulum")
+pendulum_stub.DateTime = object
+sys.modules.setdefault("pendulum", pendulum_stub)
+
+telegram_stub = types.ModuleType("telegram")
+telegram_stub.Bot = object
+telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
+sys.modules.setdefault("telegram", telegram_stub)
+
+from post_safety import sanitize_post_text  # noqa: E402
+from safe_test_post import (  # noqa: E402
+    _inject_morning_best_window,
+    _inject_morning_score,
+    _inject_morning_smart_plan,
+    _inject_sensor_line,
+)
 
 
 LEGACY_FIXTURE = """<b>🌅 Калининградская область: погода на сегодня (19.06.2026)</b>
@@ -213,6 +232,51 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     assert "🌿 пыльца: умеренная" in text
 
 
+def kld_morning_postprocess_does_not_reintroduce_duplicates() -> None:
+    env_names = (
+        "FORMAT_V2",
+        "MORNING_BEST_WINDOW",
+        "MORNING_VAYBOMETER_SCORE",
+        "MORNING_SMART_PLAN",
+        "FORMAT_V2_SENSOR_LINE",
+    )
+    old_env = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        text = build_morning_format_v2("Калининградская область", HOT_MORNING_FIXTURE)
+        text = _inject_morning_best_window(text, "morning")
+        text = _inject_morning_score(text, "morning")
+        text = _inject_sensor_line(text, HOT_MORNING_FIXTURE)
+        text = _inject_morning_smart_plan(text, "morning")
+        text = sanitize_post_text(text).text
+    finally:
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    lines = text.splitlines()
+    assert text.count("VayboMeter") == 1
+    assert text.count("Лучшее окно") == 1
+    assert text.count("🧪") == 1
+    assert "Safecast:" not in text
+    assert "Радиационный фон: высокий" not in text
+    assert "лёгкий слой" not in text
+    assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
+
+    sensor_i = next(i for i, line in enumerate(lines) if line.startswith("🧪"))
+    fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
+    astro_i = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна"))
+    plan_i = next(i for i, line in enumerate(lines) if line.startswith("✅ План:"))
+    assert sensor_i < fx_i
+    assert astro_i < plan_i
+    plan = lines[plan_i]
+    for word in ("вода", "тень", "SPF"):
+        assert word in plan
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
@@ -226,6 +290,7 @@ def main() -> None:
         kld_morning_preserves_quake_line,
         kld_morning_cosmoweather_is_compact,
         kld_morning_hot_day_uses_cyprus_style_skeleton,
+        kld_morning_postprocess_does_not_reintroduce_duplicates,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,
