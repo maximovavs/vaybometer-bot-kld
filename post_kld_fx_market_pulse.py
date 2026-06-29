@@ -148,8 +148,8 @@ def _fetch_gold() -> list[str]:
             if price is not None:
                 break
     if price is not None:
-        return [f"Gold/oz: {_fmt_usd_compact(price)}"]
-    return ["Gold/oz: н/д"]
+        return [f"Gold/oz {_fmt_usd_compact(price)}"]
+    return ["Gold/oz н/д"]
 
 
 def build_market_pulse_block() -> str:

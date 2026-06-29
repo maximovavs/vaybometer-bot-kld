@@ -78,15 +78,36 @@ def _fmt_delta(x: float | int | None) -> str:
 
 
 def _ruble_summary(deltas: list[float]) -> str:
-    if not deltas:
-        return "🧭 Рынок смешанный: валюты движутся разнонаправленно."
-    positives = sum(1 for x in deltas if x > 0)
-    negatives = sum(1 for x in deltas if x < 0)
-    if positives > len(deltas) / 2:
-        return "🧭 Рубль слабее: основные валюты подросли к ₽."
-    if negatives > len(deltas) / 2:
-        return "🧭 Рубль крепче: основные валюты снизились к ₽."
-    return "🧭 Рынок смешанный: валюты движутся разнонаправленно."
+    if deltas and all(x > 0 for x in deltas):
+        return "🧭 ₽ слабее к USD/EUR/CNY."
+    if deltas and all(x < 0 for x in deltas):
+        return "🧭 ₽ крепче к USD/EUR/CNY."
+    return "🧭 Валюты к ₽ движутся смешанно."
+
+
+def _fx_title_date_ddmm(date_local: pendulum.DateTime | None, rates: Dict[str, Any]) -> str:
+    raw_date = (
+        rates.get("effective_date")
+        or rates.get("as_of")
+        or rates.get("date")
+        or rates.get("cbr_date")
+    )
+    if raw_date is not None:
+        raw_s = str(raw_date).strip()
+        if len(raw_s) >= 10 and raw_s[4] == "-" and raw_s[7] == "-":
+            return f"{raw_s[8:10]}.{raw_s[5:7]}"
+        normalized = _normalize_cbr_date(raw_date)
+        if normalized:
+            try:
+                return pendulum.parse(normalized).format("DD.MM")
+            except Exception:
+                pass
+    if date_local is not None and hasattr(date_local, "format"):
+        try:
+            return date_local.format("DD.MM")
+        except Exception:
+            pass
+    return ""
 
 def _load_fx_rates(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> Dict[str, Any]:
     try:
@@ -118,7 +139,8 @@ def _build_fx_message(date_local: pendulum.DateTime, tz: pendulum.Timezone) -> T
         return f"{name} {val_s} ₽ {_fmt_delta(dlt)}"
 
     line = " · ".join([token("USD", "USD"), token("EUR", "EUR"), token("CNY", "CNY")])
-    title = "💱 <b>Курсы ЦБ РФ</b>"
+    title_date = _fx_title_date_ddmm(date_local, rates)
+    title = f"💱 <b>Курсы ЦБ РФ на {title_date}</b>" if title_date else "💱 <b>Курсы ЦБ РФ</b>"
     return f"{title}\n{line}\n{_ruble_summary(shown_deltas)}", rates
 
 def _normalize_cbr_date(raw) -> Optional[str]:
