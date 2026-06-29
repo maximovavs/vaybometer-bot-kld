@@ -300,7 +300,7 @@ def _dashboard_palette(ctx: KldImageContext) -> str:
 
 _NO_TEXT_GUARD = (
     "No text, no captions, no labels, no UI, no logos, no watermarks, "
-    "no watermark, no logo, no signature, no text, no letters, no brand marks, "
+    "no watermark, no logo, no signature, no text, no letters, no artist mark, no brand marks, "
     "absolutely no letters or numbers anywhere."
 )
 
@@ -484,6 +484,9 @@ def _sanitize_format_v2_image_prompt(prompt: str, ctx: Any) -> str:
             if remove_sup:
                 blocked += sup_tokens
             out.append(_filter_prompt_list(line, blocked) if blocked else line)
+            continue
+        if stripped.startswith("Text restrictions:") and "no artist mark" not in stripped.lower():
+            out.append(line.rstrip(".") + ", no artist mark.")
             continue
         out.append(line)
     return "\n".join(out)

@@ -3,6 +3,7 @@
 """Regression checks for compact KLD FORMAT_V2 evening posts."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from format_v2 import build_evening_format_v2  # noqa: E402
+from safe_test_post import _apply_format_v2_safe_postprocess  # noqa: E402
 
 
 NORMAL_EVENING = """<b>🌅 Калининградская область: погода на завтра (20.06.2026)</b>
@@ -171,6 +173,28 @@ def kld_evening_heat_gust_polish() -> None:
     assert "давл. 1014 гПа" in text
 
 
+def kld_evening_safe_postprocess_keeps_hashtags_final_and_dedupes_nuance() -> None:
+    text = build_evening_format_v2("Калининградская область", NORMAL_EVENING)
+    text += "\n⚠️ Главный нюанс: у воды ветер ощущается сильнее, чем в городе."
+    old = os.environ.get("FORMAT_V2_MAIN_NUANCE")
+    try:
+        os.environ["FORMAT_V2_MAIN_NUANCE"] = "1"
+        polished = _apply_format_v2_safe_postprocess(text, "", "", "evening")
+    finally:
+        if old is None:
+            os.environ.pop("FORMAT_V2_MAIN_NUANCE", None)
+        else:
+            os.environ["FORMAT_V2_MAIN_NUANCE"] = old
+
+    lines = [line.strip() for line in polished.splitlines() if line.strip()]
+    tag_index = lines.index("#Калининград #погода #здоровье #море")
+    assert tag_index == len(lines) - 1
+    assert not lines[tag_index + 1:]
+    nuance_lines = [line for line in lines if line.startswith(("⚠️ Нюанс:", "⚠️ Главный нюанс:"))]
+    assert len(nuance_lines) <= 1
+    assert not any(line.startswith("⚠️ Главный нюанс:") for line in lines[tag_index + 1:])
+
+
 def main() -> None:
     checks = (
         kld_evening_normal_no_generic_confidence,
@@ -184,6 +208,7 @@ def main() -> None:
         kld_evening_sup_guidance_is_common_block,
         kld_evening_title_is_compact,
         kld_evening_heat_gust_polish,
+        kld_evening_safe_postprocess_keeps_hashtags_final_and_dedupes_nuance,
     )
     for check in checks:
         check()

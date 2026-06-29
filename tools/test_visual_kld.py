@@ -324,7 +324,7 @@ def run_image_prompt_bridge_case() -> None:
         "layered cloud cover as the main sky feature",
         "unoccupied shoreline",
         "open Baltic water with only natural wave texture",
-        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks, no watermark, no logo, no signature, no letters, no brand marks.",
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks, no watermark, no logo, no signature, no letters, no brand marks, no artist mark.",
     ]:
         _assert_contains(name, prompt, needle)
     for needle in [
@@ -341,8 +341,18 @@ def run_image_prompt_bridge_case() -> None:
         "mast",
         "paddleboard",
         "SUP",
+        "artist signature",
     ]:
         _assert_not_contains(name, prompt, needle)
+    for needle in [
+        "no watermark",
+        "no signature",
+        "no text",
+        "no letters",
+        "no artist mark",
+        "no logo",
+    ]:
+        _assert_contains(name, prompt, needle)
 
     print(f"PASS {name}")
 
@@ -602,7 +612,7 @@ def run_controlled_variety_cases() -> None:
     _assert_contains(
         name,
         prompt_a1,
-        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks, no watermark, no logo, no signature, no letters, no brand marks.",
+        "Text restrictions: no text, no captions, no labels, no logos, no numbers, no UI, no watermarks, no watermark, no logo, no signature, no letters, no brand marks, no artist mark.",
     )
 
     morning_message_a = "19.06.2026\n" + message

@@ -462,9 +462,56 @@ def _kld_main_nuance(v2_text: str) -> str:
 
 
 def _insert_main_nuance(v2_text: str) -> str:
-    if not _env_on("FORMAT_V2_MAIN_NUANCE") or "⚠️ Главный нюанс:" in v2_text:
+    if (
+        not _env_on("FORMAT_V2_MAIN_NUANCE")
+        or "⚠️ Главный нюанс:" in v2_text
+        or "⚠️ Нюанс:" in v2_text
+    ):
         return v2_text
     return _inject_after_anchor(v2_text, _kld_main_nuance(v2_text), ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
+
+
+def _is_kld_nuance_line(line: str) -> bool:
+    return line.strip().startswith(("⚠️ Нюанс:", "⚠️ Главный нюанс:"))
+
+
+def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
+    if mode.startswith("morn"):
+        return v2_text
+
+    lines = str(v2_text or "").splitlines()
+    before_tags: list[str] = []
+    hashtag_line = ""
+    seen_hashtags = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if not hashtag_line:
+                hashtag_line = stripped
+            seen_hashtags = True
+            continue
+        if seen_hashtags:
+            continue
+        before_tags.append(line)
+
+    has_compact_nuance = any(line.strip().startswith("⚠️ Нюанс:") for line in before_tags)
+    out: list[str] = []
+    nuance_seen = False
+    for line in before_tags:
+        stripped = line.strip()
+        if has_compact_nuance and stripped.startswith("⚠️ Главный нюанс:"):
+            continue
+        if _is_kld_nuance_line(stripped):
+            if nuance_seen:
+                continue
+            nuance_seen = True
+        out.append(line)
+
+    while out and not out[-1].strip():
+        out.pop()
+    if hashtag_line:
+        out.append(hashtag_line)
+    return "\n".join(out)
 
 
 def _city_temperature_pairs(text: str) -> list[tuple[str, float, float]]:
@@ -911,6 +958,8 @@ def _apply_format_v2_safe_postprocess(v2_raw: str, raw_msg: str, legacy_text: st
     out = _finalize_kld_morning_safe_text(out, raw_msg, legacy_text, mode)
     if mode.startswith("morn"):
         out = _soften_private_sensor_wording(out)
+    else:
+        out = _finalize_kld_evening_safe_text(out, mode)
     return out
 
 
