@@ -31,6 +31,7 @@ from safe_test_post import (  # noqa: E402
     _inject_morning_score,
     _inject_morning_smart_plan,
     _inject_sensor_line,
+    _soften_private_sensor_wording,
 )
 
 
@@ -391,6 +392,30 @@ def kld_morning_real_safe_pipeline_uses_raw_context() -> None:
     assert sensor_i < kp_i < baltic_i < fx_i
 
 
+def kld_morning_final_sensor_wording_is_softened() -> None:
+    text = "\n".join(
+        [
+            "<b>🌅 Калининград сегодня (28.06.2026)</b>",
+            "🏙 Калининград — 22/14 °C • облачно.",
+            "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения.",
+            "✅ План: короткая прогулка.",
+            "#Калининград #погода #здоровье #сегодня #море",
+        ]
+    )
+    softened = _soften_private_sensor_wording(text)
+    assert "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику." in softened
+    assert "Радиационный фон: высокий" not in softened
+
+
+def kld_workflow_morning_schedule_is_earlier() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
+    assert "cron: '30 0 * * *'" in workflow
+    assert "github.event.schedule == '30 0 * * *'" in workflow
+    assert "cron: '0 14 * * *'" in workflow
+    assert "cron: '0 8 * * *'" in workflow
+    assert "github.event.schedule == '0 2 * * *'" not in workflow
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
@@ -408,6 +433,8 @@ def main() -> None:
         kld_morning_region_context_fallback_when_only_kaliningrad,
         kld_morning_postprocess_does_not_reintroduce_duplicates,
         kld_morning_real_safe_pipeline_uses_raw_context,
+        kld_morning_final_sensor_wording_is_softened,
+        kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,

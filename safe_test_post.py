@@ -629,6 +629,22 @@ def _sensor_line_from_legacy(legacy_text: str) -> str:
     return ""
 
 
+def _soften_private_sensor_wording(v2_text: str) -> str:
+    soft = "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику."
+    text = str(v2_text or "")
+    text = text.replace(
+        "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения.",
+        soft,
+    )
+    text = re.sub(
+        r"🧪\s*Радиационный фон:\s*высокий по частному датчику[^\n]*",
+        soft,
+        text,
+        flags=re.I,
+    )
+    return text
+
+
 def _replace_sensor_lines(v2_text: str, line_to_add: str) -> str:
     if not line_to_add:
         return v2_text
@@ -893,6 +909,8 @@ def _apply_format_v2_safe_postprocess(v2_raw: str, raw_msg: str, legacy_text: st
     out = _inject_morning_smart_plan(out, mode)
     out = _apply_compact(out)
     out = _finalize_kld_morning_safe_text(out, raw_msg, legacy_text, mode)
+    if mode.startswith("morn"):
+        out = _soften_private_sensor_wording(out)
     return out
 
 
