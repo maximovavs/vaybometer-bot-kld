@@ -27,6 +27,9 @@ from telegram import Bot, constants
 TZ = pendulum.timezone("Asia/Nicosia")
 CAL_FILE = "lunar_calendar.json"
 MIN_VOC_MINUTES = 15
+VOC_IMPORTANT_MIN_MINUTES = 180
+MAX_VOC_VISIBLE = 8
+MAX_RHYTHM_LINES = 5
 MOON_EMOJI = "🌙"
 
 TOKEN = os.getenv("TELEGRAM_TOKEN_KLG", "")
@@ -181,89 +184,224 @@ def load_calendar(src: Any = None
 
 # ── рендер блоков ──────────────────────────────────────────────────────────
 
-def build_phase_blocks(data: Dict[str, Any]) -> str:
-    """
-    Группирует подряд идущие дни одной фазы и формирует блок HTML-строк:
-    <b>🌒 1–3</b> <i>(Лев, Дева)</i>\n<i>Описание периода…</i>\n
-    """
-    zodiac_order = [
-        "Овен","Телец","Близнецы","Рак","Лев","Дева",
-        "Весы","Скорпион","Стрелец","Козерог","Водолей","Рыбы"
-    ]
+_ZODIAC_ORDER = [
+    "Овен", "Телец", "Близнецы", "Рак", "Лев", "Дева",
+    "Весы", "Скорпион", "Стрелец", "Козерог", "Водолей", "Рыбы",
+]
 
+_PHASE_ACTIONS = {
+    "waxing": "рост, планы, первые шаги",
+    "full": "ясность, пик эмоций, завершение",
+    "waning": "разбор, очищение, закрытие хвостов",
+    "new": "пауза, восстановление, мягкое планирование",
+}
+
+_PHASE_TITLES = {
+    "waxing": ("🌒", "Растущая Луна"),
+    "full": ("🌕", "Полнолуние"),
+    "waning": ("🌘", "Убывающая Луна"),
+    "new": ("🌑", "Новолуние"),
+}
+
+
+def _phase_kind(rec: Dict[str, Any]) -> str:
+    text = f"{rec.get('phase_name', '')} {rec.get('phase', '')}".lower()
+    if "полн" in text or "🌕" in text:
+        return "full"
+    if "нов" in text or "🌑" in text:
+        return "new"
+    if any(x in text for x in ("раст", "серп", "первая четверть", "🌒", "🌓", "🌔")):
+        return "waxing"
+    if any(x in text for x in ("убыв", "последняя четверть", "🌖", "🌗", "🌘")):
+        return "waning"
+    return "other"
+
+
+def _phase_label(kind: str, rec: Dict[str, Any]) -> Tuple[str, str]:
+    if kind in _PHASE_TITLES:
+        return _PHASE_TITLES[kind]
+    phase = str(rec.get("phase") or "").strip()
+    parts = phase.split(maxsplit=1)
+    emoji = parts[0] if parts else "🌙"
+    name = rec.get("phase_name") or (parts[1] if len(parts) > 1 else "Лунный период")
+    return emoji, str(name).replace(",", "").strip()
+
+
+def _date_span(start_key: str, end_key: str) -> str:
+    start = pendulum.parse(start_key)
+    end = pendulum.parse(end_key)
+    if start.date() == end.date():
+        return start.format("DD.MM")
+    if start.month == end.month:
+        return f"{start.format('DD')}–{end.format('DD.MM')}"
+    return f"{start.format('DD.MM')}–{end.format('DD.MM')}"
+
+
+def _sort_signs(signs: set[str]) -> List[str]:
+    clean = [s for s in signs if s]
+    return sorted(clean, key=lambda x: _ZODIAC_ORDER.index(x) if x in _ZODIAC_ORDER else 99)
+
+
+def _phase_periods(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     days = sorted(data.keys())
-    lines: List[str] = []
+    periods: List[Dict[str, Any]] = []
     i = 0
     while i < len(days):
         start = days[i]
         rec = data[start]
-        name = rec.get("phase_name", "")
-        # "phase" хранит строку вида "🌒 Первая четверть , Дева"
-        emoji = rec.get("phase", "").split()[0]
+        kind = _phase_kind(rec)
         signs = {rec.get("sign", "")}
-
-        # ищем, пока фаза остаётся той же
         j = i
-        while j + 1 < len(days) and data[days[j + 1]].get("phase_name") == name:
+        while j + 1 < len(days) and _phase_kind(data[days[j + 1]]) == kind:
             j += 1
             signs.add(data[days[j]].get("sign", ""))
-
-        # форматируем диапазон дат
-        d1 = pendulum.parse(start).format("D")
-        d2 = pendulum.parse(days[j]).format("D MMM", locale="ru")
-        span = f"{d1}–{d2}" if i != j else d2
-
-        # список знаков в нужном порядке
-        sorted_signs = sorted(signs, key=lambda x: zodiac_order.index(x) if x in zodiac_order else 0)
-        signs_str = ", ".join(sorted_signs)
-
-        # длинное описание (long_desc) может содержать HTML
-        desc = html.escape(rec.get("long_desc", "").strip())
-
-        lines.append(f"<b>{emoji} {span}</b> <i>({signs_str})</i>\n<i>{desc}</i>\n")
+        periods.append({"kind": kind, "start": start, "end": days[j], "rec": rec, "signs": _sort_signs(signs)})
         i = j + 1
+    return periods
 
+
+def build_main_rhythm_block(data: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    for period in _phase_periods(data)[:MAX_RHYTHM_LINES]:
+        kind = period["kind"]
+        emoji, title = _phase_label(kind, period["rec"])
+        action = _PHASE_ACTIONS.get(kind, html.escape(str(period["rec"].get("long_desc") or "спокойный лунный ритм"))[:80])
+        signs = ", ".join(period["signs"])
+        signs_part = f" ({html.escape(signs)})" if signs else ""
+        lines.append(f"{emoji} {_date_span(period['start'], period['end'])} — {title.lower()}: {action}.{signs_part}")
+    return "\n".join(lines)
+
+
+def build_phase_blocks(data: Dict[str, Any]) -> str:
+    """Backward-compatible wrapper: now returns the compact monthly rhythm."""
+    return build_main_rhythm_block(data)
+
+
+def build_key_points_block(data: Dict[str, Any]) -> str:
+    periods = _phase_periods(data)
+
+    def first_span(kind: str) -> str:
+        for period in periods:
+            if period["kind"] == kind:
+                return _date_span(period["start"], period["end"])
+        return ""
+
+    lines: List[str] = []
+    full = first_span("full")
+    new = first_span("new")
+    waxing = first_span("waxing")
+    waning = first_span("waning")
+    if full:
+        lines.append(f"🌕 Полнолуние: {full} — ясность, эмоции сильнее, хорошо завершать.")
+    if new:
+        lines.append(f"🌑 Новолуние: {new} — пауза, восстановление, мягкое планирование.")
+    if waxing:
+        lines.append(f"🌓 Рост Луны: {waxing} — лучше для запусков, поездок и покупок.")
+    if waning:
+        lines.append(f"🌘 Убывание Луны: {waning} — разбор, очищение, закрытие хвостов.")
+    return "\n".join(lines)
+
+
+def _date_values(values: List[Any]) -> List[int]:
+    out: List[int] = []
+    for value in values or []:
+        try:
+            day = int(value)
+        except Exception:
+            continue
+        if 1 <= day <= 31 and day not in out:
+            out.append(day)
+    return sorted(out)
+
+
+def _fmt_days(days: List[int]) -> str:
+    return ", ".join(map(str, days))
+
+
+def _fav_dates(cats: Dict[str, Any], category: str, key: str = "favorable") -> List[int]:
+    return _date_values(((cats or {}).get(category) or {}).get(key, []))
+
+
+def _general_overlap(cats: Dict[str, Any]) -> Tuple[List[int], List[int], List[int]]:
+    favorable = _fav_dates(cats, "general", "favorable")
+    unfavorable = _fav_dates(cats, "general", "unfavorable")
+    overlap = sorted(set(favorable) & set(unfavorable))
+    plain_unfavorable = [day for day in unfavorable if day not in overlap]
+    return favorable, plain_unfavorable, overlap
+
+
+def build_best_days_block(rec_or_cats: Dict[str, Any]) -> str:
+    cats = rec_or_cats.get("favorable_days") if "favorable_days" in rec_or_cats else rec_or_cats
+    cats = cats or {}
+    labels = [
+        ("general", "Общие дела"),
+        ("haircut", "Стрижка"),
+        ("shopping", "Покупки"),
+        ("health", "Здоровье"),
+        ("travel", "Путешествия"),
+    ]
+    lines: List[str] = []
+    for key, label in labels:
+        days = _fav_dates(cats, key, "favorable")
+        if days:
+            lines.append(f"• {label}: {_fmt_days(days)}")
+    return "\n".join(lines) if lines else "• Нет отдельных сильных дат — лучше идти по самочувствию."
+
+
+def build_caution_block(cats: Dict[str, Any]) -> str:
+    _favorable, plain_unfavorable, overlap = _general_overlap(cats or {})
+    lines: List[str] = []
+    if plain_unfavorable:
+        lines.append(f"• Не для резких стартов: {_fmt_days(plain_unfavorable)}")
+    if overlap:
+        lines.append(f"• Дни с двойным фоном: {_fmt_days(overlap)} — лучше для завершения, анализа и мягких решений, не для резких стартов.")
+    if not lines:
+        lines.append("• Резкие старты лучше сверять с самочувствием и VoC-окнами.")
     return "\n".join(lines)
 
 
 def build_fav_blocks(rec_or_cats: Dict[str, Any]) -> str:
-    """
-    Формирует блок «благоприятных/неблагоприятных дней».
-    Функция принимает либо запись дня с ключом 'favorable_days', либо сам словарь категорий.
-    """
-    fav = rec_or_cats.get("favorable_days") if "favorable_days" in rec_or_cats else rec_or_cats
-    fav = fav or {}
-    general = fav.get("general", {})
+    """Backward-compatible wrapper for the redesigned best/caution blocks."""
+    cats = rec_or_cats.get("favorable_days") if "favorable_days" in rec_or_cats else rec_or_cats
+    return build_best_days_block(cats or {}) + "\n\n" + build_caution_block(cats or {})
 
-    def fmt_list(key: str) -> str:
-        lst = fav.get(key, {}).get("favorable", [])
-        return ", ".join(map(str, lst)) if lst else "—"
 
-    parts = [
-        f"✅ <b>Благоприятные:</b> {', '.join(map(str, general.get('favorable', [])) or ['—'])}",
-        f"❌ <b>Неблагоприятные:</b> {', '.join(map(str, general.get('unfavorable', [])) or ['—'])}",
-        f"✂️ <b>Стрижка:</b> {fmt_list('haircut')}",
-        f"✈️ <b>Путешествия:</b> {fmt_list('travel')}",
-        f"🛍️ <b>Покупки:</b> {fmt_list('shopping')}",
-        f"❤️ <b>Здоровье:</b> {fmt_list('health')}",
-    ]
-    return "\n".join(parts)
+def _overlaps_active_daytime(start: pendulum.DateTime, end: pendulum.DateTime) -> bool:
+    cursor = start.start_of("day")
+    last = end.start_of("day")
+    while cursor <= last:
+        active_start = cursor.replace(hour=8, minute=0, second=0, microsecond=0)
+        active_end = cursor.replace(hour=22, minute=0, second=0, microsecond=0)
+        if max(start, active_start) < min(end, active_end):
+            return True
+        cursor = cursor.add(days=1)
+    return False
+
+
+def _important_voc(start: pendulum.DateTime, end: pendulum.DateTime) -> bool:
+    duration = (end - start).in_minutes()
+    return duration > VOC_IMPORTANT_MIN_MINUTES or start.date() != end.date() or _overlaps_active_daytime(start, end)
 
 
 def build_voc_block(voc_list: List[Tuple[pendulum.DateTime, pendulum.DateTime]]) -> str:
     """
-    Рендерит месячный список VoC из уже нормализованных интервалов.
-    Применяет порог MIN_VOC_MINUTES и единый стиль форматирования.
+    Рендерит только важные VoC-окна для мобильного поста.
+    Базовый MIN_VOC_MINUTES сохраняется, дополнительно ограничиваем видимый список.
     """
-    items: List[str] = []
-    for s, e in voc_list:
-        if (e - s).in_minutes() < MIN_VOC_MINUTES:
-            continue
-        items.append(_format_voc_interval(s, e))
+    valid = [(s, e) for s, e in voc_list if (e - s).in_minutes() >= MIN_VOC_MINUTES]
+    important = [(s, e) for s, e in valid if _important_voc(s, e)]
+    visible = important[:MAX_VOC_VISIBLE]
+    hidden_count = max(0, len(valid) - len(visible))
 
-    if not items:
-        return ""
-    return "<b>⚫️ VoC (Void-of-Course):</b>\n" + "\n".join(items)
+    lines = ["⚫️ VoC — важные окна"]
+    if visible:
+        lines.extend(_format_voc_interval(s, e) for s, e in visible)
+    else:
+        lines.append("Значимых длинных VoC-окон мало; короткие используем как паузы.")
+    if hidden_count:
+        lines.append(f"Ещё {hidden_count} коротких VoC-окон — используем как паузы, не как запрет.")
+    lines.append("⚫️ VoC — время “без курса”: лучше завершать, отдыхать, не запускать важное с нуля.")
+    return "\n".join(lines)
 
 
 # ── сборка финального сообщения ────────────────────────────────────────────
@@ -272,32 +410,21 @@ def build_message(days_map: Dict[str, Any],
                   month_voc: List[Tuple[pendulum.DateTime, pendulum.DateTime]],
                   cats: Dict[str, Any]) -> str:
     """
-    Собирает полный HTML-текст для месячного поста:
-    1) Заголовок с месяцем и годом
-    2) Блок фаз
-    3) Блок благоприятных дней
-    4) Блок VoC (если есть)
-    5) Пояснение про VoC
+    Собирает компактный HTML-safe текст для месячного поста.
     """
     first_key = next(iter(days_map.keys()))
     first_day = pendulum.parse(first_key)
-    header = f"{MOON_EMOJI} <b>Лунный календарь {first_day.format('MMMM YYYY', locale='ru').upper()}</b>\n"
+    header = f"{MOON_EMOJI} Лунный календарь {first_day.format('MMMM YYYY', locale='ru').upper()}"
 
-    phases_block = build_phase_blocks(days_map)
-    fav_block = build_fav_blocks(cats)
-    voc_block = build_voc_block(month_voc)
-
-    footer = (
-        "\n<i>⚫️ Void-of-Course — период, когда Луна завершила все аспекты "
-        "в знаке и не вошла в следующий; энергия рассеяна, новые начинания "
-        "лучше отложить.</i>"
-    )
-
-    parts = [header, phases_block, fav_block]
-    if voc_block:
-        parts.append(voc_block)
-    parts.append(footer)
-    return "\n\n".join(parts)
+    parts = [
+        header,
+        "🔭 Главный ритм месяца\n" + build_main_rhythm_block(days_map),
+        "🌕 Ключевые точки\n" + build_key_points_block(days_map),
+        "✅ Лучшие дни месяца\n" + build_best_days_block(cats),
+        "⚠️ Осторожнее\n" + build_caution_block(cats),
+        build_voc_block(month_voc),
+    ]
+    return "\n\n".join(part for part in parts if part).strip()
 
 
 # ── main ──────────────────────────────────────────────────────────────────
