@@ -79,9 +79,9 @@ def _fmt_delta(x: float | int | None) -> str:
 
 def _ruble_summary(deltas: list[float]) -> str:
     if deltas and all(x > 0 for x in deltas):
-        return "🧭 ₽ слабее к USD/EUR/CNY."
+        return "🧭 Рубль слабее к USD, EUR и CNY."
     if deltas and all(x < 0 for x in deltas):
-        return "🧭 ₽ крепче к USD/EUR/CNY."
+        return "🧭 Рубль крепче к USD, EUR и CNY."
     return "🧭 Валюты к ₽ движутся смешанно."
 
 

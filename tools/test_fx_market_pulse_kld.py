@@ -43,7 +43,7 @@ def kld_fx_message_uses_arrows_and_summary() -> None:
     text, _rates = post_kld._build_fx_message(None, None)
     assert "💱 <b>Курсы ЦБ РФ на 27.06</b>" in text
     assert "USD 77.06 ₽ ↑1.43 · EUR 87.40 ₽ ↑1.63 · CNY 11.34 ₽ ↑0.29" in text
-    assert "🧭 ₽ слабее к USD/EUR/CNY." in text
+    assert "🧭 Рубль слабее к USD, EUR и CNY." in text
     assert "валюты подросли к ₽" not in text
     assert "(" not in text and ")" not in text
 
@@ -56,7 +56,7 @@ def kld_fx_summary_negative_is_stronger() -> None:
         "CNY": {"value": 11.34, "delta": -0.29},
     }
     text, _rates = post_kld._build_fx_message(None, None)
-    assert "🧭 ₽ крепче к USD/EUR/CNY." in text
+    assert "🧭 Рубль крепче к USD, EUR и CNY." in text
 
 
 def kld_fx_summary_mixed_is_mixed() -> None:
