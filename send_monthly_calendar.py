@@ -31,6 +31,7 @@ VOC_IMPORTANT_MIN_MINUTES = 180
 MAX_VOC_VISIBLE = 8
 MAX_RHYTHM_LINES = 5
 MOON_EMOJI = "🌙"
+MONTHLY_HASHTAGS = "#Калининград #лунный_календарь #астропогода #июль"
 
 TOKEN = os.getenv("TELEGRAM_TOKEN_KLG", "")
 CHAT_ID = os.getenv("CHANNEL_ID_KLG", "")
@@ -315,7 +316,20 @@ def _date_values(values: List[Any]) -> List[int]:
 
 
 def _fmt_days(days: List[int]) -> str:
-    return ", ".join(map(str, days))
+    values = sorted({int(day) for day in days if day is not None})
+    if not values:
+        return ""
+
+    ranges: List[str] = []
+    start = prev = values[0]
+    for day in values[1:]:
+        if day == prev + 1:
+            prev = day
+            continue
+        ranges.append(str(start) if start == prev else f"{start}–{prev}")
+        start = prev = day
+    ranges.append(str(start) if start == prev else f"{start}–{prev}")
+    return ", ".join(ranges)
 
 
 def _fav_dates(cats: Dict[str, Any], category: str, key: str = "favorable") -> List[int]:
@@ -418,11 +432,12 @@ def build_message(days_map: Dict[str, Any],
 
     parts = [
         header,
-        "🔭 Главный ритм месяца\n" + build_main_rhythm_block(days_map),
+        "🧭 Главный ритм месяца\n" + build_main_rhythm_block(days_map),
         "🌕 Ключевые точки\n" + build_key_points_block(days_map),
         "✅ Лучшие дни месяца\n" + build_best_days_block(cats),
         "⚠️ Осторожнее\n" + build_caution_block(cats),
         build_voc_block(month_voc),
+        MONTHLY_HASHTAGS,
     ]
     return "\n\n".join(part for part in parts if part).strip()
 

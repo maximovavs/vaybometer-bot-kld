@@ -56,9 +56,12 @@ def _fixture_days() -> OrderedDict[str, dict]:
 
 def _fixture_cats() -> dict:
     return {
-        "general": {"favorable": [17, 18, 19, 22], "unfavorable": [16, 17, 18, 19, 20]},
+        "general": {
+            "favorable": [17, 18, 19, 22],
+            "unfavorable": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 17, 18, 19, 20, 28, 29, 30, 31],
+        },
         "haircut": {"favorable": [5, 12]},
-        "shopping": {"favorable": [7, 21]},
+        "shopping": {"favorable": [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 28, 29, 30, 31]},
         "health": {"favorable": [6, 14]},
         "travel": {"favorable": [8, 24]},
     }
@@ -91,14 +94,15 @@ def monthly_calendar_has_new_readable_structure() -> None:
     text = _monthly_text()
     assert text.startswith("🌙 Лунный календарь ИЮЛЯ 2026")
     for heading in (
-        "🔭 Главный ритм месяца",
+        "🧭 Главный ритм месяца",
         "🌕 Ключевые точки",
         "✅ Лучшие дни месяца",
         "⚠️ Осторожнее",
         "⚫️ VoC — важные окна",
     ):
         assert heading in text
-    rhythm = text.split("🔭 Главный ритм месяца", 1)[1].split("🌕 Ключевые точки", 1)[0]
+    assert "🔭 Главный ритм месяца" not in text
+    rhythm = text.split("🧭 Главный ритм месяца", 1)[1].split("🌕 Ключевые точки", 1)[0]
     rhythm_lines = [line for line in rhythm.splitlines() if line.strip()]
     assert 3 <= len(rhythm_lines) <= 5
     assert "🌕 Полнолуние:" in text
@@ -109,17 +113,33 @@ def monthly_calendar_has_new_readable_structure() -> None:
 
 def monthly_calendar_keeps_useful_best_day_categories() -> None:
     text = _monthly_text()
-    assert "• Общие дела: 17, 18, 19, 22" in text
+    assert "• Общие дела: 17–19, 22" in text
     assert "• Стрижка: 5, 12" in text
-    assert "• Покупки: 7, 21" in text
+    assert "• Покупки: 1, 3–12, 14, 16, 28–31" in text
     assert "• Здоровье: 6, 14" in text
     assert "• Путешествия: 8, 24" in text
 
 
+def monthly_calendar_adds_final_hashtags() -> None:
+    text = _monthly_text()
+    final_line = [line for line in text.splitlines() if line.strip()][-1]
+    assert final_line == "#Калининград #лунный_календарь #астропогода #июль"
+    assert "#лунный_календарь" in text
+    assert "#астропогода" in text
+
+
+def monthly_calendar_compresses_long_day_lists() -> None:
+    text = _monthly_text()
+    assert "1, 3–12, 14, 16, 28–31" in text
+    assert "• Не для резких стартов: 3–12, 14, 16, 20, 28–31" in text
+    assert "• Дни с двойным фоном: 17–19" in text
+    assert "3, 4, 5, 6, 7, 8, 9, 10, 11, 12" not in text
+
+
 def monthly_calendar_explains_favorable_unfavorable_overlap() -> None:
     text = _monthly_text()
-    assert "• Не для резких стартов: 16, 20" in text
-    assert "• Дни с двойным фоном: 17, 18, 19" in text
+    assert "• Не для резких стартов: 3–12, 14, 16, 20, 28–31" in text
+    assert "• Дни с двойным фоном: 17–19" in text
     assert "лучше для завершения, анализа и мягких решений, не для резких стартов" in text
     assert not re.search(r"Не для резких стартов: [^\n]*(17|18|19)", text)
     assert "❌ <b>Неблагоприятные:</b>" not in text
@@ -162,6 +182,8 @@ def main() -> None:
     checks = (
         monthly_calendar_has_new_readable_structure,
         monthly_calendar_keeps_useful_best_day_categories,
+        monthly_calendar_adds_final_hashtags,
+        monthly_calendar_compresses_long_day_lists,
         monthly_calendar_explains_favorable_unfavorable_overlap,
         monthly_calendar_limits_visible_voc_windows,
         monthly_calendar_output_is_html_parseable,
