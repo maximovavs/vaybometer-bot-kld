@@ -15,6 +15,12 @@ def _plain(line: str) -> str:
     return re.sub(r"</?b>", "", str(line or "")).strip()
 
 
+def _fmt_num(value: float) -> str:
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
 def _date_from_title(text: str) -> str:
     m = re.search(r"\((\d{2}\.\d{2}\.\d{4})\)", text)
     return m.group(1) if m else ""
@@ -233,8 +239,9 @@ def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
         out.append(plus_source)
     else:
         out.append(_astro_plus(moon, [x for x in details if x != moon_source]))
-    for extra in (period_source, voc_source):
-        if extra and extra not in out and len(out) < 5:
+    extras = (period_source, voc_source) if morning else (voc_source, period_source)
+    for extra in extras:
+        if extra and extra not in out and len(out) < 6:
             out.append(extra)
     return out[:6]
 
@@ -271,17 +278,36 @@ def _soften_sea_lines(lines: list[str]) -> list[str]:
     out: list[str] = []
     for line in lines:
         s = line.strip()
+        if "Отлично:" in s and re.search(r"\b(?:SUP|Кайт|Винг|Винд)\b|гидрокостюм", s, flags=re.I):
+            continue
         if "🧜‍♂️" in s and "SUP" in s:
             continue
-        else:
-            out.append(s.replace("гидрокостюм шорти 2 мм", "короткий гидрокостюм 2 мм"))
+        parts = [part.strip() for part in s.split("•")]
+        clean_parts: list[str] = []
+        for part in parts:
+            p = part.replace("гидрокостюм шорти 2 мм", "короткий гидрокостюм 2 мм").strip()
+            water_match = re.fullmatch(r"🌊\s*(\d+(?:[\.,]\d+)?)(?:\s*°?\s*C)?", p, flags=re.I)
+            if water_match:
+                p = f"🌊 {_fmt_num(float(water_match.group(1).replace(',', '.')))}°C"
+            wave_match = re.fullmatch(r"(\d+(?:[\.,]\d+)?)\s*м", p, flags=re.I)
+            if wave_match:
+                p = f"волна {_fmt_num(float(wave_match.group(1).replace(',', '.')))} м"
+            clean_parts.append(p)
+        out.append(" • ".join(part for part in clean_parts if part))
     return out
 
 
 def _common_sup_water_line(lines: list[str]) -> str:
     text = "\n".join(lines)
-    if "SUP" not in text and "гидрокостюм" not in text and "шорти" not in text:
+    has_water_sport = re.search(r"\b(?:SUP|Кайт|Винг|Винд)\b|гидрокостюм|шорти", text, flags=re.I)
+    if not has_water_sport:
         return ""
+    max_wind = _max_wind_ms(text)
+    risky = _has_any(text, ("порыв", "дожд", "морось", "ливн", "осад", "шторм", "только опытным")) or (
+        isinstance(max_wind, (int, float)) and max_wind >= 8
+    )
+    if risky:
+        return "🏄 Вода/ветер: только опытным; короткая сессия, проверить порывы утром."
     suit = "короткий гидрокостюм 2 мм"
     m = re.search(r"((?:короткий\s+)?гидрокостюм\s*[^•\n]*мм|shorty\s*2\s*мм)", text, flags=re.I)
     if m:
@@ -347,6 +373,8 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
     return {
         "storm": bool(storm) or _has_any(text, ("шторм", "предупреждение")),
         "rain": _has_any(text, ("дожд", "морось", "ливн", "осад")),
+        "temp_high": isinstance(max_temp, (int, float)) and max_temp >= 25,
+        "temp_mild": isinstance(max_temp, (int, float)) and 18 <= max_temp < 25,
         "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
@@ -400,6 +428,8 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_region: bool) -> 
 
 def _evening_confidence_line(flags: dict[str, bool]) -> str:
     if flags["storm"] or flags["rain"] or flags["local"]:
+        if not flags.get("temp_high"):
+            return "🎯 Уверенность: по температуре спокойно; ветер/осадки уточнить утром."
         return "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром."
     return ""
 

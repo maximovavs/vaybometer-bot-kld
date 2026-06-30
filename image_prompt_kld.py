@@ -299,8 +299,9 @@ def _dashboard_palette(ctx: KldImageContext) -> str:
 
 
 _NO_TEXT_GUARD = (
-    "No text, no captions, no labels, no UI, no logos, no watermarks, "
-    "no watermark, no logo, no signature, no text, no letters, no artist mark, no brand marks, "
+    "No visible text anywhere, no tiny white text at the bottom, no pseudo-caption, "
+    "no text, no captions, no labels, no UI, no logos, no watermarks, "
+    "no watermark, no logo, no artist signature, no signature, no letters, no artist mark, no brand marks, "
     "absolutely no letters or numbers anywhere."
 )
 
@@ -485,11 +486,53 @@ def _sanitize_format_v2_image_prompt(prompt: str, ctx: Any) -> str:
                 blocked += sup_tokens
             out.append(_filter_prompt_list(line, blocked) if blocked else line)
             continue
-        if stripped.startswith("Text restrictions:") and "no artist mark" not in stripped.lower():
-            out.append(line.rstrip(".") + ", no artist mark.")
+        if stripped.startswith("Text restrictions:"):
+            out.append("Text restrictions: " + _NO_TEXT_GUARD)
             continue
         out.append(line)
     return "\n".join(out)
+
+
+def _apply_evening_moonlit_guard(prompt: str, ctx: Any, source_text: str) -> str:
+    if getattr(ctx, "post_type", "unknown") != "evening":
+        return prompt
+
+    source_low = str(source_text or "").lower()
+    illumination = _extract_lunar_illumination(source_text)
+    phase = getattr(ctx, "moon_phase", "unknown")
+    claims_full = phase == "full" or "полнолу" in source_low or "full moon" in source_low
+    full_context = (claims_full and (illumination is None or illumination >= 97)) or (
+        illumination is not None and illumination >= 97
+    )
+    near_full_context = full_context or claims_full or (illumination is not None and illumination >= 95)
+    if not near_full_context:
+        return prompt
+
+    moon_wording = (
+        "visible realistic full moon"
+        if full_context
+        else "visible realistic near-full Moon with realistic scale"
+    )
+    add_lines = [
+        (
+            "Evening moonlit cue: blue-hour Baltic coast; soft evening twilight; "
+            f"{moon_wording}; cool moonlit sea; residual pale horizon glow; "
+            "realistic moon scale and natural moon position."
+        ),
+        (
+            "Evening visual avoid: no bright daytime look; no morning look; "
+            "no sun-dominant scene; no bright golden sunset; no oversized moon; "
+            "no fantasy planet; no fantasy supermoon."
+        ),
+    ]
+    if all(line.lower() in prompt.lower() for line in add_lines):
+        return prompt
+    lines = str(prompt or "").splitlines()
+    insert_at = next((idx for idx, line in enumerate(lines) if line.startswith("Text restrictions:")), len(lines))
+    for offset, line in enumerate(add_lines):
+        if line.lower() not in prompt.lower():
+            lines.insert(insert_at + offset, line)
+    return "\n".join(lines)
 
 
 _KLD_SCENE_FRAMING = (
@@ -595,6 +638,7 @@ def _build_format_v2_visual_prompt(
     prompt = build_prompt_from_cues(cues)
     prompt = _apply_moon_phase_guard(prompt, ctx, final_format_v2_message)
     prompt = _sanitize_format_v2_image_prompt(prompt, ctx)
+    prompt = _apply_evening_moonlit_guard(prompt, ctx, final_format_v2_message)
     prompt = apply_kld_controlled_variety(
         prompt,
         ctx,

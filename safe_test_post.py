@@ -479,6 +479,14 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
     if mode.startswith("morn"):
         return v2_text
 
+    max_temp_values = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°C", v2_text)
+    max_temp = max(max_temp_values) if max_temp_values else None
+    if max_temp is None or max_temp < 25:
+        v2_text = str(v2_text or "").replace(
+            "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром.",
+            "🎯 Уверенность: по температуре спокойно; ветер/осадки уточнить утром.",
+        )
+
     lines = str(v2_text or "").splitlines()
     before_tags: list[str] = []
     hashtag_line = ""
