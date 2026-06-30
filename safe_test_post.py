@@ -744,7 +744,7 @@ def _finalize_kld_morning_safe_text(v2_text: str, raw_msg: str, legacy_text: str
     if baltic:
         out = _replace_or_insert_baltic_line(out, baltic)
 
-    return out
+    return _soften_private_sensor_wording(out)
 
 
 def _apply_confidence_polish(v2_text: str) -> str:

@@ -288,7 +288,7 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
 def kld_morning_adds_baltic_fallback_when_sea_missing() -> None:
     fixture = HOT_MORNING_FIXTURE.replace("🌊 Балтика: вода 18 °C • волна 0.4 м.\n", "")
     text = build_morning_format_v2("Калининградская область", fixture)
-    assert "🌊 Балтика: у воды свежее, но ветер заметнее; прогулки — по защищённым променадам." in text
+    assert "🌊 Балтика: у воды свежее; для прогулки лучше защищённые променады." in text
 
 
 def kld_morning_region_context_fallback_when_only_kaliningrad() -> None:
@@ -297,7 +297,7 @@ def kld_morning_region_context_fallback_when_only_kaliningrad() -> None:
         "",
     )
     text = build_morning_format_v2("Калининградская область", fixture)
-    assert "🌡 По области: жарко; у Балтики обычно свежее, но ветер заметнее." in text
+    assert "🌡 По области: тепло; у Балтики свежее и ветренее." in text
 
 
 def kld_morning_postprocess_does_not_reintroduce_duplicates() -> None:
@@ -407,6 +407,34 @@ def kld_morning_final_sensor_wording_is_softened() -> None:
     assert "Радиационный фон: высокий" not in softened
 
 
+def kld_morning_final_production_path_softens_sensor_after_sanitize() -> None:
+    raw_msg = "\n".join(
+        [
+            "<b>🌅 Калининградская область: погода на сегодня (28.06.2026)</b>",
+            "Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с.",
+            "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения.",
+            "#Калининград #погода #здоровье #сегодня #море",
+        ]
+    )
+    v2_raw = "\n".join(
+        [
+            "<b>🌅 Калининград сегодня (28.06.2026)</b>",
+            "✨ VayboMeter: 7.2/10 — с оговорками; жара и высокий УФ.",
+            "🌡 По области: тепло; у Балтики свежее и ветренее.",
+            "🏙 Калининград — 38/26 °C • ясно • 💨 6 м/с.",
+            "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения.",
+            "🌊 Балтика: у воды свежее; для прогулки лучше защищённые променады.",
+            "✅ План: дела и прогулка утром/вечером.",
+            "#Калининград #погода #здоровье #сегодня #море",
+        ]
+    )
+    final_result = sanitize_post_text(v2_raw)
+    final_text = _finalize_kld_morning_safe_text(final_result.text, raw_msg, raw_msg, "morning")
+    assert "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику." in final_text
+    assert "Радиационный фон: высокий" not in final_text
+    assert final_text.splitlines()[-1] == "#Калининград #погода #здоровье #сегодня #море"
+
+
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     assert "cron: '30 0 * * *'" in workflow
@@ -434,6 +462,7 @@ def main() -> None:
         kld_morning_postprocess_does_not_reintroduce_duplicates,
         kld_morning_real_safe_pipeline_uses_raw_context,
         kld_morning_final_sensor_wording_is_softened,
+        kld_morning_final_production_path_softens_sensor_after_sanitize,
         kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,

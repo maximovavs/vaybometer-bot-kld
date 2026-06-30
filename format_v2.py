@@ -647,7 +647,7 @@ def _morning_region_context_line(lines: list[str], flags: dict[str, bool]) -> st
         if warm[0] != cool[0] and abs(warm[1] - cool[1]) >= 2:
             return f"🌡 По области: теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°), диапазон {cool[1]:.0f}–{warm[1]:.0f}°."
     if flags["heat"]:
-        return "🌡 По области: жарко; у Балтики обычно свежее, но ветер заметнее."
+        return "🌡 По области: тепло; у Балтики свежее и ветренее."
     return ""
 
 
@@ -685,7 +685,7 @@ def _morning_sea_lines(lines: list[str]) -> list[str]:
             out.append(_clean_baltic_line("🌊 " + s))
     if out:
         return out[:1]
-    return ["🌊 Балтика: у воды свежее, но ветер заметнее; прогулки — по защищённым променадам."]
+    return ["🌊 Балтика: у воды свежее; для прогулки лучше защищённые променады."]
 
 
 def _final_plan_line(lines: list[str], has_warning: bool, has_rain: bool) -> str:
