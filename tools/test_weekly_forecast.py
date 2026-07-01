@@ -87,8 +87,9 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "SUP:" in text
     assert "Кайт/винг/винд:" in text
     assert "Серф:" in text
-    assert "SUP: только короткие окна в защищённых местах." in text
-    assert "Кайт/винг/винд: рабочие окна возможны; проверять фактический ветер, порывы и направление." in text
+    assert "SUP: короткие окна в защищённых местах." in text
+    assert "Кайт/винг/винд: только опытным; проверять порывы и направление." in text
+    assert "Серф: по фактической волне; Балтика быстро меняется." in text
     assert "🏭 Воздух" in text
     assert "🧲 Космопогода" in text
     assert "сильных бурь не видно" in text

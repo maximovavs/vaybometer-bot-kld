@@ -237,48 +237,11 @@ def _sea_line(sea_temps: list[float] | None) -> str:
 
 
 def _water_sport_lines(metrics: dict[str, Any]) -> list[str]:
-    wind = metrics.get("wind_max")
-    gust = metrics.get("gust_max")
-    wave = metrics.get("wave_max")
-    rainy = bool(metrics.get("rain"))
-    has_wind = isinstance(wind, (int, float))
-    has_gust = isinstance(gust, (int, float))
-    has_wave = isinstance(wave, (int, float))
-    windy = has_gust and gust >= 10
-    rough_wave = has_wave and wave >= 0.6
-
-    if not has_wind and not has_gust and not has_wave:
-        return [
-            "SUP: только спокойные окна в защищённых местах.",
-            "Кайт/винг/винд: смотреть фактический ветер и порывы.",
-            "Серф: по фактической волне; Балтика быстро меняется.",
-        ]
-
-    if rainy or windy:
-        sup = "SUP: только короткие окна в защищённых местах."
-    elif has_wind and has_gust and wind <= 4 and gust <= 7 and not rough_wave:
-        sup = "SUP: лучше утром; условия спокойные."
-    elif has_wind and has_gust and wind <= 6 and gust <= 10:
-        sup = "SUP: только в защищённых местах и лучше утром."
-    else:
-        sup = "SUP: осторожно; выбирать короткие окна и защищённые места."
-
-    if has_gust and gust > 15:
-        kite = "Кайт/винг/винд: только опытным; порывы могут быть резкими."
-    elif has_wind and has_gust and wind >= 6 and 9 <= gust <= 15:
-        kite = "Кайт/винг/винд: рабочие окна возможны; проверять фактический ветер, порывы и направление."
-    elif has_wind and wind < 5:
-        kite = "Кайт/винг/винд: ветра может не хватить."
-    else:
-        kite = "Кайт/винг/винд: смотреть фактический ветер и порывы."
-
-    if has_wave and wave >= 0.6:
-        surf = "Серф: возможны окна по волне; смотреть фактический прогноз спотов."
-    elif has_wave:
-        surf = "Серф: волна слабая; скорее прогулочный формат."
-    else:
-        surf = "Серф: смотреть фактическую волну; у Балтики условия быстро меняются."
-    return [sup, kite, surf]
+    return [
+        "SUP: короткие окна в защищённых местах.",
+        "Кайт/винг/винд: только опытным; проверять порывы и направление.",
+        "Серф: по фактической волне; Балтика быстро меняется.",
+    ]
 
 
 def _air_line(air_data: dict[str, Any]) -> tuple[str, bool]:
