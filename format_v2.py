@@ -379,6 +379,7 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
         "temp_high": isinstance(max_temp, (int, float)) and max_temp >= 25,
         "temp_mild": isinstance(max_temp, (int, float)) and 18 <= max_temp < 25,
         "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
+        "max_temp": max_temp,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
         "contrast": _has_any(text, ("тёплые города", "холодные города", "восток", "внутри области", "контраст")) or (isinstance(max_temp, (int, float)) and max_temp >= 25),
@@ -431,9 +432,14 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_region: bool) -> 
 
 def _evening_confidence_line(flags: dict[str, bool]) -> str:
     if flags["storm"] or flags["rain"] or flags["local"]:
-        if not flags.get("temp_high"):
-            return "🎯 Уверенность: по температуре спокойно; ветер/осадки уточнить утром."
-        return "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром."
+        max_temp = flags.get("max_temp")
+        if isinstance(max_temp, (int, float)) and max_temp >= 28:
+            temp_part = "температура высокая"
+        elif isinstance(max_temp, (int, float)) and max_temp >= 24:
+            temp_part = "температура тёплая"
+        else:
+            temp_part = "по температуре спокойно"
+        return f"🎯 Уверенность: {temp_part}; ветер/осадки лучше проверить утром."
     return ""
 
 
