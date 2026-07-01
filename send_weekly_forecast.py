@@ -228,9 +228,9 @@ def _sea_line(sea_temps: list[float] | None) -> str:
     if values:
         low, high = min(values), max(values)
         if round(low) == round(high):
-            return f"Балтика: вода около {_fmt_num(sum(values) / len(values))}°C; у открытой воды ветер ощущается сильнее."
-        return f"Балтика: вода {_fmt_num(low)}–{_fmt_num(high)}°C; у открытой воды ветер ощущается сильнее."
-    return "Балтика: данные по воде обновятся ближе к неделе; у моря ориентируйся на фактический ветер."
+            return f"Вода около {_fmt_num(sum(values) / len(values))}°C; у открытой воды ветер ощущается сильнее."
+        return f"Вода {_fmt_num(low)}–{_fmt_num(high)}°C; у открытой воды ветер ощущается сильнее."
+    return "Данные по воде обновятся ближе к неделе; у моря ориентируйся на фактический ветер."
 
 
 def _air_line(air_data: dict[str, Any]) -> tuple[str, bool]:
@@ -265,7 +265,35 @@ def _space_line(kp_tuple: tuple[Any, ...] | None) -> tuple[str, bool]:
         return f"Kp повышен ({kp:.1f}): чувствительным лучше больше сна и меньше перегруза.", True
     if kp >= 4:
         return f"Kp около {kp:.1f}: график лучше не перегружать.", True
-    return f"Космопогода спокойная, Kp {kp:.1f}; сильных бурь по текущим данным не видно.", False
+    return f"Космопогода спокойная, Kp {kp:.1f}; сильных бурь не видно.", False
+
+
+def _parse_voc_part(value: Any) -> tuple[str | None, str | None]:
+    text = _safe_text(value)
+    iso = re.search(r"\b\d{4}-(\d{1,2})-(\d{1,2})[T\s]+(\d{1,2}:\d{2})", text)
+    if iso:
+        month, day, time = iso.groups()
+        return f"{int(day):02d}.{int(month):02d}", time
+    match = re.search(r"\b(?:(\d{1,2})[./](\d{1,2})\s+)?(\d{1,2}:\d{2})", text)
+    if not match:
+        return None, None
+    day, month, time = match.groups()
+    if day and month:
+        return f"{int(day):02d}.{int(month):02d}", time
+    return None, time
+
+
+def _format_voc_interval(day: date, start_raw: Any, end_raw: Any) -> str:
+    default_date = f"{day.day:02d}.{day.month:02d}"
+    start_date, start_time = _parse_voc_part(start_raw)
+    end_date, end_time = _parse_voc_part(end_raw)
+    if not start_time or not end_time:
+        return ""
+    start_date = start_date or default_date
+    end_date = end_date or start_date
+    start_label = f"{start_date} {start_time}"
+    end_label = end_time if end_date == start_date else f"{end_date} {end_time}"
+    return f"{start_label}–{end_label}"
 
 
 def _calendar_days(lunar_data: dict[str, Any] | None) -> dict[str, Any]:
@@ -323,7 +351,9 @@ def _lunar_lines(start: date, lunar_data: dict[str, Any] | None, astro_events: l
     for d, rec in records:
         raw = rec.get("void_of_course") or rec.get("voc")
         if isinstance(raw, dict) and raw.get("start") and raw.get("end"):
-            voc.append(f"{d.day:02d}.{d.month:02d} {raw['start']}–{raw['end']}")
+            interval = _format_voc_interval(d, raw["start"], raw["end"])
+            if interval:
+                voc.append(interval)
     if voc:
         out.append("⚫️ VoC: " + "; ".join(voc[:2]) + " — не перегружать расписание.")
     for event in astro_events[:2]:
