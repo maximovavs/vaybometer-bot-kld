@@ -174,8 +174,12 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     uv = c.get("uv")
     tmax = c.get("tmax")
 
-    if (isinstance(tmax, (int, float)) and tmax >= 35) or (isinstance(uv, (int, float)) and uv >= 6):
+    if (isinstance(tmax, (int, float)) and tmax >= 35) or (
+        isinstance(tmax, (int, float)) and tmax >= 25 and isinstance(uv, (int, float)) and uv >= 6
+    ):
         return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
+    if isinstance(uv, (int, float)) and uv >= 6:
+        return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер."
     if has_rain and windy:
         return "✅ План: дождевик/капюшон надёжнее зонта; закрытая обувь; выходы короткими блоками между дождём; у воды осторожнее с порывами."
     if has_rain:
@@ -230,9 +234,14 @@ def _kld_score_line(v2_text: str) -> str:
         score -= 0.8; reasons.append("воздух похуже")
 
     score = max(1.0, min(10.0, score))
-    if (isinstance(tmax, (int, float)) and tmax >= 35) or (isinstance(uv, (int, float)) and uv >= 6):
+    if isinstance(tmax, (int, float)) and tmax >= 35:
         score = min(score, 7.9)
         return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
+    if isinstance(uv, (int, float)) and uv >= 6:
+        score = min(score, 7.9)
+        if isinstance(tmax, (int, float)) and tmax >= 25:
+            return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
+        return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
     label = _score_label(score)
     if reasons:
         return f"✨ VayboMeter: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
@@ -548,9 +557,9 @@ def _regional_context_from_source(source_text: str) -> str:
         return ""
     warm = max(pairs, key=lambda item: item[1])
     cool = min(pairs, key=lambda item: item[1])
-    if warm[0] == cool[0] or abs(warm[1] - cool[1]) < 2:
+    if warm[0] == cool[0]:
         return ""
-    return f"🌡 По области: теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°), диапазон {cool[1]:.0f}–{warm[1]:.0f}°."
+    return f"🌡 Теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°) (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)."
 
 
 def _kp_line_from_source(source_text: str) -> str:
@@ -634,6 +643,18 @@ def _replace_or_insert_line(v2_text: str, line_to_add: str, *, prefix: str, anch
     return _inject_after_anchor(text, line_to_add, anchors)
 
 
+def _replace_or_insert_regional_line(v2_text: str, line_to_add: str) -> str:
+    if not line_to_add:
+        return v2_text
+    lines = str(v2_text or "").splitlines()
+    out = [
+        line
+        for line in lines
+        if not line.strip().startswith(("🌡 По области:", "🌡 Теплее всего —"))
+    ]
+    return _inject_after_anchor("\n".join(out), line_to_add, ("✨ VayboMeter",))
+
+
 def _insert_kp_line(v2_text: str, line_to_add: str) -> str:
     if not line_to_add:
         return v2_text
@@ -667,7 +688,7 @@ def _apply_morning_raw_context(v2_text: str, raw_text: str, mode: str) -> str:
     out = v2_text
     regional = _regional_context_from_source(raw_text)
     if regional:
-        out = _replace_or_insert_line(out, regional, prefix="🌡 По области:", anchors=("✨ VayboMeter",))
+        out = _replace_or_insert_regional_line(out, regional)
     out = _insert_kp_line(out, _kp_line_from_source(raw_text))
     return out
 
@@ -739,7 +760,7 @@ def _finalize_kld_morning_safe_text(v2_text: str, raw_msg: str, legacy_text: str
 
     regional = _regional_context_from_source(raw_msg) or _regional_context_from_source(legacy_text)
     if regional:
-        out = _replace_or_insert_line(out, regional, prefix="🌡 По области:", anchors=("✨ VayboMeter",))
+        out = _replace_or_insert_regional_line(out, regional)
 
     sensor = _sensor_line_from_legacy(raw_msg) or _sensor_line_from_legacy(legacy_text) or _sensor_line_from_legacy(out)
     if sensor:
@@ -905,10 +926,11 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
     score_indexes = [idx for idx, line in enumerate(lines) if "VayboMeter" in line]
     if score_indexes:
         c = _kld_conditions(v2_text)
-        heat_or_uv = (
-            (isinstance(c.get("tmax"), (int, float)) and c.get("tmax") >= 35)
-            or (isinstance(c.get("uv"), (int, float)) and c.get("uv") >= 6)
-        )
+        tmax = c.get("tmax")
+        uv = c.get("uv")
+        heat = isinstance(tmax, (int, float)) and tmax >= 35
+        heat_word_ok = isinstance(tmax, (int, float)) and tmax >= 25
+        uv_high = isinstance(uv, (int, float)) and uv >= 6
         out: list[str] = []
         replaced = False
         for idx, line in enumerate(lines):
@@ -916,10 +938,17 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
                 if not replaced:
                     if "/10" in line:
                         cleaned = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", line.strip(), flags=re.I)
-                        if heat_or_uv:
+                        if heat or (uv_high and heat_word_ok):
                             cleaned = re.sub(
                                 r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
                                 r"\1с оговорками; жара и высокий УФ.",
+                                cleaned,
+                                flags=re.I,
+                            )
+                        elif uv_high:
+                            cleaned = re.sub(
+                                r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
+                                r"\1с оговорками; высокий УФ и ветер у воды.",
                                 cleaned,
                                 flags=re.I,
                             )

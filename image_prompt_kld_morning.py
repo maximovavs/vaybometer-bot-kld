@@ -38,12 +38,14 @@ _TRIGGER_RE = re.compile(
 
 _SAFE_MORNING_CUES = (
     "Morning safety cues: clear daylight sky; fresh Baltic morning light; "
+    "left-side morning light, sun from the left side of frame; "
     "empty Baltic shoreline; open sea horizon; natural wave texture only; "
     "quiet beach, dunes, pines, pale cloud layers; practical weather-for-the-day mood."
 )
 
 _CLOUDY_DRIZZLE_SAFE_BLOCK = (
     "Morning overcast scene: broad daylight overcast morning sky; soft pale cloud cover; "
+    "left-side morning light through overcast cloud layers; "
     "empty Baltic shoreline; open water with natural wave texture only; "
     "quiet dunes and pines; fresh practical morning weather mood."
 )
@@ -54,7 +56,7 @@ def _fallback_morning_prompt() -> str:
         [
             "Create a practical morning weather illustration for the Kaliningrad region.",
             "Base scene: Baltic coast near Kaliningrad in daylight, dunes, pines, promenade, sea horizon.",
-            "Light: soft low-angle morning light and pale cloud layers.",
+            "Light: soft low-angle morning light from the left side of frame and pale cloud layers.",
             "Mood: fresh Baltic morning air and practical weather-for-the-day mood.",
             _SAFE_MORNING_CUES,
             _PURE_SCENE_CUES,

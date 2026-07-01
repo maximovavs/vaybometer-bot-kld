@@ -469,6 +469,7 @@ def run_full_moon_evening_moonlit_guard_case() -> None:
         "visible realistic full moon",
         "cool moonlit sea",
         "residual pale horizon glow",
+        "right side of frame",
         "realistic moon scale and natural moon position",
         "Evening visual avoid: no bright daytime look",
         "no morning look",
@@ -484,6 +485,7 @@ def run_full_moon_evening_moonlit_guard_case() -> None:
         "no artist signature",
         "no logo",
         "no brand marks",
+        "Evening direction cue: right-side horizon glow",
     ]:
         _assert_contains(name, prompt, needle)
 
@@ -574,6 +576,8 @@ def run_morning_cases() -> None:
         "practical weather-for-the-day mood",
         "clear daylight sky",
         "fresh Baltic morning light",
+        "left-side morning light",
+        "sun from the left side of frame",
         "Final image: clean unmarked natural Baltic landscape only",
         "open sky, sea, dunes, pines, clouds and daylight",
         "pure scenic painting without graphic overlay elements",

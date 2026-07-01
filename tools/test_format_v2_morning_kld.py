@@ -99,6 +99,26 @@ HOT_MORNING_FIXTURE = """<b>🌅 Калининградская область: 
 #Калининград #погода #здоровье #сегодня #море
 """
 
+MILD_UV_MORNING_FIXTURE = """<b>🌅 Калининградская область: погода на сегодня (29.06.2026)</b>
+✨ VayboMeter: 8.3/10 — хорошо для прогулок.
+Погода: 🏙️ Калининград — 22/15 °C • переменная облачность • 💨 5 м/с.
+🌡 <b>Тёплые города</b>
+Балтийск: 19/14 °C • 🌥 пасм • 🌊 20 • 0.2 м
+Гвардейск: 23/13 °C • 🌤 ч.обл
+Неман: 22/12 °C • 🌤 ч.обл
+💱 Курсы (утро): USD 94.12 ₽ ↑0.35 • EUR 101.43 ₽ ↑0.27 • CNY 12.90 ₽ →0.00
+☀️ УФ: 7 — высокий
+🏭 Воздух: 🟢 низкий (AQI 28) • PM₂.₅ 6 / PM₁₀ 14
+🌇 Закат сегодня: 21:34
+📻 <b>Астрособытия</b>
+🌙 🟡 Растущая Луна, ♏ (86%)
+✅ Общий фон: благоприятный, без перегруза.
+💚 В плюсе: прогулки, восстановление.
+⚫ VoC: 08:20–10:10.
+✅ План: прогулка днём, вечером взять лёгкий слой.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
 REAL_RAW_WITH_REGION = """<b>🌅 Калининградская область: погода на сегодня (28.06.2026)</b>
 Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🔷 1015 гПа ↓.
 🌊 <b>Морские города</b>
@@ -250,7 +270,7 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     window_lines = [line for line in lines if line.startswith("🕘 Лучшее окно")]
     assert vaybo_lines == ["✨ VayboMeter: 7.2/10 — с оговорками; жара и высокий УФ."]
     assert "7.2/10" in vaybo_lines[0]
-    assert "🌡 По области: теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°), диапазон 31–39°." in lines
+    assert "🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°)." in lines
     assert "🌡 По области: жарко; у Балтики обычно свежее" not in text
     assert window_lines == ["🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень."]
     assert "🌡 Ощущается: жарко; на солнце высокая нагрузка." in lines[:5]
@@ -279,10 +299,31 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     weather_i = next(i for i, line in enumerate(lines) if line.startswith("🏙 Калининград"))
     feels_i = lines.index("🌡 Ощущается: жарко; на солнце высокая нагрузка.")
     window_i = lines.index("🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень.")
-    context_i = lines.index("🌡 По области: теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°), диапазон 31–39°.")
+    context_i = lines.index("🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°).")
     assert context_i < weather_i < feels_i < window_i < uv_i < air_i < sensor_i < kp_i < baltic_i < fx_i < astro_i
+    assert lines[fx_i + 1] == ""
+    assert fx_i + 2 == astro_i
     assert fx_i > weather_i + 1
     assert "🌿 пыльца: умеренная" in text
+
+
+def kld_morning_mild_uv_avoids_heat_wording_and_keeps_details() -> None:
+    text = build_morning_format_v2("Калининградская область", MILD_UV_MORNING_FIXTURE)
+    lines = text.splitlines()
+    assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
+    assert "жара" not in text.lower()
+    assert "короткие выходы" not in text
+    assert "✨ VayboMeter: 8.3/10 — хорошо; высокий УФ, у воды ветер заметнее." in text
+    assert "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер." in text
+    assert "🌡 Теплее всего — Гвардейск (23°), прохладнее — Балтийск (19°) (диапазон 19–23°)." in text
+    assert "🌊 Балтика: вода 20°C; волна 0.2 м; у открытой воды ветер заметнее." in text
+    assert "✅ Общий фон: благоприятный, без перегруза." in text
+    assert "💚 В плюсе: прогулки, восстановление." in text
+    assert "⚫ VoC: 08:20–10:10." in text
+    fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
+    astro_i = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна"))
+    assert lines[fx_i + 1] == ""
+    assert fx_i + 2 == astro_i
 
 
 def kld_morning_adds_baltic_fallback_when_sea_missing() -> None:
@@ -375,7 +416,7 @@ def kld_morning_real_safe_pipeline_uses_raw_context() -> None:
     assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
     assert any(line.startswith("✨ VayboMeter: 7.") and "/10 — с оговорками; жара и высокий УФ." in line for line in lines)
     assert "✨ VayboMeter: с оговорками; жара и высокий УФ." not in text
-    assert "🌡 По области: теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°), диапазон 31–39°." in text
+    assert "🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°)." in text
     assert "🌡 По области: жарко; у Балтики обычно свежее" not in text
     assert text.count("🧪") == 1
     assert "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику." in text
@@ -389,7 +430,9 @@ def kld_morning_real_safe_pipeline_uses_raw_context() -> None:
     kp_i = next(i for i, line in enumerate(lines) if line.startswith("🧲 Космопогода:"))
     baltic_i = next(i for i, line in enumerate(lines) if line.startswith("🌊 Балтика:"))
     fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
-    assert sensor_i < kp_i < baltic_i < fx_i
+    astro_i = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна"))
+    assert sensor_i < kp_i < baltic_i < fx_i < astro_i
+    assert lines[fx_i + 1] == ""
 
 
 def kld_morning_final_sensor_wording_is_softened() -> None:
@@ -457,6 +500,7 @@ def main() -> None:
         kld_morning_preserves_quake_line,
         kld_morning_cosmoweather_is_compact,
         kld_morning_hot_day_uses_cyprus_style_skeleton,
+        kld_morning_mild_uv_avoids_heat_wording_and_keeps_details,
         kld_morning_adds_baltic_fallback_when_sea_missing,
         kld_morning_region_context_fallback_when_only_kaliningrad,
         kld_morning_postprocess_does_not_reintroduce_duplicates,

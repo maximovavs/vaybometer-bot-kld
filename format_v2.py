@@ -115,7 +115,7 @@ def _astro(lines: list[str]) -> list[str]:
             continue
         if _is_sep(s) or s.startswith(("🧲", "🧪", "🔎", "✅ Сегодня", "#")):
             break
-        if s.startswith(("•", "🌙", "✅", "💚", "⚫")):
+        if s.startswith(("•", "🌙", "🌕", "🌔", "🌖", "✅", "💚", "⚫", "⚠️", "➿")):
             out.append(s)
     return out
 
@@ -233,17 +233,20 @@ def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
         out.append(moon)
 
     plus_source = next((x.strip() for x in details if x.strip().startswith("💚 В плюсе:")), "")
+    general_source = next((x.strip() for x in details if "Общий фон" in x), "")
     period_source = next((x.strip() for x in details if x.strip().startswith("🌙 В этот период")), "")
     voc_source = next((x.strip() for x in details if x.strip().startswith("⚫") and not _is_noop_voc(x)), "")
+    if general_source and general_source not in out:
+        out.append(general_source)
     if plus_source:
         out.append(plus_source)
     else:
         out.append(_astro_plus(moon, [x for x in details if x != moon_source]))
     extras = (period_source, voc_source) if morning else (voc_source, period_source)
     for extra in extras:
-        if extra and extra not in out and len(out) < 6:
+        if extra and extra not in out and len(out) < 7:
             out.append(extra)
-    return out[:6]
+    return out[:7]
 
 
 def _is_noop_voc(line: str) -> bool:
@@ -608,6 +611,7 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
     uv = _uv_value(uv_line)
     return {
         "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
+        "heat_word_ok": isinstance(max_temp, (int, float)) and max_temp >= 25,
         "warm": isinstance(max_temp, (int, float)) and 28 <= max_temp < 35,
         "uv_high": isinstance(uv, (int, float)) and uv >= 6,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
@@ -618,16 +622,21 @@ def _morning_score_line(source: str, flags: dict[str, bool]) -> str:
     if source:
         s = source.strip()
         s = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", s, flags=re.I)
-        if flags["heat"] or flags["uv_high"]:
+        if flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
             s = re.sub(
                 r"—\s*(?:хорошо|отлично)\b[^.\n]*\.?",
                 "— с оговорками; жара и высокий УФ.",
                 s,
                 flags=re.I,
             )
+        elif flags["uv_high"]:
+            replacement = "— с оговорками; высокий УФ и ветер у воды." if flags["wind"] else "— хорошо; высокий УФ, у воды ветер заметнее."
+            s = re.sub(r"—\s*(?:хорошо|отлично)\b[^.\n]*\.?", replacement, s, flags=re.I)
         return s
-    if flags["heat"] or flags["uv_high"]:
+    if flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
         return "✨ VayboMeter: с оговорками; жара и высокий УФ."
+    if flags["uv_high"]:
+        return "✨ VayboMeter: с оговорками; высокий УФ и ветер у воды." if flags["wind"] else "✨ VayboMeter: хорошо; высокий УФ, у воды ветер заметнее."
     if flags["wind"]:
         return "✨ VayboMeter: с оговорками; у воды порывы."
     return "✨ VayboMeter: спокойный день, без резких погодных акцентов."
@@ -658,14 +667,18 @@ def _morning_main_nuance_line(source: str, warning: str, flags: dict[str, bool])
         return source.strip()
     if flags["heat"] and flags["uv_high"]:
         return "⚠️ Главный нюанс: жара и УФ важнее формальной облачности."
+    if flags["uv_high"]:
+        return "⚠️ Главный нюанс: высокий УФ днём; у воды ветер ощущается заметнее."
     if warning:
         return "⚠️ " + warning
     return ""
 
 
 def _morning_plan_line(lines: list[str], flags: dict[str, bool], has_warning: bool, has_rain: bool) -> str:
-    if flags["heat"] or flags["uv_high"]:
+    if flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
         return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
+    if flags["uv_high"]:
+        return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер."
     return _final_plan_line(lines, has_warning, has_rain)
 
 
@@ -674,11 +687,9 @@ def _morning_region_context_line(lines: list[str], flags: dict[str, bool]) -> st
     if len(pairs) >= 2:
         warm = max(pairs, key=lambda item: item[1])
         cool = min(pairs, key=lambda item: item[1])
-        if warm[0] != cool[0] and abs(warm[1] - cool[1]) >= 2:
-            return f"🌡 По области: теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°), диапазон {cool[1]:.0f}–{warm[1]:.0f}°."
-    if flags["heat"]:
-        return "🌡 По области: тепло; у Балтики свежее и ветренее."
-    return ""
+        if warm[0] != cool[0]:
+            return f"🌡 Теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°) (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)."
+    return "🌡 По области: тепло; у Балтики свежее и ветренее."
 
 
 def _clean_baltic_line(line: str) -> str:
@@ -713,6 +724,8 @@ def _morning_sea_lines(lines: list[str]) -> list[str]:
             out.append(_clean_baltic_line(s))
         elif s.startswith(("Балтика:", "Море:")):
             out.append(_clean_baltic_line("🌊 " + s))
+        elif "🌊" in s and "°C" in s and "Морские города" not in s:
+            out.append(_clean_baltic_line(s))
     if out:
         return out[:1]
     return ["🌊 Балтика: у воды свежее; для прогулки лучше защищённые променады."]
@@ -790,8 +803,12 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if fx:
         out.append(_clean_fx_line(fx[0]))
     if astro:
+        if fx and out and out[-1].strip():
+            out.append("")
         out.extend(astro)
     elif sunset:
+        if fx and out and out[-1].strip():
+            out.append("")
         out.append(sunset[0])
 
     out.append(_morning_plan_line(lines, flags, has_warning, has_rain))

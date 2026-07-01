@@ -516,7 +516,7 @@ def _apply_evening_moonlit_guard(prompt: str, ctx: Any, source_text: str) -> str
     add_lines = [
         (
             "Evening moonlit cue: blue-hour Baltic coast; soft evening twilight; "
-            f"{moon_wording}; cool moonlit sea; residual pale horizon glow; "
+            f"{moon_wording}; cool moonlit sea; residual pale horizon glow on the right side of frame; "
             "realistic moon scale and natural moon position."
         ),
         (
@@ -532,6 +532,21 @@ def _apply_evening_moonlit_guard(prompt: str, ctx: Any, source_text: str) -> str
     for offset, line in enumerate(add_lines):
         if line.lower() not in prompt.lower():
             lines.insert(insert_at + offset, line)
+    return "\n".join(lines)
+
+
+def _apply_evening_direction_guard(prompt: str, ctx: Any) -> str:
+    if getattr(ctx, "post_type", "unknown") != "evening":
+        return prompt
+    line = (
+        "Evening direction cue: right-side horizon glow; late-day Baltic evening light "
+        "comes from the right side of frame when any residual sun glow is visible."
+    )
+    if line.lower() in str(prompt or "").lower():
+        return prompt
+    lines = str(prompt or "").splitlines()
+    insert_at = next((idx for idx, item in enumerate(lines) if item.startswith("Text restrictions:")), len(lines))
+    lines.insert(insert_at, line)
     return "\n".join(lines)
 
 
@@ -639,6 +654,7 @@ def _build_format_v2_visual_prompt(
     prompt = _apply_moon_phase_guard(prompt, ctx, final_format_v2_message)
     prompt = _sanitize_format_v2_image_prompt(prompt, ctx)
     prompt = _apply_evening_moonlit_guard(prompt, ctx, final_format_v2_message)
+    prompt = _apply_evening_direction_guard(prompt, ctx)
     prompt = apply_kld_controlled_variety(
         prompt,
         ctx,
