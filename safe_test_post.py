@@ -519,9 +519,30 @@ def _kld_voice_conditions(v2_text: str) -> dict[str, object]:
         or isinstance(max_gust, (int, float)) and max_gust >= 8
         or isinstance(max_wind, (int, float)) and max_wind >= 6,
         "gust": max_gust,
-        "rain": "дожд" in text or "морось" in text or "осадки" in text,
+        "rain": _has_actual_precipitation(plain),
         "warm": isinstance(c.get("tmax"), (int, float)) and c["tmax"] >= 20,
     }
+
+
+def _has_actual_precipitation(text: str) -> bool:
+    plain = _plain(text)
+    low = plain.lower()
+    if re.search(r"\b(?:дождь|дождя|дождём|дождем|дожди|дождевые\s+окна|морось|ливень|ливни|ливнев\w*)\b", low, flags=re.I):
+        return True
+    for line in plain.splitlines():
+        s = line.lower()
+        if "осад" not in s:
+            continue
+        uncertainty = re.search(
+            r"(?:провер\w*|уточн\w*|вероятност\w*|возможны\s+ли)[^.\n;:]{0,45}осад|осад[^.\n;:]{0,45}(?:провер\w*|уточн\w*)",
+            s,
+            flags=re.I,
+        )
+        if uncertainty:
+            continue
+        if re.search(r"(?:местами|ожида\w*|пройдут|будут|возможны|прогнозируются)[^.\n;:]{0,35}осад|осад[^.\n;:]{0,35}(?:могут\s+идти|ожида\w*|неравномерн\w*)", s, flags=re.I):
+            return True
+    return False
 
 
 def _insert_editorial_after(lines: list[str], line_to_add: str, prefixes: tuple[str, ...]) -> str:

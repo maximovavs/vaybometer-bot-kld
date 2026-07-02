@@ -90,6 +90,25 @@ SAFE_WINDY = """<b>🌅 Калининград сегодня (27.06.2026)</b>
 #Калининград #погода #здоровье #сегодня #море
 """
 
+SAFE_DRY_UNCERTAIN_EVENING = """<b>🌅 Калининградская область завтра (28.06.2026)</b>
+✨ VayboMeter завтра: 7.8/10 — хороший день.
+🧭 Главное завтра: тёплый сухой день, у воды ветер лучше сверить утром.
+🎯 Уверенность: температура тёплая; ветер/осадки лучше проверить утром.
+Погода: 🏙️ Калининград — 26/18 °C • ясно • 💨 3 м/с • порывы до 6 м/с.
+☀️ УФ 7 — высокий.
+✅ План завтра: дела и прогулку планировать утром или вечером.
+#Калининград #погода #здоровье #море
+"""
+
+SAFE_ACTUAL_RAIN_EVENING = """<b>🌅 Калининградская область завтра (28.06.2026)</b>
+✨ VayboMeter завтра: 6.6/10 — рабочий день; местами осадки.
+🧭 Главное завтра: осадки важнее средних температур — держи маршрут гибким.
+Погода: 🏙️ Калининград — 22/17 °C • местами дождь • 💨 3 м/с • порывы до 6 м/с.
+☀️ УФ 4 — умеренный.
+✅ План завтра: короткие выходы между дождём.
+#Калининград #погода #здоровье #море
+"""
+
 WEATHER = {
     "daily": {
         "time": ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07"],
@@ -178,6 +197,26 @@ def test_safe_gust_10_selects_windy_baltic() -> None:
     assert "порывы до 10 м/с" in text
 
 
+def test_safe_dry_uncertainty_text_selects_warm_uv_not_rain() -> None:
+    text = _apply_editorial_voice(SAFE_DRY_UNCERTAIN_EVENING, "evening")
+    line = _voice_line(text, "💬 Настрой на завтра:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(KLD_EVENING_VARIANTS, "WARM_UV")
+    assert phrase not in _phrases(KLD_EVENING_VARIANTS, "RAIN_WINDOWS")
+    assert "дождевого окна" not in line
+    assert "погода может скорректировать маршрут" not in line
+    assert "запасной вариант завтра пригодится" not in line
+    assert "ветер/осадки лучше проверить утром" in text
+
+
+def test_safe_actual_rain_selects_rain_windows() -> None:
+    text = _apply_editorial_voice(SAFE_ACTUAL_RAIN_EVENING, "evening")
+    line = _voice_line(text, "💬 Настрой на завтра:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(KLD_EVENING_VARIANTS, "RAIN_WINDOWS")
+    assert "местами дождь" in text
+
+
 def test_evening_output_has_one_human_line_and_keeps_facts() -> None:
     text = build_evening_format_v2("Калининградская область", EVENING)
     assert text.count("💬 Настрой на завтра:") == 1
@@ -219,6 +258,8 @@ def main() -> None:
         test_morning_output_has_one_human_line_and_keeps_facts,
         test_safe_low_wind_high_uv_selects_warm_uv,
         test_safe_gust_10_selects_windy_baltic,
+        test_safe_dry_uncertainty_text_selects_warm_uv_not_rain,
+        test_safe_actual_rain_selects_rain_windows,
         test_evening_output_has_one_human_line_and_keeps_facts,
         test_weekly_output_contains_meaning_block_and_keeps_facts,
     )
