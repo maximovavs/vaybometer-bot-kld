@@ -82,6 +82,13 @@ def _first_line_contains(lines: list[str], word: str) -> str:
     return ""
 
 
+def _has_explicit_storm_text(text: str) -> bool:
+    low = _plain(text).lower()
+    if "без шторма" in low:
+        low = low.replace("без шторма", "")
+    return "шторм" in low
+
+
 def _normalize_weather_line(line: str) -> str:
     s = str(line or "").strip()
     s = re.sub(r"\s*•\s*[—-]\s*•\s*", " • ", s)
@@ -282,7 +289,14 @@ def _astro_block(lines: list[str], *, morning: bool, date_s: str = "") -> list[s
         out.append(plus_source)
     else:
         out.append(_astro_plus(moon, [x for x in details if x != moon_source]))
-    extras = (period_source, voc_source) if morning else (voc_source, period_source)
+    if not morning:
+        if voc_source and voc_source not in out and len(out) < 8:
+            out.append(voc_source)
+        if period_source and period_source not in out and len(out) < 8:
+            out.append(period_source)
+        return out[:8]
+
+    extras = (period_source, voc_source)
     for extra in extras:
         if extra and extra not in out and len(out) < 7:
             out.append(extra)
@@ -485,15 +499,16 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
     text = "\n".join(effective_lines)
     max_temp = _max_temperature_c(text)
     max_wind = _max_wind_ms(text)
+    storm_gust = isinstance(max_wind, (int, float)) and max_wind >= 15
     return {
-        "storm": bool(storm) or _has_any(text, ("шторм", "предупреждение")),
+        "storm": bool(storm) or _has_explicit_storm_text(text) or storm_gust,
         "rain": _has_any(text, ("дожд", "морось", "ливн", "осад")),
         "temp_high": isinstance(max_temp, (int, float)) and max_temp >= 25,
         "temp_mild": isinstance(max_temp, (int, float)) and 18 <= max_temp < 25,
         "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
         "max_temp": max_temp,
         "max_wind": max_wind,
-        "storm_gust": isinstance(max_wind, (int, float)) and max_wind >= 15,
+        "storm_gust": storm_gust,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
         "contrast": _has_any(text, ("тёплые города", "холодные города", "восток", "внутри области", "контраст")) or (isinstance(max_temp, (int, float)) and max_temp >= 25),
@@ -987,12 +1002,12 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     storm = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
     raw_sea = _section_after(lines, "Морские города")
     sea = _soften_sea_lines(raw_sea)
-    sup_water = _common_sup_water_line(raw_sea, has_storm=bool(storm))
     warm_cold = _section_between(lines, "Тёплые города", ("🌅 Рассвет", "🌇 Закат", "Астрособытия", "Рекомендации"))
     astro = _astro_block(lines, morning=False, date_s=date_s)
     quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
     flags = _evening_flags(lines, storm=storm)
+    sup_water = _common_sup_water_line(raw_sea, has_storm=bool(flags.get("storm")))
     nuance = _evening_nuance(flags, bool(sea), bool(warm_cold))
     confidence = _evening_confidence_line(flags)
 
@@ -1017,6 +1032,11 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if storm:
         out.append(_clean_storm_warning_line(storm))
         out.append("")
+    elif flags.get("storm_gust"):
+        gust = flags.get("max_wind")
+        if isinstance(gust, (int, float)):
+            out.append(f"⚠️ Штормовое предупреждение: порывы до {_fmt_num(gust)} м/с.")
+            out.append("")
 
     if sea:
         out.append("🌊 <b>Морские города</b>")

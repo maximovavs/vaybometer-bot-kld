@@ -243,7 +243,6 @@ def resolve_chat_id(args_chat: str, to_test: bool) -> Union[int, str]:
 
 
 # -------- priorities helpers --------
-_STORM_RE = re.compile(r"^\s*⚠️\s*(.+)$", re.M)
 
 ZODIAC_GLYPH = {
     "Aries": "♈", "Taurus": "♉", "Gemini": "♊", "Cancer": "♋",
@@ -251,16 +250,41 @@ ZODIAC_GLYPH = {
     "Sagittarius": "♐", "Capricorn": "♑", "Aquarius": "♒", "Pisces": "♓",
 }
 
-def _extract_storm_line(msg: str) -> Optional[str]:
+def _gust_from_line(line: str) -> Optional[float]:
+    values: list[float] = []
+    for raw in re.findall(r"порыв\w*\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)\s*м\s*/?\s*с", str(line or ""), flags=re.I):
+        try:
+            values.append(float(raw.replace(",", ".")))
+        except Exception:
+            pass
+    return max(values) if values else None
+
+
+def _is_warning_or_weather_line(line: str) -> bool:
+    s = str(line or "").strip()
+    low = s.lower()
+    return (
+        s.startswith("⚠️")
+        or s.startswith("⚠")
+        or "погода:" in low
+        or "°c" in low
+        or "°C" in s
+    )
+
+
+def _extract_storm_warning(msg: str) -> Optional[str]:
     if not msg:
         return None
-    m = _STORM_RE.search(msg)
-    if m:
-        return m.group(1).strip()
-    for line in msg.splitlines():
-        ll = line.lower()
-        if "шторм" in ll and ("предупреж" in ll or "⚠" in line):
-            return line.strip()
+    for line in str(msg or "").splitlines():
+        stripped = line.strip()
+        low = stripped.lower()
+        if not stripped or "без шторма" in low:
+            continue
+        if "шторм" in low:
+            return stripped
+        gust = _gust_from_line(stripped)
+        if isinstance(gust, (int, float)) and gust >= 15 and _is_warning_or_weather_line(stripped):
+            return stripped
     return None
 
 def _seed_for_image(base_date: pendulum.DateTime, *, style_name: str) -> Optional[int]:
@@ -312,7 +336,7 @@ async def _maybe_send_kld_image(
         overlay_mod = None
 
     try:
-        storm_line = _extract_storm_line(msg_text)
+        storm_line = _extract_storm_warning(msg_text)
         storm_on = bool(storm_line)
 
         tomorrow = base_date.date().add(days=1)

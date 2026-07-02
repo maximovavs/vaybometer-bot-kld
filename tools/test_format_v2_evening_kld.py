@@ -23,7 +23,11 @@ telegram_stub.Bot = object
 telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
 sys.modules.setdefault("telegram", telegram_stub)
 
+os.environ.setdefault("TELEGRAM_TOKEN_KLG", "test-token")
+os.environ.setdefault("CHANNEL_ID_KLG", "test-channel")
+
 from safe_test_post import _apply_format_v2_safe_postprocess  # noqa: E402
+from post_kld import _extract_storm_warning  # noqa: E402
 
 
 NORMAL_EVENING = """<b>🌅 Калининградская область: погода на завтра (20.06.2026)</b>
@@ -132,6 +136,72 @@ MODERATE_SURF_EVENING = """<b>🌅 Калининградская область
 📻 <b>Астрособытия</b>
 🌙 Растущая Луна, ♐ (72%)
 💚 В плюсе: планы.
+#Калининград #погода #здоровье #море
+"""
+
+
+NONSTORM_WARNING_EVENING = """<b>🌅 Калининградская область: погода на завтра (03.07.2026)</b>
+✨ VayboMeter завтра: 6.8/10 — с оговорками; ветер у моря.
+⚠️ Предупреждение: высокий УФ.
+Погода: 🏙️ Калининград — 24/16 °C • ясно • 💨 6 м/с • порывы до 10 м/с.
+🌊 <b>Морские города</b>
+Балтийск: 22/16 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🌊 21 • волна 0.4 м
+———
+🌇 Закат завтра: 21:33
+📻 <b>Астрособытия</b>
+🌙 Растущая Луна, ♐ (72%)
+⚠️ Общий фон: неблагоприятный день.
+💚 В плюсе: планы.
+#Калининград #погода #здоровье #море
+"""
+
+
+RAIN_WARNING_NO_STORM_EVENING = """<b>🌅 Калининградская область: погода на завтра (03.07.2026)</b>
+✨ VayboMeter завтра: 6.4/10 — с оговорками; местами дождь.
+⚠️ Предупреждение: местами дождь.
+Погода: 🏙️ Калининград — 22/16 °C • 🌦 местами дождь • 💨 5 м/с • порывы до 9 м/с.
+🌊 <b>Морские города</b>
+Балтийск: 21/16 °C • облачно • 💨 5 м/с • порывы до 9 м/с • 🌊 21 • волна 0.5 м
+———
+🌇 Закат завтра: 21:33
+📻 <b>Астрособытия</b>
+🌙 Растущая Луна, ♐ (72%)
+💚 В плюсе: планы.
+#Калининград #погода #здоровье #море
+"""
+
+
+GUST19_NO_STORM_WORD_EVENING = """<b>🌅 Калининградская область: погода на завтра (03.07.2026)</b>
+✨ VayboMeter завтра: 5.9/10 — с оговорками; сильные порывы.
+⚠️ Предупреждение: порывы до 19 м/с.
+Погода: 🏙️ Калининград — 21/16 °C • облачно • 💨 6.9 м/с • порывы до 19 м/с.
+🌊 <b>Морские города</b>
+Балтийск: 21/16 °C • облачно • 💨 6.9 м/с • порывы до 19 м/с • 🌊 21 • волна 1.3 м
+🏄 Отлично: Сёрф (волна 1.3 м)
+———
+🌇 Закат завтра: 21:33
+📻 <b>Астрособытия</b>
+🌙 Убывающая Луна, ♐ (92%)
+💚 В плюсе: планы.
+#Калининград #погода #здоровье #море
+"""
+
+
+FULL_ASTRO_EVENING = """<b>🌅 Калининградская область: погода на завтра (03.07.2026)</b>
+✨ VayboMeter завтра: 7.1/10 — рабочий день; у моря ветер.
+Погода: 🏙️ Калининград — 22/16 °C • облачно • 💨 4 м/с • порывы до 8 м/с.
+🌊 <b>Морские города</b>
+Балтийск: 21/16 °C • облачно • 💨 4 м/с • порывы до 8 м/с • 🌊 21 • волна 0.4 м
+———
+🌅 Рассвет завтра: 04:09
+🌇 Закат завтра: 21:33
+📻 <b>Астрособытия</b>
+🌙 Убывающая Луна, ♐ (92%)
+✨ 92% освещённости — эмоции ярче обычного.
+⚠️ Общий фон: неблагоприятный день.
+💚 В плюсе: планы, обучение.
+⚫ VoC: 17:15–00:00.
+🌙 В этот период лучше не перегружать вечер.
 #Калининград #погода #здоровье #море
 """
 
@@ -292,6 +362,57 @@ def kld_evening_moderate_surf_keeps_cautious_positive() -> None:
     assert text.splitlines()[-1] == "#Калининград #погода #здоровье #море"
 
 
+def kld_evening_generic_warning_is_not_storm() -> None:
+    text = build_evening_format_v2("Калининградская область", NONSTORM_WARNING_EVENING)
+    assert "штормовые порывы" not in text
+    assert "Штормовое предупреждение" not in text
+    assert "🧭 Главное завтра: у воды главный фактор — ветер и порывы." in text
+    assert _extract_storm_warning(NONSTORM_WARNING_EVENING) is None
+    assert _extract_storm_warning("⚠️ Нюанс: у воды ветер ощущается сильнее\nПогода: 22/16 °C • порывы до 10 м/с") is None
+
+
+def kld_evening_rain_warning_is_not_storm() -> None:
+    text = build_evening_format_v2("Калининградская область", RAIN_WARNING_NO_STORM_EVENING)
+    assert "штормовые порывы" not in text
+    assert "Штормовое предупреждение" not in text
+    assert "🧭 Главное завтра: влажный и ветреный день, особенно заметный на побережье." in text
+    assert _extract_storm_warning(RAIN_WARNING_NO_STORM_EVENING) is None
+
+
+def kld_evening_astro_warning_does_not_trigger_image_storm() -> None:
+    msg = "\n".join(
+        [
+            "⚠️ Общий фон: неблагоприятный день.",
+            "⚠️ Нюанс: у воды ветер ощущается сильнее.",
+            "Погода: Калининград — 22/16 °C • 💨 5 м/с • порывы до 10 м/с.",
+        ]
+    )
+    assert _extract_storm_warning(msg) is None
+
+
+def kld_evening_gust19_without_storm_word_is_storm() -> None:
+    text = build_evening_format_v2("Калининградская область", GUST19_NO_STORM_WORD_EVENING)
+    assert "штормовые порывы" in text
+    assert "⚠️ Штормовое предупреждение: порывы до 19 м/с." in text
+    assert "Сёрф: только опытным" in text
+    assert _extract_storm_warning(GUST19_NO_STORM_WORD_EVENING) is not None
+
+
+def kld_evening_fully_populated_astro_preserves_voc() -> None:
+    text = build_evening_format_v2("Калининградская область", FULL_ASTRO_EVENING)
+    lines = text.splitlines()
+    start = lines.index("🌇 <b>Солнце, Луна и ритм завтрашнего дня</b>")
+    block = [line for line in lines[start:start + 9] if line.strip()]
+    assert "🌅 Рассвет завтра: 04:09" in block
+    assert "🌇 Закат завтра: 21:33" in block
+    assert "🌖 Убывающая Луна в ♐ — 92% освещённости." in block
+    assert "✨ 92% освещённости — эмоции ярче обычного." in block
+    assert "⚠️ Общий фон: неблагоприятный день." in block
+    assert "💚 В плюсе: планы, обучение." in block
+    assert "⚫️ VoC: 03.07 17:15–04.07 00:00." in block
+    assert "🌙 В этот период лучше не перегружать вечер." not in block
+
+
 def kld_evening_safe_postprocess_preserves_storm_astro() -> None:
     text = build_evening_format_v2("Калининградская область", STORM_REAL_EVENING)
     old = os.environ.get("FORMAT_V2_ASTRO_CLEANUP")
@@ -349,6 +470,11 @@ def main() -> None:
         kld_evening_heat_gust_polish,
         kld_evening_storm_sport_voc_and_background_polish,
         kld_evening_moderate_surf_keeps_cautious_positive,
+        kld_evening_generic_warning_is_not_storm,
+        kld_evening_rain_warning_is_not_storm,
+        kld_evening_astro_warning_does_not_trigger_image_storm,
+        kld_evening_gust19_without_storm_word_is_storm,
+        kld_evening_fully_populated_astro_preserves_voc,
         kld_evening_safe_postprocess_preserves_storm_astro,
         kld_evening_safe_postprocess_keeps_hashtags_final_and_dedupes_nuance,
     )

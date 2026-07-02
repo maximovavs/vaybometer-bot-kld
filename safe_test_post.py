@@ -263,7 +263,7 @@ def _kld_evening_score_line(v2_text: str) -> str:
     score = 10.0
     reasons: list[str] = []
 
-    has_warning = "шторм" in low or "предупреждение" in low
+    has_warning = "шторм" in low or (isinstance(max_gust, (int, float)) and max_gust >= 15)
     has_precip = _has_actual_precipitation(text)
     if has_warning:
         score -= 1.8
@@ -420,7 +420,8 @@ def _kld_reason_conclusion(score: float, reasons: str, v2_text: str) -> str:
     precip = any(x in low for x in ("осадки", "дожд", "морось"))
     cool = any(x in low for x in ("прохлад", "свеж"))
     wind = any(x in low for x in ("порыв", "ветер"))
-    warning = any(x in low for x in ("шторм", "предупреждение"))
+    gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", v2_text)
+    warning = "шторм" in low or (gusts and max(gusts) >= 15)
     if warning:
         return "День лучше вести с запасным планом: сверить предупреждения утром, у воды не рисковать и держать короткие маршруты."
     if precip and cool and wind:
@@ -587,7 +588,7 @@ def _storm_score_replacement(line: str, full_text: str) -> str:
     gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", plain)
     max_gust = max(gusts) if gusts else None
     low = plain.lower()
-    if not ("шторм" in low or "предупреждение" in low or (isinstance(max_gust, (int, float)) and max_gust >= 15)):
+    if not ("шторм" in low or (isinstance(max_gust, (int, float)) and max_gust >= 15)):
         return line
     reason = "штормовые порывы и локальные осадки" if _has_actual_precipitation(plain) else "штормовые порывы"
     return re.sub(r"—\s*[^.\n]*\.?", f"— с оговорками; {reason}.", line.strip(), flags=re.I)

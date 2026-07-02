@@ -586,6 +586,65 @@ def run_storm_waning_92_visual_guard_case() -> None:
     print(f"PASS {name}")
 
 
+def run_nonstorm_warning_does_not_get_storm_visual_case() -> None:
+    name = "nonstorm_warning_does_not_get_storm_visual"
+    message = "\n".join(
+        [
+            "<b>🌅 Калининградская область завтра (03.07.2026)</b>",
+            "✨ VayboMeter завтра: 6.8/10 — с оговорками; ветер у моря.",
+            "⚠️ Предупреждение: высокий УФ.",
+            "🏙 Калининград — 24/16 °C • ясно • 💨 6 м/с • порывы до 10 м/с.",
+            "🌊 <b>Морские города</b>",
+            "Балтийск: 22/16 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🌊 21°C • волна 0.4 м",
+            "⚠️ Общий фон: неблагоприятный день.",
+            "🌙 Растущая Луна в ♐ — 72% освещённости.",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 7, 2),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_not_contains(name, prompt, "blue-hour stormy evening")
+    _assert_not_contains(name, prompt, "storm-warning Baltic atmosphere")
+    _assert_not_contains(name, prompt, "strong wind and restless waves")
+
+    print(f"PASS {name}")
+
+
+def run_gust19_without_storm_word_gets_storm_visual_case() -> None:
+    name = "gust19_without_storm_word_gets_storm_visual"
+    message = "\n".join(
+        [
+            "<b>🌅 Калининградская область завтра (03.07.2026)</b>",
+            "✨ VayboMeter завтра: 5.9/10 — с оговорками; сильные порывы.",
+            "⚠️ Предупреждение: порывы до 19 м/с.",
+            "🏙 Калининград — 21/16 °C • облачно • 💨 6.9 м/с • порывы до 19 м/с.",
+            "🌊 <b>Морские города</b>",
+            "Балтийск: 21/16 °C • облачно • 💨 6.9 м/с • порывы до 19 м/с • 🌊 21°C • волна 1.3 м",
+            "🌖 Убывающая Луна в ♐ — 92% освещённости.",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 7, 2),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_contains(name, prompt, "blue-hour stormy evening")
+    _assert_contains(name, prompt, "strong wind and restless waves")
+    _assert_contains(name, prompt, "realistic waning gibbous Moon, 92% illuminated")
+
+    print(f"PASS {name}")
+
+
 def run_morning_cases() -> None:
     cases = [
         {
@@ -775,9 +834,11 @@ def main() -> None:
     run_full_moon_evening_moonlit_guard_case()
     run_waning_gibbous_moon_guard_case()
     run_storm_waning_92_visual_guard_case()
+    run_nonstorm_warning_does_not_get_storm_visual_case()
+    run_gust19_without_storm_word_gets_storm_visual_case()
     run_morning_cases()
     run_controlled_variety_cases()
-    print(f"OK: {len(CASES) + 10} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 12} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":
