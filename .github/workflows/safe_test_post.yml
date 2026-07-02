@@ -97,6 +97,8 @@ env:
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  GROQ_MODEL: "openai/gpt-oss-120b"
+  GROQ_FALLBACK_MODEL: "openai/gpt-oss-20b"
   OWM_KEY: ${{ secrets.OWM_KEY }}
   POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
   TZ: Europe/Kaliningrad

@@ -356,7 +356,7 @@ def kld_morning_mild_uv_avoids_heat_wording_and_keeps_details() -> None:
     assert "🌊 Балтика: вода 20°C; волна 0.2 м; у воды свежее, ветер ощущается заметнее." in text
     assert "✅ Общий фон: благоприятный, без перегруза." in text
     assert "💚 В плюсе: прогулки, восстановление." in text
-    assert "⚫ VoC: 08:20–10:10." in text
+    assert "⚫️ VoC: 08:20–10:10." in text
     fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
     astro_i = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна"))
     assert lines[fx_i + 1] == ""

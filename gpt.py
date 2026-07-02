@@ -48,14 +48,26 @@ GEMINI_MODELS = [
     "gemini-3-flash-preview",
 ]
 
-# Groq: перебираем по порядку (первая доступная сработает)
-GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "qwen/qwen3-32b",
-    "deepseek-r1-distill-llama-70b",
-    "llama-3.1-8b-instant",
-    "gemma2-9b-it",
-]
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b"
+GROQ_MODEL = (os.getenv("GROQ_MODEL") or DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL
+GROQ_FALLBACK_MODEL = (
+    (os.getenv("GROQ_FALLBACK_MODEL") or DEFAULT_GROQ_FALLBACK_MODEL).strip()
+    or DEFAULT_GROQ_FALLBACK_MODEL
+)
+
+
+def _unique_nonempty_models(*models: str) -> List[str]:
+    out: List[str] = []
+    for model in models:
+        model = (model or "").strip()
+        if model and model not in out:
+            out.append(model)
+    return out
+
+
+# Groq: primary model first, then the configured fallback.
+GROQ_MODELS = _unique_nonempty_models(GROQ_MODEL, GROQ_FALLBACK_MODEL)
 
 # ── глобальные флаги на запуск ───────────────────────────────────────────────
 _OPENAI_DISABLED_FOR_RUN = False
@@ -112,7 +124,17 @@ def _is_quota_or_rate_limit(err: Exception) -> bool:
 
 def _is_model_not_found(err: Exception) -> bool:
     msg = str(err).lower()
-    return ("not found" in msg) or ("decommissioned" in msg) or ("unsupported" in msg)
+    return any(
+        k in msg
+        for k in (
+            "model_not_found",
+            "not found",
+            "does not exist",
+            "no such model",
+            "decommissioned",
+            "unsupported",
+        )
+    )
 
 
 def _gemini_models_available(cli: "OpenAI") -> Optional[set[str]]:
@@ -235,6 +257,7 @@ def gpt_complete(
     if cli:
         for mdl in GROQ_MODELS:
             try:
+                log.info("LLM: Groq trying model=%s", mdl)
                 r = cli.chat.completions.create(
                     model=mdl,
                     messages=messages,
@@ -247,7 +270,7 @@ def gpt_complete(
                     return text
             except Exception as e:
                 if _is_model_not_found(e):
-                    log.warning("Groq model %s decommissioned/not found, trying next.", mdl)
+                    log.warning("Groq model %s unavailable, trying next.", mdl)
                     continue
                 if _is_quota_or_rate_limit(e):
                     log.warning("Groq rate/quota on %s, trying next.", mdl)
