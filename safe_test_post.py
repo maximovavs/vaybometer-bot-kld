@@ -175,9 +175,11 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     tmax = c.get("tmax")
 
     if (isinstance(tmax, (int, float)) and tmax >= 35) or (
-        isinstance(tmax, (int, float)) and tmax >= 25 and isinstance(uv, (int, float)) and uv >= 6
+        isinstance(tmax, (int, float)) and tmax >= 28 and isinstance(uv, (int, float)) and uv >= 6
     ):
         return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
+    if isinstance(tmax, (int, float)) and 25 <= tmax < 28 and isinstance(uv, (int, float)) and uv >= 6:
+        return "✅ План: дела и прогулка утром/вечером; днём — SPF, вода, тень и паузы."
     if isinstance(uv, (int, float)) and uv >= 6:
         return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер."
     if has_rain and windy:
@@ -239,8 +241,10 @@ def _kld_score_line(v2_text: str) -> str:
         return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
     if isinstance(uv, (int, float)) and uv >= 6:
         score = min(score, 7.9)
-        if isinstance(tmax, (int, float)) and tmax >= 25:
+        if isinstance(tmax, (int, float)) and tmax >= 28:
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
+        if isinstance(tmax, (int, float)) and tmax >= 25:
+            return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; тёплый день и высокий УФ."
         return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
     label = _score_label(score)
     if reasons:
@@ -593,6 +597,8 @@ def _kp_line_from_source(source_text: str) -> str:
 
 
 def _baltic_line_from_source(source_text: str) -> str:
+    waters: list[float] = []
+    waves: list[float] = []
     for raw in str(source_text or "").splitlines():
         s = _plain(raw).replace("\u00a0", " ").strip()
         low = s.lower()
@@ -629,15 +635,29 @@ def _baltic_line_from_source(source_text: str) -> str:
             if wave is None and len(nums) >= 2 and 0 <= nums[1] <= 5:
                 wave = nums[1]
 
-        if water is None and wave is None:
-            continue
-        parts: list[str] = []
         if water is not None:
-            parts.append(f"вода {_fmt_num(water)}°C")
+            waters.append(water)
         if wave is not None:
-            parts.append(f"волна {_fmt_num(wave)} м")
-        return "🌊 Балтика: " + "; ".join(parts) + "; у открытой воды ветер заметнее."
-    return ""
+            waves.append(wave)
+    if not waters and not waves:
+        return ""
+
+    parts: list[str] = []
+    if waters:
+        low_water, high_water = min(waters), max(waters)
+        if round(low_water, 1) == round(high_water, 1):
+            parts.append(f"вода {_fmt_num(low_water)}°C")
+        else:
+            parts.append(f"вода {_fmt_num(low_water)}–{_fmt_num(high_water)}°C")
+    if waves:
+        low_wave, high_wave = min(waves), max(waves)
+        if round(low_wave, 1) == round(high_wave, 1):
+            parts.append(f"волна {_fmt_num(low_wave)} м")
+        else:
+            parts.append(f"волна {_fmt_num(low_wave)}–{_fmt_num(high_wave)} м")
+    if waters:
+        return "🌊 Балтика: " + "; ".join(parts) + "; у воды свежее, ветер ощущается заметнее."
+    return "🌊 Балтика: " + "; ".join(parts) + "; у открытой воды ветер заметнее."
 
 
 def _replace_or_insert_line(v2_text: str, line_to_add: str, *, prefix: str, anchors: tuple[str, ...]) -> str:
@@ -696,6 +716,9 @@ def _apply_morning_raw_context(v2_text: str, raw_text: str, mode: str) -> str:
     if regional:
         out = _replace_or_insert_regional_line(out, regional)
     out = _insert_kp_line(out, _kp_line_from_source(raw_text))
+    baltic = _baltic_line_from_source(raw_text)
+    if baltic:
+        out = _replace_or_insert_baltic_line(out, baltic)
     return out
 
 
@@ -935,7 +958,8 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
         tmax = c.get("tmax")
         uv = c.get("uv")
         heat = isinstance(tmax, (int, float)) and tmax >= 35
-        heat_word_ok = isinstance(tmax, (int, float)) and tmax >= 25
+        heat_word_ok = isinstance(tmax, (int, float)) and tmax >= 28
+        warm_uv_day = isinstance(tmax, (int, float)) and 25 <= tmax < 28
         uv_high = isinstance(uv, (int, float)) and uv >= 6
         out: list[str] = []
         replaced = False
@@ -948,6 +972,13 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
                             cleaned = re.sub(
                                 r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
                                 r"\1с оговорками; жара и высокий УФ.",
+                                cleaned,
+                                flags=re.I,
+                            )
+                        elif uv_high and warm_uv_day:
+                            cleaned = re.sub(
+                                r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
+                                r"\1с оговорками; тёплый день и высокий УФ.",
                                 cleaned,
                                 flags=re.I,
                             )

@@ -617,7 +617,8 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
     uv = _uv_value(uv_line)
     return {
         "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
-        "heat_word_ok": isinstance(max_temp, (int, float)) and max_temp >= 25,
+        "heat_word_ok": isinstance(max_temp, (int, float)) and max_temp >= 28,
+        "warm_uv_day": isinstance(max_temp, (int, float)) and 25 <= max_temp < 28,
         "warm": isinstance(max_temp, (int, float)) and 28 <= max_temp < 35,
         "uv_high": isinstance(uv, (int, float)) and uv >= 6,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
@@ -630,19 +631,28 @@ def _morning_score_line(source: str, flags: dict[str, bool]) -> str:
         s = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", s, flags=re.I)
         if flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
             s = re.sub(
-                r"—\s*(?:хорошо|отлично)\b[^.\n]*\.?",
+                r"—\s*[^.\n]*\.?",
                 "— с оговорками; жара и высокий УФ.",
                 s,
                 flags=re.I,
             )
+        elif flags["uv_high"] and flags.get("warm_uv_day"):
+            s = re.sub(
+                r"—\s*[^.\n]*\.?",
+                "— с оговорками; тёплый день и высокий УФ.",
+                s,
+                flags=re.I,
+            )
         elif flags["uv_high"]:
-            replacement = "— с оговорками; высокий УФ и ветер у воды." if flags["wind"] else "— хорошо; высокий УФ, у воды ветер заметнее."
-            s = re.sub(r"—\s*(?:хорошо|отлично)\b[^.\n]*\.?", replacement, s, flags=re.I)
+            replacement = "— с оговорками; высокий УФ и ветер у воды."
+            s = re.sub(r"—\s*[^.\n]*\.?", replacement, s, flags=re.I)
         return s
     if flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
         return "✨ VayboMeter: с оговорками; жара и высокий УФ."
+    if flags["uv_high"] and flags.get("warm_uv_day"):
+        return "✨ VayboMeter: с оговорками; тёплый день и высокий УФ."
     if flags["uv_high"]:
-        return "✨ VayboMeter: с оговорками; высокий УФ и ветер у воды." if flags["wind"] else "✨ VayboMeter: хорошо; высокий УФ, у воды ветер заметнее."
+        return "✨ VayboMeter: с оговорками; высокий УФ и ветер у воды."
     if flags["wind"]:
         return "✨ VayboMeter: с оговорками; у воды порывы."
     return "✨ VayboMeter: спокойный день, без резких погодных акцентов."
@@ -683,6 +693,8 @@ def _morning_main_nuance_line(source: str, warning: str, flags: dict[str, bool])
 def _morning_plan_line(lines: list[str], flags: dict[str, bool], has_warning: bool, has_rain: bool) -> str:
     if flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
         return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
+    if flags["uv_high"] and flags.get("warm_uv_day"):
+        return "✅ План: дела и прогулка утром/вечером; днём — SPF, вода, тень и паузы."
     if flags["uv_high"]:
         return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер."
     return _final_plan_line(lines, has_warning, has_rain)
@@ -718,7 +730,7 @@ def _clean_baltic_line(line: str) -> str:
             parts.append(f"вода {water}°C")
         if wave:
             parts.append(f"волна {wave} м")
-        return "🌊 Балтика: " + "; ".join(parts) + "; у открытой воды ветер заметнее."
+        return "🌊 Балтика: " + "; ".join(parts) + "; у воды свежее, ветер ощущается заметнее."
     return s
 
 
