@@ -14,8 +14,10 @@ Run locally or in GitHub Actions:
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +25,21 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+os.environ.setdefault("TELEGRAM_TOKEN_KLG", "test-token")
+os.environ.setdefault("CHANNEL_ID_KLG", "test-channel")
+
+telegram_stub = types.ModuleType("telegram")
+telegram_stub.Bot = object
+telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
+sys.modules.setdefault("telegram", telegram_stub)
+
+pendulum_stub = types.ModuleType("pendulum")
+pendulum_stub.DateTime = object
+sys.modules.setdefault("pendulum", pendulum_stub)
+
 from image_prompt_kld import build_kld_evening_prompt  # noqa: E402
 from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
+from post_kld import _extract_storm_warning  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues  # noqa: E402
 
@@ -645,6 +660,41 @@ def run_gust19_without_storm_word_gets_storm_visual_case() -> None:
     print(f"PASS {name}")
 
 
+def run_storm_overlay_warning_priority_cases() -> None:
+    name = "storm_overlay_warning_priority"
+    final_post = "\n".join(
+        [
+            "✨ VayboMeter завтра: 5.7/10 — с оговорками; штормовые порывы и локальные осадки.",
+            "🧭 Главное завтра: штормовые порывы; у воды и на открытых участках особенно осторожно.",
+            "💬 Настрой на завтра: маршрут держать коротким.",
+            "⚠️ Штормовое предупреждение: порывы до 19 м/с.",
+            "🏙 Калининград — 21/16 °C • облачно • 💨 6.9 м/с • порывы до 19 м/с.",
+        ]
+    )
+    _assert_equal(name, "explicit warning subtitle", _extract_storm_warning(final_post), "Порывы до 19 м/с")
+
+    gust_only = "\n".join(
+        [
+            "✨ VayboMeter завтра: 5.9/10 — с оговорками; сильные порывы.",
+            "🏙 Калининград — 21/16 °C • облачно • 💨 6.9 м/с • порывы до 19 м/с.",
+            "Балтийск: 21/16 °C • облачно • 💨 6.9 м/с • порывы до 18 м/с • 🌊 21°C • волна 1.3 м",
+        ]
+    )
+    _assert_equal(name, "weather gust subtitle", _extract_storm_warning(gust_only), "Порывы до 19 м/с")
+
+    generic = "\n".join(
+        [
+            "⚠️ Предупреждение: высокий УФ.",
+            "⚠️ Нюанс: у воды ветер ощущается сильнее.",
+            "⚠️ Общий фон: неблагоприятный день.",
+            "Погода: Калининград — 24/16 °C • 💨 6 м/с • порывы до 10 м/с.",
+        ]
+    )
+    _assert_equal(name, "generic warning", _extract_storm_warning(generic), None)
+
+    print(f"PASS {name}")
+
+
 def run_morning_cases() -> None:
     cases = [
         {
@@ -836,9 +886,10 @@ def main() -> None:
     run_storm_waning_92_visual_guard_case()
     run_nonstorm_warning_does_not_get_storm_visual_case()
     run_gust19_without_storm_word_gets_storm_visual_case()
+    run_storm_overlay_warning_priority_cases()
     run_morning_cases()
     run_controlled_variety_cases()
-    print(f"OK: {len(CASES) + 12} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 13} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":

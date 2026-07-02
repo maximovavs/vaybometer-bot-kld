@@ -260,31 +260,74 @@ def _gust_from_line(line: str) -> Optional[float]:
     return max(values) if values else None
 
 
-def _is_warning_or_weather_line(line: str) -> bool:
+def _is_warning_line(line: str) -> bool:
+    s = str(line or "").strip()
+    return s.startswith("⚠️") or s.startswith("⚠")
+
+
+def _is_weather_line(line: str) -> bool:
     s = str(line or "").strip()
     low = s.lower()
-    return (
-        s.startswith("⚠️")
-        or s.startswith("⚠")
-        or "погода:" in low
-        or "°c" in low
-        or "°C" in s
-    )
+    return "погода:" in low or "°c" in low or "°C" in s
+
+
+def _skip_overlay_storm_line(line: str) -> bool:
+    s = str(line or "").strip()
+    return s.startswith((
+        "✨ VayboMeter",
+        "🧭 Главное завтра",
+        "💬 ",
+        "⚠️ Нюанс:",
+        "⚠ Нюанс:",
+        "⚠️ Общий фон:",
+        "⚠ Общий фон:",
+        "✅ План",
+    ))
+
+
+def _storm_overlay_subtitle(line: str) -> str:
+    s = re.sub(r"</?b>", "", str(line or "")).strip()
+    gust = _gust_from_line(s)
+    if isinstance(gust, (int, float)) and gust >= 15:
+        value = int(gust) if float(gust).is_integer() else gust
+        return f"Порывы до {value} м/с"
+    s = re.sub(r"^⚠️?\s*", "", s).strip()
+    s = re.sub(r"^Штормовое\s+предупреждение\s*:?\s*", "", s, flags=re.I).strip()
+    s = re.sub(r"^Предупреждение\s*:?\s*", "", s, flags=re.I).strip()
+    if s:
+        return s[:1].upper() + s[1:]
+    return "Сильный ветер и порывы на побережье"
 
 
 def _extract_storm_warning(msg: str) -> Optional[str]:
     if not msg:
         return None
+    explicit_warning: list[str] = []
+    warning_gust: list[str] = []
+    weather_gust: list[str] = []
+    fallback: list[str] = []
     for line in str(msg or "").splitlines():
         stripped = line.strip()
         low = stripped.lower()
         if not stripped or "без шторма" in low:
             continue
-        if "шторм" in low:
-            return stripped
         gust = _gust_from_line(stripped)
-        if isinstance(gust, (int, float)) and gust >= 15 and _is_warning_or_weather_line(stripped):
-            return stripped
+        if _skip_overlay_storm_line(stripped):
+            continue
+        if stripped.startswith("⚠️ Штормовое предупреждение:") or ("шторм" in low and "предупреждение" in low):
+            explicit_warning.append(stripped)
+            continue
+        if isinstance(gust, (int, float)) and gust >= 15 and _is_warning_line(stripped):
+            warning_gust.append(stripped)
+            continue
+        if isinstance(gust, (int, float)) and gust >= 15 and _is_weather_line(stripped):
+            weather_gust.append(stripped)
+            continue
+        if "шторм" in low:
+            fallback.append(stripped)
+    for bucket in (explicit_warning, warning_gust, weather_gust, fallback):
+        if bucket:
+            return _storm_overlay_subtitle(bucket[0])
     return None
 
 def _seed_for_image(base_date: pendulum.DateTime, *, style_name: str) -> Optional[int]:
