@@ -3,7 +3,9 @@
 """Regression checks for KLD deterministic editorial voice."""
 from __future__ import annotations
 
+import re
 import sys
+import types
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
@@ -12,8 +14,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from editorial_voice import KLD_VARIANTS, deterministic_variant  # noqa: E402
+pendulum_stub = types.ModuleType("pendulum")
+pendulum_stub.DateTime = object
+sys.modules.setdefault("pendulum", pendulum_stub)
+
+telegram_stub = types.ModuleType("telegram")
+telegram_stub.Bot = object
+telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(HTML="HTML"))
+sys.modules.setdefault("telegram", telegram_stub)
+
+from editorial_voice import KLD_EVENING_VARIANTS, KLD_VARIANTS, deterministic_variant  # noqa: E402
 from format_v2 import build_evening_format_v2, build_morning_format_v2  # noqa: E402
+from safe_test_post import _apply_editorial_voice  # noqa: E402
 from send_weekly_forecast import build_weekly_forecast  # noqa: E402
 
 
@@ -62,6 +74,22 @@ EVENING = """<b>🌅 Калининградская область: погода
 #Калининград #погода #здоровье #море
 """
 
+SAFE_WARM_UV = """<b>🌅 Калининград сегодня (27.06.2026)</b>
+✨ VayboMeter: 7.9/10 — с оговорками; тёплый день и высокий УФ.
+Погода: 🏙️ Калининград — 26/18 °C • ясно • 💨 2.6 м/с • порывы до 6 м/с.
+☀️ УФ 7 — высокий.
+✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
+SAFE_WINDY = """<b>🌅 Калининград сегодня (27.06.2026)</b>
+✨ VayboMeter: 7.4/10 — с оговорками; у воды порывы.
+Погода: 🏙️ Калининград — 23/17 °C • ясно • 💨 4 м/с • порывы до 10 м/с.
+☀️ УФ 4 — умеренный.
+✅ План: прогулку держать гибкой.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
 WEATHER = {
     "daily": {
         "time": ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07"],
@@ -96,6 +124,19 @@ def _assert_clean(text: str) -> None:
     _Parser().feed(text)
 
 
+def _voice_line(text: str, prefix: str) -> str:
+    return next(line for line in text.splitlines() if line.startswith(prefix))
+
+
+def _phrases(bank: dict[str, list[str]], scenario: str | None = None) -> set[str]:
+    if scenario:
+        return set(bank[scenario])
+    out: set[str] = set()
+    for values in bank.values():
+        out.update(values)
+    return out
+
+
 def test_deterministic_variant_is_stable_and_rotates() -> None:
     variants = KLD_VARIANTS["WINDY_BALTIC"]
     first = deterministic_variant("Калининград", "2026-07-01", "WINDY_BALTIC", variants)
@@ -120,9 +161,30 @@ def test_morning_output_has_one_human_line_and_keeps_facts() -> None:
     _assert_clean(text)
 
 
+def test_safe_low_wind_high_uv_selects_warm_uv() -> None:
+    text = _apply_editorial_voice(SAFE_WARM_UV, "morning")
+    line = _voice_line(text, "💬 По-человечески:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(KLD_VARIANTS, "WARM_UV")
+    assert phrase not in _phrases(KLD_VARIANTS, "WINDY_BALTIC")
+    assert "2.6 м/с" in text and "порывы до 6 м/с" in text
+
+
+def test_safe_gust_10_selects_windy_baltic() -> None:
+    text = _apply_editorial_voice(SAFE_WINDY, "morning")
+    line = _voice_line(text, "💬 По-человечески:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(KLD_VARIANTS, "WINDY_BALTIC")
+    assert "порывы до 10 м/с" in text
+
+
 def test_evening_output_has_one_human_line_and_keeps_facts() -> None:
     text = build_evening_format_v2("Калининградская область", EVENING)
     assert text.count("💬 Настрой на завтра:") == 1
+    line = _voice_line(text, "💬 Настрой на завтра:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(KLD_EVENING_VARIANTS)
+    assert not re.search(r"(?<![А-Яа-яЁё])сегодня(?![А-Яа-яЁё])", line, flags=re.I)
     assert "Калининград — 21/16 °C" in text
     assert "Балтийск: 19/15 °C" in text
     assert "порывы до 12 м/с" in text
@@ -155,6 +217,8 @@ def main() -> None:
     checks = (
         test_deterministic_variant_is_stable_and_rotates,
         test_morning_output_has_one_human_line_and_keeps_facts,
+        test_safe_low_wind_high_uv_selects_warm_uv,
+        test_safe_gust_10_selects_windy_baltic,
         test_evening_output_has_one_human_line_and_keeps_facts,
         test_weekly_output_contains_meaning_block_and_keeps_facts,
     )

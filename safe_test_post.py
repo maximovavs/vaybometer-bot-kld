@@ -500,13 +500,25 @@ def _without_editorial_voice(v2_text: str) -> list[str]:
 
 def _kld_voice_conditions(v2_text: str) -> dict[str, object]:
     c = _kld_conditions(v2_text)
-    text = _plain(v2_text).lower()
+    plain = _plain(v2_text)
+    text = plain.lower()
+    gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", plain)
+    winds = _numbers(r"💨\s*(\d+(?:[\.,]\d+)?)\s*м/с", plain)
+    if isinstance(c.get("gust"), (int, float)):
+        gusts.append(float(c["gust"]))
+    if isinstance(c.get("wind"), (int, float)):
+        winds.append(float(c["wind"]))
+    max_gust = max(gusts) if gusts else None
+    max_wind = max(winds) if winds else None
+    explicit_strong_wind = bool(re.search(r"сильный ветер|шторм|резкие порывы", text, flags=re.I))
     return {
         "max_temp": c.get("tmax"),
         "uv": c.get("uv"),
         "uv_high": isinstance(c.get("uv"), (int, float)) and c["uv"] >= 6,
-        "wind": isinstance(c.get("gust"), (int, float)) and c["gust"] >= 8 or "ветер" in text or "порыв" in text,
-        "gust": c.get("gust"),
+        "wind": explicit_strong_wind
+        or isinstance(max_gust, (int, float)) and max_gust >= 8
+        or isinstance(max_wind, (int, float)) and max_wind >= 6,
+        "gust": max_gust,
         "rain": "дожд" in text or "морось" in text or "осадки" in text,
         "warm": isinstance(c.get("tmax"), (int, float)) and c["tmax"] >= 20,
     }
