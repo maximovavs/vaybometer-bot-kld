@@ -310,6 +310,8 @@ _NO_DOUBLE_MOON_GUARD = (
     "No extra bright discs."
 )
 
+_FORMAT_V2_PROMPT_VERSION = "v3"
+
 
 def _filter_prompt_list(line: str, blocked_tokens: tuple[str, ...], add_items: list[str] | None = None) -> str:
     prefix, raw = line.split(":", 1)
@@ -550,6 +552,87 @@ def _apply_evening_direction_guard(prompt: str, ctx: Any) -> str:
     return "\n".join(lines)
 
 
+def _fmt_percent(value: float | None) -> str:
+    if value is None:
+        return ""
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _apply_storm_moon_visual_guard(prompt: str, ctx: Any, source_text: str) -> str:
+    if getattr(ctx, "post_type", "unknown") != "evening":
+        return prompt
+
+    prompt = str(prompt or "").replace(
+        "Create an atmospheric, information-driven weather illustration for VayboMeter Kaliningrad.",
+        "Create a photorealistic Baltic coastline weather scene for VayboMeter Kaliningrad.",
+    )
+    source_low = str(source_text or "").lower()
+    weather = getattr(ctx, "weather_main", "unknown")
+    wind_gust = getattr(ctx, "wind_gust", None)
+    stormy = weather == "storm" or "шторм" in source_low or (
+        isinstance(wind_gust, (int, float)) and wind_gust >= 15
+    )
+    illumination = _extract_lunar_illumination(source_text)
+    phase = getattr(ctx, "moon_phase", "unknown")
+    if not stormy and not (phase == "waning_gibbous" and illumination is not None and 90 <= illumination < 97):
+        return prompt
+
+    moon_phrase = ""
+    if phase == "waning_gibbous" and illumination is not None:
+        moon_phrase = f"realistic waning gibbous Moon, {_fmt_percent(illumination)}% illuminated"
+    elif phase == "waxing_gibbous" and illumination is not None:
+        moon_phrase = f"realistic waxing gibbous Moon, {_fmt_percent(illumination)}% illuminated"
+    elif illumination is not None and 90 <= illumination < 97:
+        moon_phrase = f"realistic gibbous Moon, {_fmt_percent(illumination)}% illuminated"
+
+    add_lines = [
+        (
+            "Storm visual adherence: photorealistic Baltic coastline; blue-hour stormy evening; "
+            "strong wind and restless waves; natural weather-photo realism."
+        ),
+        (
+            "Moon scale adherence: "
+            + (moon_phrase or "phase-accurate Moon")
+            + "; small-to-medium natural moon scale."
+        ),
+        (
+            "Storm visual avoid: no illustration, no vector art, no painting, no poster, no cartoon, "
+            "no perfect full moon, no oversized moon, no fantasy supermoon, no bright daytime."
+        ),
+    ]
+    lines = prompt.splitlines()
+    insert_at = next((idx for idx, item in enumerate(lines) if item.startswith("Text restrictions:")), len(lines))
+    for offset, line in enumerate(add_lines):
+        if line.lower() not in prompt.lower():
+            lines.insert(insert_at + offset, line)
+    return "\n".join(lines)
+
+
+def _format_v2_style_name(ctx: Any, *, date_key: str, post_type: str, source_text: str) -> str:
+    illumination = _extract_lunar_illumination(source_text)
+    wind_gust = getattr(ctx, "wind_gust", None)
+    storm_state = "storm" if (
+        getattr(ctx, "weather_main", "unknown") == "storm"
+        or "шторм" in str(source_text or "").lower()
+        or (isinstance(wind_gust, (int, float)) and wind_gust >= 15)
+    ) else "nonstorm"
+    seed = "|".join(
+        [
+            _FORMAT_V2_PROMPT_VERSION,
+            date_key,
+            post_type or "evening",
+            str(getattr(ctx, "weather_main", "unknown")),
+            storm_state,
+            str(getattr(ctx, "moon_phase", "unknown")),
+            _fmt_percent(illumination) or "illum_unknown",
+        ]
+    )
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+    return f"format_v2_scene_cues_{_FORMAT_V2_PROMPT_VERSION}_{digest}"
+
+
 _KLD_SCENE_FRAMING = (
     "dune path leading toward the Baltic shoreline",
     "seaside promenade facing the Baltic horizon",
@@ -655,11 +738,19 @@ def _build_format_v2_visual_prompt(
     prompt = _sanitize_format_v2_image_prompt(prompt, ctx)
     prompt = _apply_evening_moonlit_guard(prompt, ctx, final_format_v2_message)
     prompt = _apply_evening_direction_guard(prompt, ctx)
+    prompt = _apply_storm_moon_visual_guard(prompt, ctx, final_format_v2_message)
+    date_key = _extract_prompt_date(final_format_v2_message, date)
     prompt = apply_kld_controlled_variety(
         prompt,
         ctx,
-        date_key=_extract_prompt_date(final_format_v2_message, date),
+        date_key=date_key,
         post_type=post_type,
+    )
+    style_name = _format_v2_style_name(
+        ctx,
+        date_key=date_key,
+        post_type=post_type,
+        source_text=final_format_v2_message,
     )
     logger.info(
         "KLD_FORMAT_V2_IMG_PROMPT: post_type=%s weather=%s sport=%s/%s moon=%s source=%s",
@@ -670,7 +761,7 @@ def _build_format_v2_visual_prompt(
         getattr(ctx, "moon_phase", "unknown"),
         (getattr(ctx, "evidence", {}) or {}).get("weather_source_used"),
     )
-    return prompt, "format_v2_scene_cues"
+    return prompt, style_name
 
 
 def _style_prompt_map_mood(ctx: KldImageContext) -> Tuple[str, str]:

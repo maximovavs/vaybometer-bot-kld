@@ -117,14 +117,14 @@ def _astro(lines: list[str]) -> list[str]:
             continue
         if _is_sep(s) or s.startswith(("🧲", "🧪", "🔎", "✅ Сегодня", "#")):
             break
-        if s.startswith(("•", "🌙", "🌕", "🌔", "🌖", "✅", "💚", "⚫", "⚠️", "➿")):
+        if s.startswith(("•", "🌙", "🌕", "🌔", "🌖", "✅", "💚", "⚫", "⚠️", "➿", "✨")):
             out.append(s)
     return out
 
 
 def _is_moon_phase_line(line: str) -> bool:
     s = _plain(line)
-    if not s.startswith("🌙"):
+    if not s.startswith(("🌙", "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘")):
         return False
     if re.search(r"\(\d{1,3}%\)", s):
         return True
@@ -216,7 +216,37 @@ def _astro_plus(moon: str, details: list[str]) -> str:
     return f"💚 В плюсе: {plus or 'спокойные планы, восстановление и прогулки'}."
 
 
-def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
+def _normalize_voc_line(line: str, date_s: str = "") -> str:
+    s = str(line or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"^⚫️?\s*", "⚫️ ", s)
+    s = re.sub(r"^⚫️\s*VoC\s*:", "⚫️ VoC:", s, flags=re.I)
+    m = re.search(r"(?<!\d)(\d{2}:\d{2})\s*[–-]\s*(\d{2}:\d{2})(?!\d)", s)
+    if not m or not date_s:
+        return s
+    start_t, end_t = m.group(1), m.group(2)
+    if end_t > start_t:
+        return s
+    dm = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", date_s)
+    if not dm:
+        return s
+    import datetime as _dt
+
+    base = _dt.date(int(dm.group(3)), int(dm.group(2)), int(dm.group(1)))
+    end_date = base + _dt.timedelta(days=1)
+    interval = f"{base:%d.%m} {start_t}–{end_date:%d.%m} {end_t}"
+    suffix = s[m.end():].strip()
+    if suffix in ("", "."):
+        suffix = "."
+    elif not suffix.startswith(("—", "-", "–")):
+        suffix = " " + suffix
+    else:
+        suffix = " " + suffix
+    return f"⚫️ VoC: {interval}{suffix}"
+
+
+def _astro_block(lines: list[str], *, morning: bool, date_s: str = "") -> list[str]:
     details = _astro(lines)
     sunset = next((x.strip() for x in lines if x.strip().startswith("🌇 Закат")), "")
     sunrise = next((x.strip() for x in lines if x.strip().startswith("🌅 Рассвет")), "")
@@ -235,9 +265,17 @@ def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
         out.append(moon)
 
     plus_source = next((x.strip() for x in details if x.strip().startswith("💚 В плюсе:")), "")
+    illumination_source = next(
+        (x.strip() for x in details if x.strip().startswith("✨") and re.search(r"%|освещ", x, flags=re.I)),
+        "",
+    )
     general_source = next((x.strip() for x in details if "Общий фон" in x), "")
     period_source = next((x.strip() for x in details if x.strip().startswith("🌙 В этот период")), "")
     voc_source = next((x.strip() for x in details if x.strip().startswith("⚫") and not _is_noop_voc(x)), "")
+    if voc_source:
+        voc_source = _normalize_voc_line(voc_source, date_s)
+    if illumination_source and illumination_source not in out:
+        out.append(illumination_source)
     if general_source and general_source not in out:
         out.append(general_source)
     if plus_source:
@@ -248,7 +286,7 @@ def _astro_block(lines: list[str], *, morning: bool) -> list[str]:
     for extra in extras:
         if extra and extra not in out and len(out) < 7:
             out.append(extra)
-    return out[:7]
+    return out[:8]
 
 
 def _is_noop_voc(line: str) -> bool:
@@ -283,14 +321,12 @@ def _soften_sea_lines(lines: list[str]) -> list[str]:
     out: list[str] = []
     for line in lines:
         s = line.strip()
-        if "Отлично:" in s and re.search(r"\b(?:SUP|Кайт|Винг|Винд)\b|гидрокостюм", s, flags=re.I):
-            continue
-        if "🧜‍♂️" in s and "SUP" in s:
+        if _is_water_sport_recommendation_line(s):
             continue
         parts = [part.strip() for part in s.split("•")]
         clean_parts: list[str] = []
         for part in parts:
-            p = part.replace("гидрокостюм шорти 2 мм", "короткий гидрокостюм 2 мм").strip()
+            p = part.strip()
             water_match = re.fullmatch(r"🌊\s*(\d+(?:[\.,]\d+)?)(?:\s*°?\s*C)?", p, flags=re.I)
             if water_match:
                 p = f"🌊 {_fmt_num(float(water_match.group(1).replace(',', '.')))}°C"
@@ -302,24 +338,83 @@ def _soften_sea_lines(lines: list[str]) -> list[str]:
     return out
 
 
-def _common_sup_water_line(lines: list[str]) -> str:
-    text = "\n".join(lines)
-    has_water_sport = re.search(r"\b(?:SUP|Кайт|Винг|Винд)\b|гидрокостюм|шорти", text, flags=re.I)
+def _is_water_sport_recommendation_line(line: str) -> bool:
+    s = str(line or "").strip()
+    low = s.lower()
+    if not any(word in low for word in ("sup", "сап", "сёрф", "серф", "кайт", "винг", "винд", "гидрокостюм", "shorty")):
+        return False
+    return bool(re.search(r"^(?:[🏄🛶🧜‍♂️⚠️✅]|[-•])|Отлично:|SUP:|С[ёе]рф:|Кайт|Винг|Винд", s, flags=re.I))
+
+
+def _range_from_values(values: list[float]) -> tuple[float, float] | None:
+    if not values:
+        return None
+    return min(values), max(values)
+
+
+def _format_measure_range(bounds: tuple[float, float] | None, unit: str) -> str:
+    if not bounds:
+        return ""
+    low, high = bounds
+    if round(low, 1) == round(high, 1):
+        return f"{_fmt_num(low)} {unit}"
+    return f"{_fmt_num(low)}–{_fmt_num(high)} {unit}"
+
+
+def _wave_range_m(text: str) -> tuple[float, float] | None:
+    values: list[float] = []
+    for m in re.finditer(r"(\d+(?:[\.,]\d+)?)\s*[–—-]\s*(\d+(?:[\.,]\d+)?)\s*м(?!\s*/\s*с)", text, flags=re.I):
+        for raw in (m.group(1), m.group(2)):
+            try:
+                values.append(float(raw.replace(",", ".")))
+            except Exception:
+                pass
+    for m in re.finditer(r"(?<!/)(\d+(?:[\.,]\d+)?)\s*м(?!\s*/\s*с)", text, flags=re.I):
+        try:
+            value = float(m.group(1).replace(",", "."))
+        except Exception:
+            continue
+        if 0 <= value <= 5:
+            values.append(value)
+    return _range_from_values(values)
+
+
+def _water_range_c(text: str) -> tuple[float, float] | None:
+    values: list[float] = []
+    for m in re.finditer(r"🌊\s*(\d+(?:[\.,]\d+)?)(?:\s*°?\s*C)?", text, flags=re.I):
+        try:
+            value = float(m.group(1).replace(",", "."))
+        except Exception:
+            continue
+        if 5 <= value <= 30:
+            values.append(value)
+    return _range_from_values(values)
+
+
+def _common_sup_water_line(lines: list[str], *, has_storm: bool = False) -> str:
+    raw_text = "\n".join(lines)
+    text = "\n".join(line for line in lines if not _is_water_sport_recommendation_line(line))
+    has_water_sport = re.search(r"\b(?:SUP|Кайт|Винг|Винд|С[ёе]рф)\b|гидрокостюм|шорти|shorty", raw_text, flags=re.I)
+    wave_range = _wave_range_m(text)
     if not has_water_sport:
         return ""
     max_wind = _max_wind_ms(text)
+    stormy = has_storm or (isinstance(max_wind, (int, float)) and max_wind >= 15)
+    if stormy:
+        wave = _format_measure_range(wave_range, "м")
+        wave_part = f"волна {wave}, но " if wave else ""
+        return (
+            f"🏄 Сёрф: только опытным; {wave_part}порывы сильные — проверить конкретный спот и предупреждения перед выходом.\n"
+            "🛶 SUP: на открытой воде не рекомендован; рассматривать только защищённую акваторию после проверки фактического ветра."
+        )
+    if wave_range and 0.8 <= wave_range[1] <= 2.0 and (not isinstance(max_wind, (int, float)) or max_wind < 15):
+        return "🏄 Сёрф: есть рабочие окна по волне; проверить конкретный спот."
     risky = _has_any(text, ("порыв", "дожд", "морось", "ливн", "осад", "шторм", "только опытным")) or (
         isinstance(max_wind, (int, float)) and max_wind >= 8
     )
     if risky:
-        return "🏄 Вода/ветер: только опытным; короткая сессия, проверить порывы утром."
-    suit = "короткий гидрокостюм 2 мм"
-    m = re.search(r"((?:короткий\s+)?гидрокостюм\s*[^•\n]*мм|shorty\s*2\s*мм)", text, flags=re.I)
-    if m:
-        suit = m.group(1).strip()
-    suit = suit.replace("гидрокостюм шорти 2 мм", "короткий гидрокостюм 2 мм")
-    suit = suit.replace("шорти 2 мм", "короткий гидрокостюм 2 мм")
-    return f"🏄 SUP/вода: только опытным, короткая сессия; {suit}. Главный риск — порывы ветра."
+        return "🏄 Вода/ветер: только опытным; короткая сессия, проверить порывы утром. Экипировку выбирать по длительности сессии, ветру и индивидуальной переносимости воды."
+    return "🏄 SUP/вода: короткая сессия; экипировку выбирать по длительности сессии, ветру и индивидуальной переносимости воды."
 
 
 def _has_any(text: str, words: tuple[str, ...]) -> bool:
@@ -366,6 +461,21 @@ def _max_wind_ms(text: str) -> float | None:
     return max(values) if values else None
 
 
+def _clean_storm_warning_line(line: str) -> str:
+    s = _plain(line)
+    s = re.sub(r"^⚠️?\s*", "", s).strip()
+    s = re.sub(r"^Предупреждение\s*:?\s*", "", s, flags=re.I)
+    s = re.sub(r"^Штормовое(?:\s+предупреждение)?\s*:?\s*", "", s, flags=re.I).strip()
+    gusts = [float(x.replace(",", ".")) for x in re.findall(r"порыв\w*\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)\s*м/с", s, flags=re.I)]
+    if gusts:
+        return f"⚠️ Штормовое предупреждение: порывы до {_fmt_num(max(gusts))} м/с."
+    detail = s.strip(" .")
+    if not detail:
+        return "⚠️ Штормовое предупреждение."
+    detail = detail[0].lower() + detail[1:] if detail[0].isalpha() else detail
+    return f"⚠️ Штормовое предупреждение: {detail}."
+
+
 def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
     effective_lines = []
     for line in lines:
@@ -382,6 +492,8 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
         "temp_mild": isinstance(max_temp, (int, float)) and 18 <= max_temp < 25,
         "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
         "max_temp": max_temp,
+        "max_wind": max_wind,
+        "storm_gust": isinstance(max_wind, (int, float)) and max_wind >= 15,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
         "contrast": _has_any(text, ("тёплые города", "холодные города", "восток", "внутри области", "контраст")) or (isinstance(max_temp, (int, float)) and max_temp >= 25),
@@ -392,7 +504,7 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
 
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
     if flags["storm"]:
-        return "🧭 Главное завтра: главный фактор — ветер, порывы и осторожность у воды."
+        return "🧭 Главное завтра: штормовые порывы; у воды и на открытых участках особенно осторожно."
     if flags["heat"] and flags["wind"]:
         return "🧭 Главное завтра: днём жара, у воды — ветер; активность лучше утром/вечером."
     if flags["heat"]:
@@ -594,7 +706,17 @@ def _clean_morning_weather_line(line: str) -> str:
 
 def _clean_evening_score_line(line: str, flags: dict[str, bool]) -> str:
     s = str(line or "").strip()
-    if flags.get("heat") and flags.get("wind"):
+    if flags.get("storm"):
+        if flags.get("storm_gust") and flags.get("rain"):
+            replacement = "— с оговорками; штормовые порывы и локальные осадки."
+        elif flags.get("storm_gust"):
+            replacement = "— с оговорками; штормовые порывы."
+        elif flags.get("rain") and flags.get("wind"):
+            replacement = "— с оговорками; порывы у моря и локальные осадки."
+        else:
+            replacement = "— с оговорками; порывы у моря."
+        s = re.sub(r"—\s*[^.\n]*\.?", replacement, s, flags=re.I)
+    elif flags.get("heat") and flags.get("wind"):
         s = re.sub(r"—\s*отлично\b[^.\n]*\.?", "— жарко; у моря порывы.", s, flags=re.I)
         s = re.sub(r"—\s*хорошо\b[^.\n]*\.?", "— жарко; у моря порывы.", s, flags=re.I)
     elif flags.get("heat"):
@@ -865,9 +987,9 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     storm = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
     raw_sea = _section_after(lines, "Морские города")
     sea = _soften_sea_lines(raw_sea)
-    sup_water = _common_sup_water_line(raw_sea)
+    sup_water = _common_sup_water_line(raw_sea, has_storm=bool(storm))
     warm_cold = _section_between(lines, "Тёплые города", ("🌅 Рассвет", "🌇 Закат", "Астрособытия", "Рекомендации"))
-    astro = _astro_block(lines, morning=False)
+    astro = _astro_block(lines, morning=False, date_s=date_s)
     quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
     score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
     flags = _evening_flags(lines, storm=storm)
@@ -893,8 +1015,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append("")
 
     if storm:
-        out.append("⚠️ <b>Предупреждение</b>")
-        out.append(storm)
+        out.append(_clean_storm_warning_line(storm))
         out.append("")
 
     if sea:

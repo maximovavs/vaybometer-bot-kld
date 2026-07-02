@@ -331,6 +331,7 @@ async def _maybe_send_kld_image(
             astro_mood_en=getattr(lunar, "phrase_en", "") or "",
             force_style=force_style,
             storm=storm_on,
+            final_format_v2_message=msg_text,
         )
 
         seed = _seed_for_image(base_date, style_name=style_name)

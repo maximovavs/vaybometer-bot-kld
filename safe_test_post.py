@@ -263,13 +263,15 @@ def _kld_evening_score_line(v2_text: str) -> str:
     score = 10.0
     reasons: list[str] = []
 
-    if "шторм" in low or "предупреждение" in low:
-        score -= 1.8; reasons.append("предупреждение")
-    if "дожд" in low or "морось" in low:
-        score -= 1.1; reasons.append("осадки")
+    has_warning = "шторм" in low or "предупреждение" in low
+    has_precip = _has_actual_precipitation(text)
+    if has_warning:
+        score -= 1.8
+    if has_precip:
+        score -= 1.1
     if isinstance(max_gust, (int, float)):
         if max_gust >= 15:
-            score -= 1.4; reasons.append("сильные порывы")
+            score -= 1.4
         elif max_gust >= 10:
             score -= 1.0; reasons.append("порывы")
         elif max_gust >= 7:
@@ -286,6 +288,10 @@ def _kld_evening_score_line(v2_text: str) -> str:
 
     score = max(1.0, min(10.0, score))
     label = _score_label(score)
+    if has_warning or (isinstance(max_gust, (int, float)) and max_gust >= 15):
+        if has_precip:
+            return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; штормовые порывы и локальные осадки."
+        return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; штормовые порывы."
     if reasons:
         return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
@@ -574,6 +580,31 @@ def _is_kld_nuance_line(line: str) -> bool:
     return line.strip().startswith(("⚠️ Нюанс:", "⚠️ Главный нюанс:"))
 
 
+def _storm_score_replacement(line: str, full_text: str) -> str:
+    if "VayboMeter" not in line or "/10" not in line:
+        return line
+    plain = _plain(full_text)
+    gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", plain)
+    max_gust = max(gusts) if gusts else None
+    low = plain.lower()
+    if not ("шторм" in low or "предупреждение" in low or (isinstance(max_gust, (int, float)) and max_gust >= 15)):
+        return line
+    reason = "штормовые порывы и локальные осадки" if _has_actual_precipitation(plain) else "штормовые порывы"
+    return re.sub(r"—\s*[^.\n]*\.?", f"— с оговорками; {reason}.", line.strip(), flags=re.I)
+
+
+def _storm_warning_replacement(line: str) -> str:
+    s = _plain(line)
+    gusts = _numbers(r"порыв\w*\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)\s*м/с", s)
+    if gusts:
+        return f"⚠️ Штормовое предупреждение: порывы до {_fmt_num(max(gusts))} м/с."
+    detail = re.sub(r"^⚠️?\s*", "", s).strip()
+    detail = re.sub(r"^(?:Предупреждение|Штормовое(?:\s+предупреждение)?)\s*:?\s*", "", detail, flags=re.I).strip(" .")
+    if not detail:
+        return "⚠️ Штормовое предупреждение."
+    return f"⚠️ Штормовое предупреждение: {detail}."
+
+
 def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
     if mode.startswith("morn"):
         return v2_text
@@ -592,7 +623,19 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
             f"🎯 Уверенность: {temp_part}; ветер/осадки лучше проверить утром.",
         )
 
-    lines = str(v2_text or "").splitlines()
+    v2_text = str(v2_text or "")
+    v2_text = v2_text.replace(
+        "🧭 Главное завтра: главный фактор — ветер, порывы и осторожность у воды.",
+        "🧭 Главное завтра: штормовые порывы; у воды и на открытых участках особенно осторожно.",
+    )
+    v2_text = re.sub(
+        r"(?:короткий\s+)?гидрокостюм\s*(?:шорти\s*)?\d+(?:/\d+)?\s*мм|shorty\s*2\s*мм",
+        "экипировку выбрать по длительности сессии, ветру и индивидуальной переносимости воды",
+        v2_text,
+        flags=re.I,
+    )
+
+    lines = v2_text.splitlines()
     before_tags: list[str] = []
     hashtag_line = ""
     seen_hashtags = False
@@ -610,9 +653,28 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
     has_compact_nuance = any(line.strip().startswith("⚠️ Нюанс:") for line in before_tags)
     out: list[str] = []
     nuance_seen = False
+    skip_next_specific_warning = False
     for line in before_tags:
         stripped = line.strip()
+        if skip_next_specific_warning:
+            skip_next_specific_warning = False
+            if "шторм" in stripped.lower() or "порыв" in stripped.lower():
+                out.append(_storm_warning_replacement(stripped))
+                continue
         if has_compact_nuance and stripped.startswith("⚠️ Главный нюанс:"):
+            continue
+        if stripped == "⚠️ <b>Предупреждение</b>" or stripped == "⚠️ Предупреждение":
+            skip_next_specific_warning = True
+            continue
+        if stripped.startswith("⚠️") and ("шторм" in stripped.lower() or "порыв" in stripped.lower()):
+            normalized = _storm_warning_replacement(stripped)
+            if normalized not in out:
+                out.append(normalized)
+            continue
+        if "VayboMeter" in stripped and "/10" in stripped:
+            out.append(_storm_score_replacement(stripped, v2_text))
+            continue
+        if "Отлично" in stripped and re.search(r"\b(?:SUP|С[ёе]рф|Кайт|Винг|Винд)\b", stripped, flags=re.I):
             continue
         if _is_kld_nuance_line(stripped):
             if nuance_seen:
@@ -924,10 +986,18 @@ def _apply_astro_cleanup(v2_text: str) -> str:
             if stripped.startswith("✅ В целом:"):
                 line = "✅ Астроритм: благоприятный."
                 stripped = line
-            if not stripped.startswith(("🌅", "🌙", "✅", "💚")):
+            is_valid_astro = (
+                stripped.startswith(("🌅", "🌇", "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙"))
+                or (stripped.startswith("✨") and re.search(r"%|освещ", stripped, flags=re.I))
+                or (stripped.startswith(("✅", "⚠️", "➿")) and "общий фон" in stripped.lower())
+                or stripped.startswith("✅ Астроритм")
+                or stripped.startswith("💚 В плюсе")
+                or stripped.startswith(("⚫️ VoC", "⚫ VoC"))
+            )
+            if not is_valid_astro:
                 continue
             astro_details += 1
-            if astro_details > 4:
+            if astro_details > 7:
                 continue
         out.append(line)
     return "\n".join(out)
@@ -1091,6 +1161,8 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
 
 def _inject_evening_score(v2_text: str, mode: str) -> str:
     if mode.startswith("morn") or not _env_on("EVENING_VAYBOMETER_SCORE"):
+        return v2_text
+    if any("VayboMeter" in line and "/10" in line for line in str(v2_text or "").splitlines()):
         return v2_text
     return _insert_before_anchor(v2_text, _kld_evening_score_line(v2_text), ("🎯 <b>Уверенность", "🎯"))
 

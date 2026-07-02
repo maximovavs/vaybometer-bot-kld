@@ -245,6 +245,11 @@ def _assert_equal(case_name: str, label: str, actual: Any, expected: Any) -> Non
         raise AssertionError(f"{case_name}: {label} expected {expected!r}, got {actual!r}")
 
 
+def _assert_startswith(case_name: str, label: str, actual: str, expected_prefix: str) -> None:
+    if not str(actual).startswith(expected_prefix):
+        raise AssertionError(f"{case_name}: {label} expected prefix {expected_prefix!r}, got {actual!r}")
+
+
 def _assert_contains(case_name: str, prompt: str, needle: str) -> None:
     if needle not in prompt:
         raise AssertionError(f"{case_name}: prompt must contain {needle!r}")
@@ -315,9 +320,9 @@ def run_image_prompt_bridge_case() -> None:
         post_type="evening",
     )
 
-    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
     for needle in [
-        "Create an atmospheric, information-driven weather illustration for VayboMeter Kaliningrad.",
+        "Create a photorealistic Baltic coastline weather scene for VayboMeter Kaliningrad.",
         "Weather: cloudy Baltic weather.",
         "Sky cue: cloud-dominant evening sky; celestial details hidden by clouds.",
         "Activity cue: unoccupied shoreline and open Baltic water; scale: none.",
@@ -375,7 +380,7 @@ def run_first_quarter_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
     for needle in [
         "a small non-dominant waxing half-to-gibbous Moon with the right side illuminated, not a full moon",
         "small",
@@ -424,7 +429,7 @@ def run_not_quite_full_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
     for needle in [
         "a realistic gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon",
         "no perfect full moon when illumination is below 97 percent",
@@ -462,7 +467,7 @@ def run_full_moon_evening_moonlit_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
     for needle in [
         "Evening moonlit cue: blue-hour Baltic coast",
         "soft evening twilight",
@@ -511,7 +516,7 @@ def run_waning_gibbous_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_equal(name, "style_name", style_name, "format_v2_scene_cues")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
     _assert_contains(
         name,
         prompt,
@@ -523,6 +528,60 @@ def run_waning_gibbous_moon_guard_case() -> None:
         "\n".join(line for line in prompt.splitlines() if not line.strip().startswith("Must avoid:")),
         "a realistic waxing gibbous Moon, 90-96 percent illuminated",
     )
+
+    print(f"PASS {name}")
+
+
+def run_storm_waning_92_visual_guard_case() -> None:
+    name = "storm_waning_92_visual_guard"
+    message = "\n".join(
+        [
+            "<b>🌅 Калининградская область завтра (03.07.2026)</b>",
+            "✨ VayboMeter завтра: 5.7/10 — с оговорками; штормовые порывы и локальные осадки.",
+            "⚠️ Штормовое предупреждение: порывы до 19 м/с.",
+            "🌊 <b>Морские города</b>",
+            "Балтийск: 21/16 °C • 🌧 местами дождь • 💨 6.9 м/с • порывы до 19 м/с • 🌊 21°C • волна 1.3 м",
+            "Зеленоградск: 21/16 °C • облачно • 💨 6.9 м/с • порывы до 19 м/с • 🌊 23°C • волна 2.0 м",
+            "🌖 Убывающая Луна в ♐ — 92% освещённости.",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 7, 2),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+    message_93 = message.replace("92% освещённости", "93% освещённости")
+    _prompt_93, style_name_93 = build_kld_evening_prompt(
+        dt.date(2026, 7, 2),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message_93,
+        post_type="evening",
+    )
+
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name_93", style_name_93, "format_v2_scene_cues_v3_")
+    if style_name == style_name_93:
+        raise AssertionError(f"{name}: style/cache digest must change with illumination")
+    for needle in [
+        "photorealistic Baltic coastline",
+        "realistic waning gibbous Moon, 92% illuminated",
+        "small-to-medium natural moon scale",
+        "blue-hour stormy evening",
+        "strong wind and restless waves",
+        "no illustration",
+        "no vector art",
+        "no painting",
+        "no poster",
+        "no cartoon",
+        "no perfect full moon",
+        "no oversized moon",
+        "no fantasy supermoon",
+        "no bright daytime",
+    ]:
+        _assert_contains(name, prompt, needle)
 
     print(f"PASS {name}")
 
@@ -715,9 +774,10 @@ def main() -> None:
     run_not_quite_full_moon_guard_case()
     run_full_moon_evening_moonlit_guard_case()
     run_waning_gibbous_moon_guard_case()
+    run_storm_waning_92_visual_guard_case()
     run_morning_cases()
     run_controlled_variety_cases()
-    print(f"OK: {len(CASES) + 9} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 10} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":
