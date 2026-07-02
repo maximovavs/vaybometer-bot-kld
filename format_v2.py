@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import re
 
+from editorial_voice import build_evening_human_line, build_morning_human_line
+
 
 def _is_sep(line: str) -> bool:
     s = line.strip()
@@ -625,6 +627,23 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
     }
 
 
+def _kld_voice_conditions(lines: list[str], *, flags: dict[str, bool] | None = None, uv_line: str = "") -> dict[str, object]:
+    text = "\n".join(lines)
+    max_temp = _max_temperature_c(text)
+    max_wind = _max_wind_ms(text)
+    source_flags = flags or {}
+    uv = _uv_value(uv_line or text)
+    return {
+        "max_temp": source_flags.get("max_temp", max_temp),
+        "uv": uv,
+        "uv_high": bool(source_flags.get("uv_high")) or isinstance(uv, (int, float)) and uv >= 6,
+        "warm": bool(source_flags.get("warm") or source_flags.get("warm_uv_day") or source_flags.get("temp_high")),
+        "wind": bool(source_flags.get("wind")) or isinstance(max_wind, (int, float)) and max_wind >= 8,
+        "gust": max_wind,
+        "rain": bool(source_flags.get("rain")) or _has_any(text, ("дожд", "морось", "ливн", "осад")),
+    }
+
+
 def _morning_score_line(source: str, flags: dict[str, bool]) -> str:
     if source:
         s = source.strip()
@@ -797,6 +816,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     region_context = _morning_region_context_line(lines, flags)
     if region_context:
         out.append(region_context)
+    human_line = build_morning_human_line("Калининград", date_s or "today", _kld_voice_conditions(lines, flags=flags, uv_line=uv_line))
+    if human_line:
+        out.append(human_line)
     if weather:
         out.append(_clean_morning_weather_line(weather))
     out.append(_morning_feels_line(feels, flags))
@@ -859,6 +881,9 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     out.append(_evening_main_scenario(flags, score))
     if nuance:
         out.append(nuance)
+    human_line = build_evening_human_line("Калининград", date_s or "tomorrow", _kld_voice_conditions(lines, flags=flags))
+    if human_line:
+        out.append(human_line)
     if confidence:
         out.append(confidence)
     out.append("")

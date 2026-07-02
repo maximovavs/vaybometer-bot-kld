@@ -13,6 +13,7 @@ from typing import Union
 import pendulum
 from telegram import Bot, constants
 
+from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
 
@@ -482,6 +483,58 @@ def _insert_main_nuance(v2_text: str) -> str:
     ):
         return v2_text
     return _inject_after_anchor(v2_text, _kld_main_nuance(v2_text), ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
+
+
+def _date_from_text(v2_text: str) -> str:
+    m = re.search(r"\((\d{2}\.\d{2}\.\d{4})\)", str(v2_text or ""))
+    return m.group(1) if m else ""
+
+
+def _without_editorial_voice(v2_text: str) -> list[str]:
+    return [
+        line
+        for line in str(v2_text or "").splitlines()
+        if not line.strip().startswith(("💬 По-человечески:", "💬 Настрой на завтра:"))
+    ]
+
+
+def _kld_voice_conditions(v2_text: str) -> dict[str, object]:
+    c = _kld_conditions(v2_text)
+    text = _plain(v2_text).lower()
+    return {
+        "max_temp": c.get("tmax"),
+        "uv": c.get("uv"),
+        "uv_high": isinstance(c.get("uv"), (int, float)) and c["uv"] >= 6,
+        "wind": isinstance(c.get("gust"), (int, float)) and c["gust"] >= 8 or "ветер" in text or "порыв" in text,
+        "gust": c.get("gust"),
+        "rain": "дожд" in text or "морось" in text or "осадки" in text,
+        "warm": isinstance(c.get("tmax"), (int, float)) and c["tmax"] >= 20,
+    }
+
+
+def _insert_editorial_after(lines: list[str], line_to_add: str, prefixes: tuple[str, ...]) -> str:
+    if not line_to_add:
+        return "\n".join(lines)
+    insert_at = None
+    for idx, line in enumerate(lines):
+        if line.strip().startswith(prefixes):
+            insert_at = idx
+    if insert_at is None:
+        insert_at = 0
+    out = list(lines)
+    out.insert(insert_at + 1, line_to_add)
+    return "\n".join(out)
+
+
+def _apply_editorial_voice(v2_text: str, mode: str) -> str:
+    lines = _without_editorial_voice(v2_text)
+    date_s = _date_from_text(v2_text)
+    conditions = _kld_voice_conditions(v2_text)
+    if mode.startswith("morn"):
+        line = build_morning_human_line("Калининград", date_s or "today", conditions)
+        return _insert_editorial_after(lines, line, ("🌡 Теплее всего —", "🌡 По области:", "✨ VayboMeter:"))
+    line = build_evening_human_line("Калининград", date_s or "tomorrow", conditions)
+    return _insert_editorial_after(lines, line, ("⚠️ Нюанс:", "⚠️ Главный нюанс:", "🧭 Главное завтра:", "✨ VayboMeter завтра:", "✨ VayboMeter:"))
 
 
 def _is_kld_nuance_line(line: str) -> bool:
@@ -1025,6 +1078,7 @@ def _apply_format_v2_safe_postprocess(v2_raw: str, raw_msg: str, legacy_text: st
     out = _apply_format_v2_test_polish(out)
     out = _apply_confidence_polish(out)
     out = _insert_main_nuance(out)
+    out = _apply_editorial_voice(out, mode)
     out = _apply_astro_cleanup(out)
     out = _apply_score_conclusion(out)
     out = _inject_morning_smart_plan(out, mode)

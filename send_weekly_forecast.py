@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from editorial_voice import build_weekly_meaning
+
 REGION_NAME = "Калининград"
 TZ_STR = os.getenv("TZ", "Europe/Kaliningrad")
 PRIMARY_COORDS = (54.7104, 20.4522)
@@ -414,12 +416,16 @@ def build_weekly_forecast(
     lunar = _lunar_lines(start, lunar_data, astro_events)
     plan = _plan_lines(metrics, poor_air, elevated_kp, lunar)
     water_sport = _water_sport_lines(metrics)
+    weekly_meaning = build_weekly_meaning(REGION_NAME, start, metrics)
 
     lines = [
         f"🗓 Вайб недели: {_fmt_week_range(start)}",
         "",
         "✨ Главный фон недели",
         _main_background(metrics),
+        "",
+        "🌿 Смысл недели",
+        weekly_meaning,
         "",
         "🌦 Погода",
         _weather_line(metrics),

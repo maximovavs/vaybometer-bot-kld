@@ -79,6 +79,8 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     text = _base_text()
     assert "🗓 Вайб недели" in text
     assert "✨ Главный фон недели" in text
+    assert "🌿 Смысл недели" in text
+    assert text.index("✨ Главный фон недели") < text.index("🌿 Смысл недели") < text.index("🌦 Погода")
     assert "🌦 Погода" in text
     assert "🌊 Балтика" in text
     assert "Балтика: вода" not in text

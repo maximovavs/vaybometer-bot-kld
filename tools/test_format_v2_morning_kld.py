@@ -306,9 +306,10 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     assert vaybo_lines == ["✨ VayboMeter: 7.2/10 — с оговорками; жара и высокий УФ."]
     assert "7.2/10" in vaybo_lines[0]
     assert "🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°)." in lines
+    assert text.count("💬 По-человечески:") == 1
     assert "🌡 По области: жарко; у Балтики обычно свежее" not in text
     assert window_lines == ["🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень."]
-    assert "🌡 Ощущается: жарко; на солнце высокая нагрузка." in lines[:5]
+    assert "🌡 Ощущается: жарко; на солнце высокая нагрузка." in lines
     assert "⚠️ Главный нюанс: жара и УФ важнее формальной облачности." in text
     assert "давл. 1015 гПа ↓" in text
     assert "🔷 1015 гПа" not in text
@@ -335,7 +336,8 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     feels_i = lines.index("🌡 Ощущается: жарко; на солнце высокая нагрузка.")
     window_i = lines.index("🕘 Лучшее окно: до 11:00 и после 18:30; днём — тень.")
     context_i = lines.index("🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°).")
-    assert context_i < weather_i < feels_i < window_i < uv_i < air_i < sensor_i < kp_i < baltic_i < fx_i < astro_i
+    voice_i = next(i for i, line in enumerate(lines) if line.startswith("💬 По-человечески:"))
+    assert context_i < voice_i < weather_i < feels_i < window_i < uv_i < air_i < sensor_i < kp_i < baltic_i < fx_i < astro_i
     assert lines[fx_i + 1] == ""
     assert fx_i + 2 == astro_i
     assert fx_i > weather_i + 1
