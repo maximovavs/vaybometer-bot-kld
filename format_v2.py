@@ -749,6 +749,24 @@ def _uv_value(line: str) -> float | None:
         return None
 
 
+_KLD_MISSING_CORE_LINE = "⚠️ Данные по Калининграду обновились не полностью; проверяем источник."
+_KLD_MISSING_CORE_PLAN = "✅ План: перед выходом проверьте актуальный прогноз; пост обновится после восстановления данных."
+
+
+def _morning_core_weather_available(weather_line: str) -> bool:
+    p = _plain(_normalize_weather_line(weather_line or "")).replace("\u00a0", " ")
+    if not p:
+        return False
+    has_temp = bool(
+        re.search(r"-?\d+(?:[\.,]\d+)?\s*/\s*-?\d+(?:[\.,]\d+)?\s*°\s*C?", p, flags=re.I)
+    )
+    has_wind = bool(
+        re.search(r"(?:💨|ветер)[^.\n;•]{0,40}\d+(?:[\.,]\d+)?\s*м/с", p, flags=re.I)
+        or re.search(r"\d+(?:[\.,]\d+)?\s*м/с", p, flags=re.I)
+    )
+    return has_temp and has_wind
+
+
 def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
     text = "\n".join(lines)
     max_temp = _max_temperature_c(text)
@@ -863,7 +881,7 @@ def _morning_region_context_line(lines: list[str], flags: dict[str, bool]) -> st
         cool = min(pairs, key=lambda item: item[1])
         if warm[0] != cool[0]:
             return f"🌡 Теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°) (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)."
-    return "🌡 По области: тепло; у Балтики свежее и ветренее."
+    return ""
 
 
 def _clean_baltic_line(line: str) -> str:
@@ -902,16 +920,27 @@ def _morning_sea_lines(lines: list[str]) -> list[str]:
             out.append(_clean_baltic_line(s))
     if out:
         return out[:1]
-    return ["🌊 Балтика: у воды свежее; для прогулки лучше защищённые променады."]
+    return []
 
 
 def _final_plan_line(lines: list[str], has_warning: bool, has_rain: bool) -> str:
+    forbidden_generic = (
+        "избегайте стрессовых новостей",
+        "лёгкая растяжка перед сном",
+        "легкая растяжка перед сном",
+        "планируйте поездки заранее",
+    )
     for line in lines:
         s = line.strip()
         if s.startswith("✅ План:"):
+            if any(phrase in s.lower() for phrase in forbidden_generic):
+                continue
             return s
         if s.startswith("✅ Сегодня:"):
-            return "✅ План: " + s.split(":", 1)[1].strip()
+            plan = "✅ План: " + s.split(":", 1)[1].strip()
+            if any(phrase in plan.lower() for phrase in forbidden_generic):
+                continue
+            return plan
     tips = _tips_fallback(has_warning, has_rain)
     return "✅ План: " + " ".join(tips)
 
@@ -946,6 +975,17 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     has_rain = "дожд" in safe_legacy_text.lower() or "морось" in safe_legacy_text.lower()
 
     out: list[str] = [f"<b>🌅 Калининград сегодня{title_date}</b>"]
+
+    if not _morning_core_weather_available(weather):
+        out.append(_KLD_MISSING_CORE_LINE)
+        if astro:
+            out.append("")
+            out.extend(astro)
+        elif sunset:
+            out.append(sunset[0])
+        out.append(_KLD_MISSING_CORE_PLAN)
+        out.append(tags)
+        return "\n".join(out).strip()
 
     for line in (_morning_score_line(score, flags), scenario):
         if line and line not in out:

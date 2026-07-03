@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Tuple, Optional, Union
 import urllib.request
 import urllib.error
 import random
+import time
 
 import pendulum
 from telegram import Bot, constants
@@ -612,8 +613,13 @@ def _fetch_temps_for_offset(
     lat: float, lon: float, tz_name: str, offset_days: int
 ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
     wm = get_weather(lat, lon) or {}
+    return _temps_for_offset_from_weather(wm, pendulum.timezone(tz_name), offset_days)
+
+
+def _temps_for_offset_from_weather(
+    wm: Dict[str, Any], tz: pendulum.Timezone, offset_days: int
+) -> Tuple[Optional[float], Optional[float], Optional[int]]:
     daily = wm.get("daily") or {}
-    tz = pendulum.timezone(tz_name)
 
     idx = _daily_index_for_offset(wm, tz, offset_days)
     if idx is None:
@@ -636,6 +642,65 @@ def _fetch_temps_for_offset(
     except Exception:
         wc = None
     return tmax, tmin, wc
+
+
+def _daily_wind_kmh_for_offset(
+    wm: Dict[str, Any], tz: pendulum.Timezone, offset_days: int, *, gust: bool = False
+) -> Optional[float]:
+    daily = wm.get("daily") or {}
+    idx = _daily_index_for_offset(wm, tz, offset_days)
+    if idx is None:
+        return None
+    keys = (
+        ("wind_gusts_10m_max", "windgusts_10m_max", "wind_gust_max", "windgust_max")
+        if gust
+        else ("wind_speed_10m_max", "windspeed_10m_max", "wind_speed_max", "windspeed_max")
+    )
+    for key in keys:
+        arr = daily.get(key) or []
+        try:
+            value = arr[idx]
+            if value is not None:
+                return float(value)
+        except Exception:
+            continue
+    return None
+
+
+def _weather_core_for_offset(wm: Dict[str, Any], tz: pendulum.Timezone, offset_days: int) -> bool:
+    t_day, t_night, _ = _temps_for_offset_from_weather(wm, tz, offset_days)
+    wind_ms, _wind_dir, _press, _trend = pick_header_metrics_for_offset(wm, tz, offset_days)
+    if wind_ms is None:
+        wind_ms = kmh_to_ms(_daily_wind_kmh_for_offset(wm, tz, offset_days))
+    return isinstance(t_day, (int, float)) and isinstance(t_night, (int, float)) and isinstance(wind_ms, (int, float))
+
+
+def _get_weather_with_retry(
+    lat: float,
+    lon: float,
+    *,
+    source_label: str,
+    validator=None,
+    attempts: int = 3,
+    backoff_s: float = 0.6,
+) -> Dict[str, Any]:
+    last: Dict[str, Any] = {}
+    total = max(1, int(attempts))
+    for attempt in range(1, total + 1):
+        try:
+            wm = get_weather(lat, lon) or {}
+        except Exception as exc:
+            wm = {}
+            logging.warning("%s: weather source failed on attempt %s/%s: %s", source_label, attempt, total, exc)
+        last = wm
+        if wm and (validator is None or validator(wm)):
+            if attempt > 1:
+                logging.info("%s: weather source recovered on attempt %s/%s", source_label, attempt, total)
+            return wm
+        logging.warning("%s: weather source incomplete on attempt %s/%s", source_label, attempt, total)
+        if attempt < total:
+            time.sleep(max(0.0, float(backoff_s)))
+    return last or {}
 
 def day_night_stats(lat: float, lon: float, tz: str = "UTC") -> Dict[str, Optional[float]]:
     wm = get_weather(lat, lon) or {}
@@ -1690,9 +1755,18 @@ def build_message_morning_compact(
     fact_text = fact_text.strip()
     fact_line = f"🌾 Доброе утро! {fact_text}" if fact_text else "🌾 Доброе утро!"
 
-    wm_klg = get_weather(KLD_LAT, KLD_LON) or {}
-    t_day, t_night, wcode = _fetch_temps_for_offset(KLD_LAT, KLD_LON, tz_obj.name, DAY_OFFSET)
+    wm_klg = _get_weather_with_retry(
+        KLD_LAT,
+        KLD_LON,
+        source_label="KLD morning Kaliningrad weather",
+        validator=lambda wm: _weather_core_for_offset(wm, tz_obj, DAY_OFFSET),
+    )
+    t_day, t_night, wcode = _temps_for_offset_from_weather(wm_klg, tz_obj, DAY_OFFSET)
+    if t_day is None or t_night is None:
+        t_day, t_night, wcode = _fetch_temps_for_offset(KLD_LAT, KLD_LON, tz_obj.name, DAY_OFFSET)
     wind_ms, wind_dir_deg, press_val, press_trend = pick_header_metrics_for_offset(wm_klg, tz_obj, DAY_OFFSET)
+    if wind_ms is None:
+        wind_ms = kmh_to_ms(_daily_wind_kmh_for_offset(wm_klg, tz_obj, DAY_OFFSET))
 
     gust = None
     try:
@@ -1704,6 +1778,8 @@ def build_message_morning_compact(
             gust = float(arr[idx_noon]) / 3.6
     except Exception:
         pass
+    if gust is None:
+        gust = kmh_to_ms(_daily_wind_kmh_for_offset(wm_klg, tz_obj, DAY_OFFSET, gust=True))
 
     desc = code_desc(wcode) or "—"
     tday_i   = int(round(t_day))   if isinstance(t_day, (int, float)) else None

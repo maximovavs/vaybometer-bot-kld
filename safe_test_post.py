@@ -104,7 +104,15 @@ def _score_label(score: float) -> str:
 
 def _kld_weather_line(v2_text: str) -> str:
     lines = [x.strip() for x in str(v2_text or "").splitlines() if x.strip()]
-    return next((x for x in lines if x.startswith(("🏙️ Калининград", "🏙 Калининград", "Калининград"))), "")
+    return next(
+        (
+            x
+            for x in lines
+            if x.startswith(("🏙️ Калининград", "🏙 Калининград", "Калининград"))
+            or ("Калининград" in x and "🏙" in x)
+        ),
+        "",
+    )
 
 
 def _kld_conditions(v2_text: str) -> dict[str, float | bool | None]:
@@ -121,6 +129,15 @@ def _kld_conditions(v2_text: str) -> dict[str, float | bool | None]:
         "uv": _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line),
         "aqi": _num(r"AQI\s*(\d+(?:[\.,]\d+)?)", air_line),
     }
+
+
+_KLD_MISSING_CORE_LINE = "⚠️ Данные по Калининграду обновились не полностью; проверяем источник."
+_KLD_MISSING_CORE_PLAN = "✅ План: перед выходом проверьте актуальный прогноз; пост обновится после восстановления данных."
+
+
+def _kld_core_weather_available(v2_text: str) -> bool:
+    c = _kld_conditions(v2_text)
+    return isinstance(c.get("tmax"), (int, float)) and isinstance(c.get("wind"), (int, float))
 
 
 def _kld_feels_line(v2_text: str) -> str:
@@ -571,6 +588,8 @@ def _apply_editorial_voice(v2_text: str, mode: str) -> str:
     date_s = _date_from_text(v2_text)
     conditions = _kld_voice_conditions(v2_text)
     if mode.startswith("morn"):
+        if not _kld_core_weather_available(v2_text):
+            return "\n".join(lines)
         line = build_morning_human_line("Калининград", date_s or "today", conditions)
         return _insert_editorial_after(lines, line, ("🌡 Теплее всего —", "🌡 По области:", "✨ VayboMeter:"))
     line = build_evening_human_line("Калининград", date_s or "tomorrow", conditions)
@@ -830,6 +849,15 @@ def _replace_or_insert_regional_line(v2_text: str, line_to_add: str) -> str:
     return _inject_after_anchor("\n".join(out), line_to_add, ("✨ VayboMeter",))
 
 
+def _remove_vague_regional_fallback(v2_text: str) -> str:
+    lines = [
+        line
+        for line in str(v2_text or "").splitlines()
+        if not line.strip().startswith("🌡 По области:")
+    ]
+    return "\n".join(lines)
+
+
 def _insert_kp_line(v2_text: str, line_to_add: str) -> str:
     if not line_to_add:
         return v2_text
@@ -857,8 +885,19 @@ def _replace_or_insert_baltic_line(v2_text: str, line_to_add: str) -> str:
     )
 
 
+def _remove_vague_baltic_fallback(v2_text: str) -> str:
+    lines = [
+        line
+        for line in str(v2_text or "").splitlines()
+        if not line.strip().startswith("🌊 Балтика: у воды")
+    ]
+    return "\n".join(lines)
+
+
 def _apply_morning_raw_context(v2_text: str, raw_text: str, mode: str) -> str:
     if not mode.startswith("morn"):
+        return v2_text
+    if not _kld_core_weather_available(v2_text):
         return v2_text
     out = v2_text
     regional = _regional_context_from_source(raw_text)
@@ -935,10 +974,14 @@ def _finalize_kld_morning_safe_text(v2_text: str, raw_msg: str, legacy_text: str
     if not mode.startswith("morn"):
         return v2_text
     out = v2_text
+    if not _kld_core_weather_available(out):
+        return _replace_plan(_soften_private_sensor_wording(out), _KLD_MISSING_CORE_PLAN)
 
     regional = _regional_context_from_source(raw_msg) or _regional_context_from_source(legacy_text)
     if regional:
         out = _replace_or_insert_regional_line(out, regional)
+    else:
+        out = _remove_vague_regional_fallback(out)
 
     sensor = _sensor_line_from_legacy(raw_msg) or _sensor_line_from_legacy(legacy_text) or _sensor_line_from_legacy(out)
     if sensor:
@@ -950,6 +993,8 @@ def _finalize_kld_morning_safe_text(v2_text: str, raw_msg: str, legacy_text: str
     baltic = _baltic_line_from_source(raw_msg) or _baltic_line_from_source(legacy_text)
     if baltic:
         out = _replace_or_insert_baltic_line(out, baltic)
+    else:
+        out = _remove_vague_baltic_fallback(out)
 
     return _soften_private_sensor_wording(out)
 
@@ -1083,6 +1128,8 @@ def _replace_plan(v2_text: str, new_plan: str) -> str:
 def _inject_morning_feels(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_FEELS_LIKE")):
         return v2_text
+    if not _kld_core_weather_available(v2_text):
+        return v2_text
     if "🌡 Ощущается:" in v2_text:
         return v2_text
     feels = _kld_feels_line(v2_text)
@@ -1093,6 +1140,8 @@ def _inject_morning_feels(v2_text: str, mode: str) -> str:
 
 def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_BEST_WINDOW")):
+        return v2_text
+    if not _kld_core_weather_available(v2_text):
         return v2_text
     if "Лучшее окно:" in v2_text:
         return v2_text
@@ -1106,6 +1155,8 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
 
 def _inject_morning_score(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_VAYBOMETER_SCORE")):
+        return v2_text
+    if not _kld_core_weather_available(v2_text):
         return v2_text
     score = _kld_score_line(v2_text)
     lines = str(v2_text or "").splitlines()
@@ -1171,6 +1222,8 @@ def _inject_evening_score(v2_text: str, mode: str) -> str:
 def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_SMART_PLAN")):
         return v2_text
+    if not _kld_core_weather_available(v2_text):
+        return _replace_plan(v2_text, _KLD_MISSING_CORE_PLAN)
     return _replace_plan(v2_text, _kld_smart_plan_line(v2_text))
 
 

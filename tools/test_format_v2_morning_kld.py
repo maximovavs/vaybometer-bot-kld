@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -188,6 +189,24 @@ REAL_LEGACY_MILD_WITHOUT_REGION = """<b>🌅 Калининградская об
 #Калининград #погода #здоровье #сегодня #море
 """
 
+MISSING_CORE_REAL_FIXTURE = """<b>🌅 Калининградская область: погода на сегодня (03.07.2026)</b>
+✨ VayboMeter: 8.6/10 — хорошо.
+🌡 По области: тепло; у Балтики свежее и ветренее.
+💬 По-человечески: редкий день, когда погода почти не спорит с планами.
+Погода: 🏙 Калининград — н/д • ясно • 💨 н/д • 🔷 н/д.
+🏭 Воздух: 🟢 низкий (AQI 22) • PM₂.₅ 5 / PM₁₀ 10
+💱 Курсы (утро): USD 94.12 ₽ ↑0.35 • EUR 101.43 ₽ ↑0.27 • CNY 12.90 ₽ →0.00
+🌇 Закат сегодня: 21:34
+📻 <b>Астрособытия</b>
+🌙 🟡 Почти полная Луна, ♐ (96%)
+✨ 96% освещённости — эмоции ярче обычного.
+💚 В плюсе: планы, обучение.
+⚫ VoC: 18:20–19:10.
+🌊 Балтика: у воды свежее; для прогулки лучше защищённые променады.
+✅ План: ⏰ Планируйте поездки заранее; 🙅 Избегайте стрессовых новостей; 😌 Лёгкая растяжка перед сном.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
 
 def _astro_lines(text: str) -> list[str]:
     lines = text.splitlines()
@@ -356,26 +375,72 @@ def kld_morning_mild_uv_avoids_heat_wording_and_keeps_details() -> None:
     assert "🌊 Балтика: вода 20°C; волна 0.2 м; у воды свежее, ветер ощущается заметнее." in text
     assert "✅ Общий фон: благоприятный, без перегруза." in text
     assert "💚 В плюсе: прогулки, восстановление." in text
-    assert "⚫️ VoC: 08:20–10:10." in text
+    assert "VoC: 08:20–10:10." in text
     fx_i = next(i for i, line in enumerate(lines) if line.startswith("💱 Курсы:"))
     astro_i = next(i for i, line in enumerate(lines) if line.startswith("🌇 <b>Солнце, Луна"))
     assert lines[fx_i + 1] == ""
     assert fx_i + 2 == astro_i
 
 
-def kld_morning_adds_baltic_fallback_when_sea_missing() -> None:
+def kld_morning_omits_baltic_when_sea_missing() -> None:
     fixture = HOT_MORNING_FIXTURE.replace("🌊 Балтика: вода 18 °C • волна 0.4 м.\n", "")
     text = build_morning_format_v2("Калининградская область", fixture)
-    assert "🌊 Балтика: у воды свежее; для прогулки лучше защищённые променады." in text
+    assert "🌊 Балтика:" not in text
 
 
-def kld_morning_region_context_fallback_when_only_kaliningrad() -> None:
+def kld_morning_omits_region_context_when_only_kaliningrad() -> None:
     fixture = HOT_MORNING_FIXTURE.replace(
         "🌡 <b>Тёплые города</b>\nБалтийск: 31/22 °C • ясно • 💨 7 м/с\nГвардейск: 39/21 °C • ясно\nНеман: 35/17 °C • ясно\n",
         "",
     )
     text = build_morning_format_v2("Калининградская область", fixture)
-    assert "🌡 По области: тепло; у Балтики свежее и ветренее." in text
+    assert "🌡 По области:" not in text
+    assert "🌡 Теплее всего —" not in text
+
+
+def kld_morning_missing_core_weather_fails_closed() -> None:
+    env_names = (
+        "FORMAT_V2",
+        "MORNING_BEST_WINDOW",
+        "MORNING_VAYBOMETER_SCORE",
+        "MORNING_SMART_PLAN",
+        "FORMAT_V2_SENSOR_LINE",
+        "FORMAT_V2_ASTRO_CLEANUP",
+    )
+    old_env = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        legacy_result = sanitize_post_text(MISSING_CORE_REAL_FIXTURE)
+        v2 = build_format_v2("Калининградская область", "morning", legacy_result.text)
+        text = _apply_format_v2_safe_postprocess(v2, MISSING_CORE_REAL_FIXTURE, legacy_result.text, "morning")
+        text = sanitize_post_text(text).text
+        text = _finalize_kld_morning_safe_text(text, MISSING_CORE_REAL_FIXTURE, legacy_result.text, "morning")
+    finally:
+        for name, value in old_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    lines = text.splitlines()
+    assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
+    assert "⚠️ Данные по Калининграду обновились не полностью; проверяем источник." in text
+    assert not re.search(r"VayboMeter:\s*\d", text)
+    assert "хорошо" not in text.lower()
+    assert "спокойно" not in text.lower()
+    assert "погода почти не спорит" not in text
+    assert "Планируйте поездки заранее" not in text
+    assert "Избегайте стрессовых новостей" not in text
+    assert "Лёгкая растяжка перед сном" not in text
+    assert "🌡 По области: тепло" not in text
+    assert "🌊 Балтика: у воды свежее" not in text
+    assert "🌇 Закат сегодня: 21:34" in text
+    assert "Почти полная Луна" in text
+    assert "✨ 96% освещённости" in text
+    assert "💚 В плюсе:" in text
+    assert "VoC: 18:20–19:10." in text
+    assert "✅ План: перед выходом проверьте актуальный прогноз; пост обновится после восстановления данных." in text
 
 
 def kld_morning_postprocess_does_not_reintroduce_duplicates() -> None:
@@ -574,8 +639,9 @@ def main() -> None:
         kld_morning_cosmoweather_is_compact,
         kld_morning_hot_day_uses_cyprus_style_skeleton,
         kld_morning_mild_uv_avoids_heat_wording_and_keeps_details,
-        kld_morning_adds_baltic_fallback_when_sea_missing,
-        kld_morning_region_context_fallback_when_only_kaliningrad,
+        kld_morning_omits_baltic_when_sea_missing,
+        kld_morning_omits_region_context_when_only_kaliningrad,
+        kld_morning_missing_core_weather_fails_closed,
         kld_morning_postprocess_does_not_reintroduce_duplicates,
         kld_morning_real_safe_pipeline_uses_raw_context,
         kld_morning_real_safe_pipeline_handles_warm_uv_without_heat_wording,
