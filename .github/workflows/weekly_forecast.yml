@@ -59,6 +59,8 @@ jobs:
       - name: Schedule guard
         id: schedule_guard
         shell: bash
+        env:
+          SCHEDULE_EXPR: ${{ github.event.schedule }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
@@ -66,13 +68,28 @@ jobs:
             exit 0
           fi
 
-          echo "Scheduled local time: $(TZ="$TZ" date)"
-          if [ "$(TZ="$TZ" date +%u)" = "6" ] && [ "$(TZ="$TZ" date +%H)" = "22" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Skipping schedule outside Saturday 22:00 local time."
+          if [ "${SCHEDULE_EXPR:-}" != "0 20 * * 6" ]; then
+            echo "Skipping unknown weekly schedule: ${SCHEDULE_EXPR:-∅}"
             echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          week_start="$(python - <<'PY'
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+          import os
+
+          today = datetime.now(ZoneInfo(os.environ.get("TZ", "Europe/Kaliningrad"))).date()
+          days_until_monday = (7 - today.weekday()) % 7
+          if days_until_monday == 0:
+              days_until_monday = 7
+          print((today + timedelta(days=days_until_monday)).isoformat())
+          PY
+          )"
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "week_start=$week_start" >> "$GITHUB_OUTPUT"
+          echo "Accepted KLD weekly scheduled event: ${SCHEDULE_EXPR}"
+          echo "Scheduled weekly range starts Monday: $week_start"
 
       - uses: actions/checkout@v4
         if: steps.schedule_guard.outputs.should_run == 'true'
@@ -97,11 +114,12 @@ jobs:
 
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             CHANNEL_ID_OVERRIDE=""
-            WEEK_START_DATE=""
+            WEEK_START_DATE="${{ steps.schedule_guard.outputs.week_start }}"
             SEND_TO_TEST="false"
             PUBLISH_TO_PROD="true"
             DRY_RUN="false"
             echo "Weekly forecast target: scheduled production"
+            echo "Scheduled weekly range starts Monday: $WEEK_START_DATE"
           fi
 
           args=("send_weekly_forecast.py")
