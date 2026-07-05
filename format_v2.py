@@ -960,7 +960,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     main_nuance = _first_morning_pick(lines, ("⚠️ Главный нюанс",))
     fx = _morning_pick(lines, ("💱",))
     air = [x for x in _morning_pick(lines, ("🏭", "🌫", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
-    quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
+    quakes = _morning_pick(lines, ("🌍 Сейсмика",))
     uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
     uv_line = _clean_uv_line(uv[0]) if uv else ""
     sunset = _morning_pick(lines, ("🌇",))
@@ -1044,7 +1044,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     sea = _soften_sea_lines(raw_sea)
     warm_cold = _section_between(lines, "Тёплые города", ("🌅 Рассвет", "🌇 Закат", "Астрособытия", "Рекомендации"))
     astro = _astro_block(lines, morning=False, date_s=date_s)
-    quakes = _morning_pick(lines, ("🌍 Сейсмика 24ч:",))
+    quakes = _morning_pick(lines, ("🌍 Сейсмика",))
     score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
     flags = _evening_flags(lines, storm=storm)
     sup_water = _common_sup_water_line(raw_sea, has_storm=bool(flags.get("storm")))

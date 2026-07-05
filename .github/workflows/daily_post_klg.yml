@@ -93,7 +93,7 @@ env:
   KLD_QUAKE_SHOW_CALM: "0"
   KLD_QUAKE_HOURS: "24"
   KLD_QUAKE_RADIUS_KM: "500"
-  KLD_QUAKE_MIN_MAG: "2.0"
+  KLD_QUAKE_MIN_MAG: "0.9"
   KLD_VISUAL_HISTORY_PATH: ".cache/kld_visual_history_prod.json"
   KLD_VISUAL_HISTORY_PROD_PATH: ".cache/kld_visual_history_prod.json"
   KLD_VISUAL_HISTORY_TEST_PATH: ".cache/kld_visual_history_test.json"

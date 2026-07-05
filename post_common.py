@@ -1007,16 +1007,14 @@ def _kld_quake_line_24h() -> Optional[str]:
     except Exception:
         radius_km = 500.0
     try:
-        min_mag = float(os.getenv("KLD_QUAKE_MIN_MAG", "2.0"))
+        min_mag = float(os.getenv("KLD_QUAKE_MIN_MAG", "0.9"))
     except Exception:
-        min_mag = 2.0
+        min_mag = 0.9
     try:
         events = get_recent_earthquakes_kld(hours=hours, radius_km=radius_km, min_mag=min_mag)
-        if events is None:
-            return None
         return build_kld_quake_line(events, tz=os.getenv("TZ", "Europe/Kaliningrad"), show_calm=show_calm)
     except Exception:
-        return None
+        return build_kld_quake_line(None, tz=os.getenv("TZ", "Europe/Kaliningrad"), show_calm=show_calm)
 
 
 def uvi_label(x: float) -> str:
