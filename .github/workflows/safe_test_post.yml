@@ -139,7 +139,10 @@ jobs:
       - name: Restore .cache
         uses: actions/cache@v4
         with:
-          path: .cache
+          path: |
+            .cache
+            !.cache/kld_visual_history_prod.json
+            !.cache/kld_visual_history_test.json
           key: kld-safe-test-cache-${{ runner.os }}-${{ github.run_number }}
           restore-keys: |
             kld-safe-test-cache-${{ runner.os }}-

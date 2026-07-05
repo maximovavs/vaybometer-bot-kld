@@ -80,10 +80,10 @@ jobs:
           import os
 
           today = datetime.now(ZoneInfo(os.environ.get("TZ", "Europe/Kaliningrad"))).date()
-          days_until_monday = (7 - today.weekday()) % 7
-          if days_until_monday == 0:
-              days_until_monday = 7
-          print((today + timedelta(days=days_until_monday)).isoformat())
+          days_since_saturday = (today.weekday() - 5) % 7
+          scheduled_saturday = today - timedelta(days=days_since_saturday)
+          week_start = scheduled_saturday + timedelta(days=2)
+          print(week_start.isoformat())
           PY
           )"
           echo "should_run=true" >> "$GITHUB_OUTPUT"

@@ -51,6 +51,16 @@ def test_daily_visual_history_cache() -> None:
 
 def test_safe_test_visual_history_cache_and_checkbox() -> None:
     text = _read(SAFE_TEST)
+    generic_cache = _block(text, "      - name: Restore .cache", "      - name: Restore KLD visual history (prod)")
+    _assert("safe_generic_cache_keeps_cache_dir", "path: |\n            .cache" in generic_cache)
+    _assert(
+        "safe_generic_cache_excludes_prod_visual_history",
+        "!.cache/kld_visual_history_prod.json" in generic_cache,
+    )
+    _assert(
+        "safe_generic_cache_excludes_test_visual_history",
+        "!.cache/kld_visual_history_test.json" in generic_cache,
+    )
     _assert("safe_prod_path", "path: .cache/kld_visual_history_prod.json" in text)
     _assert("safe_test_path", "path: .cache/kld_visual_history_test.json" in text)
     _assert(
@@ -61,6 +71,10 @@ def test_safe_test_visual_history_cache_and_checkbox() -> None:
     _assert("safe_checkbox_declared", "send_image_to_test:" in text)
     _assert("safe_checkbox_invokes_tool", "python tools/kld_visual_fixture_image.py" in text)
     _assert("safe_tool_uses_test_namespace", "--history-namespace test" in text)
+    _assert(
+        "safe_history_restore_before_image_generation",
+        text.index("      - name: Restore KLD visual history (test)") < text.index("python tools/kld_visual_fixture_image.py"),
+    )
     _assert("safe_inline_imagegen_removed", "import imagegen" not in text)
     print("PASS safe_test_visual_history_cache_and_checkbox")
 

@@ -20,11 +20,10 @@ def _assert(name: str, condition: bool, detail: str = "") -> None:
         raise AssertionError(f"{name}: {detail or 'assertion failed'}")
 
 
-def _next_monday_after(local_date: date) -> date:
-    days_until_monday = (7 - local_date.weekday()) % 7
-    if days_until_monday == 0:
-        days_until_monday = 7
-    return local_date + timedelta(days=days_until_monday)
+def _week_start_from_scheduled_saturday_anchor(local_date: date) -> date:
+    days_since_saturday = (local_date.weekday() - 5) % 7
+    scheduled_saturday = local_date - timedelta(days=days_since_saturday)
+    return scheduled_saturday + timedelta(days=2)
 
 
 def test_scheduled_cron_is_event_based() -> None:
@@ -35,20 +34,23 @@ def test_scheduled_cron_is_event_based() -> None:
     _assert("no_weekday_guard", "date +%u" not in text)
     _assert("no_hour_guard", "date +%H" not in text)
     _assert("accept_log", "Accepted KLD weekly scheduled event" in text)
+    _assert("uses_saturday_anchor", "days_since_saturday = (today.weekday() - 5) % 7" in text)
+    _assert("uses_scheduled_saturday", "scheduled_saturday = today - timedelta(days=days_since_saturday)" in text)
     print("PASS scheduled_cron_is_event_based")
 
 
-def test_saturday_and_delayed_sunday_resolve_to_same_monday() -> None:
-    saturday = date(2026, 7, 4)
-    delayed_sunday = date(2026, 7, 5)
-    expected = date(2026, 7, 6)
-    _assert("saturday_monday", _next_monday_after(saturday) == expected, str(_next_monday_after(saturday)))
-    _assert(
-        "delayed_sunday_monday",
-        _next_monday_after(delayed_sunday) == expected,
-        str(_next_monday_after(delayed_sunday)),
-    )
-    print("PASS saturday_and_delayed_sunday_resolve_to_same_monday")
+def test_scheduled_delays_anchor_to_most_recent_saturday() -> None:
+    cases = {
+        date(2026, 7, 4): date(2026, 7, 6),
+        date(2026, 7, 5): date(2026, 7, 6),
+        date(2026, 7, 6): date(2026, 7, 6),
+        date(2026, 7, 7): date(2026, 7, 6),
+        date(2026, 7, 11): date(2026, 7, 13),
+    }
+    for local_date, expected in cases.items():
+        actual = _week_start_from_scheduled_saturday_anchor(local_date)
+        _assert(f"week_start_{local_date.isoformat()}", actual == expected, str(actual))
+    print("PASS scheduled_delays_anchor_to_most_recent_saturday")
 
 
 def test_scheduled_run_passes_explicit_week_start() -> None:
@@ -83,7 +85,7 @@ def test_manual_date_semantics_remain_unchanged() -> None:
 
 TESTS = (
     test_scheduled_cron_is_event_based,
-    test_saturday_and_delayed_sunday_resolve_to_same_monday,
+    test_scheduled_delays_anchor_to_most_recent_saturday,
     test_scheduled_run_passes_explicit_week_start,
     test_scheduled_routing_is_production_only,
     test_manual_date_semantics_remain_unchanged,
