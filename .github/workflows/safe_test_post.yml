@@ -123,6 +123,9 @@ env:
   FORMAT_V2_ASTRO_CLEANUP: "1"
   FORMAT_V2_CONFIDENCE_POLISH: "1"
   FORMAT_V2_SENSOR_LINE: "1"
+  KLD_VISUAL_HISTORY_PATH: ".cache/kld_visual_history_test.json"
+  KLD_VISUAL_HISTORY_PROD_PATH: ".cache/kld_visual_history_prod.json"
+  KLD_VISUAL_HISTORY_TEST_PATH: ".cache/kld_visual_history_test.json"
 
 jobs:
   safe_test:
@@ -140,6 +143,24 @@ jobs:
           key: kld-safe-test-cache-${{ runner.os }}-${{ github.run_number }}
           restore-keys: |
             kld-safe-test-cache-${{ runner.os }}-
+
+      - name: Restore KLD visual history (prod)
+        id: kld-visual-history-prod-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_visual_history_prod.json
+          key: kld-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-visual-history-prod-
+
+      - name: Restore KLD visual history (test)
+        id: kld-visual-history-test-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_visual_history_test.json
+          key: kld-visual-history-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-visual-history-test-
 
       - name: Time debug
         run: |
@@ -208,7 +229,7 @@ jobs:
           echo "Running: python ${args[*]}"
           python "${args[@]}" | tee safe_test_post_output.log
 
-          if [ "${{ github.event.inputs.visual_prompt_probe }}" = "true" ] && [ "${{ github.event.inputs.format_v2 }}" = "true" ]; then
+          if { [ "${{ github.event.inputs.visual_prompt_probe }}" = "true" ] || [ "${{ github.event.inputs.send_image_to_test }}" = "true" ]; } && [ "${{ github.event.inputs.format_v2 }}" = "true" ]; then
             python - <<'PY'
           from pathlib import Path
 
@@ -223,10 +244,11 @@ jobs:
           PY
 
             echo "Running visual prompt parser on already-built FORMAT_V2 text"
-            python visual_rules.py --message-file format_v2_message.txt --post-type "${{ github.event.inputs.mode }}" --prompt
+            if [ "${{ github.event.inputs.visual_prompt_probe }}" = "true" ]; then
+              python visual_rules.py --message-file format_v2_message.txt --post-type "${{ github.event.inputs.mode }}" --prompt
 
-            echo "Running image prompt bridge on already-built FORMAT_V2 text"
-            python - <<'PY'
+              echo "Running image prompt bridge on already-built FORMAT_V2 text"
+              python - <<'PY'
           import datetime as dt
           import os
           from pathlib import Path
@@ -258,36 +280,16 @@ jobs:
           print(prompt)
           print("\n===== KLD_IMAGE_PROMPT END =====\n")
           PY
+            fi
 
             if [ "${{ github.event.inputs.send_image_to_test }}" = "true" ]; then
               echo "Generating and sending FORMAT_V2 image to CHANNEL_ID_TEST only"
-              python - <<'PY'
-          import asyncio
-          import os
-          from pathlib import Path
-          from telegram import Bot
-          import imagegen
-
-          async def main() -> None:
-              token = os.getenv("TELEGRAM_TOKEN_KLG", "").strip()
-              chat_id = os.getenv("CHANNEL_ID_TEST", "").strip()
-              if not token:
-                  raise SystemExit("TELEGRAM_TOKEN_KLG is required for send_image_to_test")
-              if not chat_id:
-                  raise SystemExit("CHANNEL_ID_TEST is required for send_image_to_test")
-
-              prompt = Path("kld_image_prompt.txt").read_text(encoding="utf-8").strip()
-              style_name = Path("kld_image_style.txt").read_text(encoding="utf-8").strip()
-              img_path = imagegen.generate_kld_evening_image(prompt=prompt, style_name=style_name)
-              print(f"Generated safe-test image: {img_path}")
-
-              caption = "🧪 KLD safe-test image • FORMAT_V2 SceneCues"
-              with open(img_path, "rb") as f:
-                  msg = await Bot(token=token).send_photo(chat_id=chat_id, photo=f, caption=caption)
-              print(f"Sent safe-test image to CHANNEL_ID_TEST, message_id={getattr(msg, 'message_id', '?')}")
-
-          asyncio.run(main())
-          PY
+              python tools/kld_visual_fixture_image.py \
+                --message-file format_v2_message.txt \
+                --post-type "${{ github.event.inputs.mode }}" \
+                --send-to-test \
+                --history-namespace test \
+                --caption "🧪 KLD safe-test image • FORMAT_V2 SceneCues"
             else
               echo "Safe-test image sending skipped. Set send_image_to_test=true to generate and send image to CHANNEL_ID_TEST."
             fi

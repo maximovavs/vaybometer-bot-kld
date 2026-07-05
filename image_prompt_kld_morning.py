@@ -12,14 +12,15 @@ logger = logging.getLogger(__name__)
 
 _SCENIC_ONLY_GUARD = (
     "Final image: clean unmarked natural Baltic landscape only; open sky, sea, "
-    "dunes, pines, clouds and daylight; pure scenic painting without graphic "
+    "dunes, pines, clouds and daylight; pure photorealistic scenic photography without graphic "
     "overlay elements."
 )
 
 _PURE_SCENE_CUES = (
-    "Pure full-frame natural landscape painting; uninterrupted Baltic scenery; "
+    "Pure full-frame photorealistic Baltic coastal photography; uninterrupted Baltic scenery; "
     "clean open sky, beach, dunes, pines and sea filling the whole image; "
-    "calm editorial-free scenic composition."
+    "calm editorial-free scenic composition; realistic northern vegetation; realistic sea state; "
+    "natural atmospheric perspective; no illustration; no digital painting; no poster."
 )
 
 _TRIGGER_RE = re.compile(
@@ -117,6 +118,7 @@ def build_kld_morning_prompt(
     final_format_v2_message: str,
     *,
     post_type: str = "morning",
+    variation_attempt: int = 0,
 ) -> Tuple[str, str]:
     """Build a deterministic morning prompt from the final FORMAT_V2 message."""
     try:
@@ -127,15 +129,25 @@ def build_kld_morning_prompt(
         cues = apply_visual_rules(ctx)
         prompt = build_prompt_from_cues(cues)
         prompt = _sanitize_morning_prompt(prompt, weather_main=getattr(ctx, "weather_main", ""))
-        from image_prompt_kld import _extract_prompt_date, apply_kld_controlled_variety
+        from image_prompt_kld import _extract_prompt_date, _format_v2_style_name, apply_kld_controlled_variety
 
+        date_key = _extract_prompt_date(final_format_v2_message, dt.date.today())
         prompt = apply_kld_controlled_variety(
             prompt,
             ctx,
-            date_key=_extract_prompt_date(final_format_v2_message, dt.date.today()),
+            date_key=date_key,
             post_type="morning",
+            source_text=final_format_v2_message,
+            variation_attempt=variation_attempt,
         )
-        return prompt, "format_v2_scene_cues_morning"
+        style_name = _format_v2_style_name(
+            ctx,
+            date_key=date_key,
+            post_type="morning",
+            source_text=final_format_v2_message,
+            variation_attempt=variation_attempt,
+        )
+        return prompt, "format_v2_scene_cues_morning_" + style_name.rsplit("_", 1)[-1]
     except Exception:
         logger.exception("KLD morning visual pipeline failed; using simple coastal fallback")
         return _sanitize_morning_prompt(_fallback_morning_prompt()), "format_v2_scene_cues_morning"

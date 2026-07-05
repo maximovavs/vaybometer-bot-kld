@@ -312,6 +312,43 @@ _NO_DOUBLE_MOON_GUARD = (
 
 _FORMAT_V2_PROMPT_VERSION = "v3"
 
+KLD_SCENE_FAMILIES: tuple[str, ...] = (
+    "curonian_spit_dunes",
+    "svetlogorsk_cliff_coast",
+    "zelenogradsk_promenade",
+    "baltiysk_breakwater",
+    "yantarny_wide_beach",
+    "pine_forest_sea_path",
+    "stormy_open_baltic",
+    "quiet_lagoon_coast",
+    "wet_seaside_promenade",
+    "elevated_baltic_overlook",
+)
+
+_KLD_SCENE_TEXT = {
+    "curonian_spit_dunes": "Curonian Spit dunes with marram grass, pine forest edge and open Baltic water",
+    "svetlogorsk_cliff_coast": "Svetlogorsk cliff coast with steep green slope, sea below and northern sky",
+    "zelenogradsk_promenade": "Zelenogradsk seaside promenade with Baltic horizon and realistic coastal railings",
+    "baltiysk_breakwater": "Baltiysk breakwater stones, working-harbour edge in the distance and open sea",
+    "yantarny_wide_beach": "Yantarny wide pale sand beach with low dune grasses and spacious Baltic horizon",
+    "pine_forest_sea_path": "pine forest sea path opening toward the Baltic shore, realistic northern vegetation",
+    "stormy_open_baltic": "open Baltic sea view with restless water, whitecaps when windy and layered cloud bands",
+    "quiet_lagoon_coast": "quiet lagoon-like Baltic coast with reeds, low shore and subdued northern atmosphere",
+    "wet_seaside_promenade": "wet seaside promenade after rain with dry-to-damp stone texture and realistic reflections",
+    "elevated_baltic_overlook": "elevated Baltic overlook from a dune or cliff path, wide sea and coastline below",
+}
+
+KLD_COMPOSITIONS: tuple[str, ...] = (
+    "wide diagonal shoreline composition",
+    "foreground dune grass with open water behind",
+    "low coastal stones leading line",
+    "pine-framed side composition",
+    "elevated overlook panorama",
+    "promenade railing foreground",
+    "open horizon with large sky",
+    "breakwater perspective line",
+)
+
 
 def _filter_prompt_list(line: str, blocked_tokens: tuple[str, ...], add_items: list[str] | None = None) -> str:
     prefix, raw = line.split(":", 1)
@@ -610,7 +647,121 @@ def _apply_storm_moon_visual_guard(prompt: str, ctx: Any, source_text: str) -> s
     return "\n".join(lines)
 
 
-def _format_v2_style_name(ctx: Any, *, date_key: str, post_type: str, source_text: str) -> str:
+def _date_from_key(date_key: str) -> dt.date | None:
+    try:
+        return dt.date.fromisoformat(str(date_key)[:10])
+    except Exception:
+        return None
+
+
+def _target_date_for(date_key: str, post_type: str) -> str:
+    base = _date_from_key(date_key)
+    if not base:
+        return date_key
+    if (post_type or "").strip().lower() == "evening":
+        return (base + dt.timedelta(days=1)).isoformat()
+    return base.isoformat()
+
+
+def _weather_scenario(ctx: Any) -> str:
+    return str(getattr(ctx, "weather_main", "unknown") or "unknown")
+
+
+def _gust_category(ctx: Any) -> str:
+    gust = getattr(ctx, "wind_gust", None)
+    wind = getattr(ctx, "wind_speed", None)
+    value = gust if isinstance(gust, (int, float)) else wind
+    if not isinstance(value, (int, float)):
+        return "wind_unknown"
+    if value >= 15:
+        return "gust_15_plus"
+    if value >= 10:
+        return "gust_10_14"
+    if value >= 7:
+        return "gust_7_9"
+    return "calm_to_breezy"
+
+
+def _rain_cloud_fog_category(ctx: Any) -> str:
+    weather = _weather_scenario(ctx)
+    if weather in {"rain", "storm", "drizzle", "snow", "fog", "cloudy"}:
+        return weather
+    return "clear_or_mixed"
+
+
+def _scene_index(date_key: str, post_type: str, weather_main: str, variation_attempt: int) -> int:
+    base_date = _date_from_key(date_key)
+    ordinal = base_date.toordinal() if base_date else _stable_index(date_key, "scene_ordinal", 10_000)
+    offset = 5 if (post_type or "").strip().lower() == "evening" else 0
+    if weather_main == "storm":
+        offset += KLD_SCENE_FAMILIES.index("stormy_open_baltic")
+    elif weather_main in {"rain", "drizzle"}:
+        offset += KLD_SCENE_FAMILIES.index("wet_seaside_promenade")
+    return (ordinal * 3 + offset + int(variation_attempt or 0)) % len(KLD_SCENE_FAMILIES)
+
+
+def kld_scene_metadata(
+    ctx: Any,
+    *,
+    date_key: str,
+    post_type: str,
+    source_text: str = "",
+    variation_attempt: int = 0,
+) -> dict[str, str]:
+    weather = _weather_scenario(ctx)
+    scene_family = KLD_SCENE_FAMILIES[_scene_index(date_key, post_type, weather, variation_attempt)]
+    composition_idx = (
+        (_date_from_key(date_key).toordinal() if _date_from_key(date_key) else 0)
+        + _stable_index(weather, "kld_composition_offset", len(KLD_COMPOSITIONS))
+        + int(variation_attempt or 0) * 3
+    ) % len(KLD_COMPOSITIONS)
+    composition = KLD_COMPOSITIONS[composition_idx]
+    illumination = _extract_lunar_illumination(source_text)
+    return {
+        "region": "kld",
+        "forecast_date": date_key,
+        "target_date": _target_date_for(date_key, post_type),
+        "post_type": post_type or "evening",
+        "prompt_version": _FORMAT_V2_PROMPT_VERSION,
+        "scene_family": scene_family,
+        "scene_text": _KLD_SCENE_TEXT[scene_family],
+        "composition": composition,
+        "weather_scenario": weather,
+        "wind_gust_category": _gust_category(ctx),
+        "rain_cloud_fog_category": _rain_cloud_fog_category(ctx),
+        "lunar_phase": str(getattr(ctx, "moon_phase", "unknown") or "unknown"),
+        "lunar_illumination": _fmt_percent(illumination) or "unknown",
+        "variation_attempt": str(int(variation_attempt or 0)),
+    }
+
+
+def kld_visual_cache_key(metadata: dict[str, str]) -> str:
+    fields = (
+        "region",
+        "forecast_date",
+        "target_date",
+        "post_type",
+        "prompt_version",
+        "scene_family",
+        "composition",
+        "weather_scenario",
+        "wind_gust_category",
+        "rain_cloud_fog_category",
+        "lunar_phase",
+        "lunar_illumination",
+        "variation_attempt",
+    )
+    return ";".join(f"{field}={metadata.get(field, '')}" for field in fields)
+
+
+def _format_v2_style_name(
+    ctx: Any,
+    *,
+    date_key: str,
+    post_type: str,
+    source_text: str,
+    variation_attempt: int = 0,
+) -> str:
     illumination = _extract_lunar_illumination(source_text)
     wind_gust = getattr(ctx, "wind_gust", None)
     storm_state = "storm" if (
@@ -627,6 +778,7 @@ def _format_v2_style_name(ctx: Any, *, date_key: str, post_type: str, source_tex
             storm_state,
             str(getattr(ctx, "moon_phase", "unknown")),
             _fmt_percent(illumination) or "illum_unknown",
+            str(int(variation_attempt or 0)),
         ]
     )
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
@@ -680,15 +832,31 @@ def _stable_variant(seed: str, dimension: str, options: tuple[str, ...]) -> str:
     return options[int.from_bytes(digest[:8], "big") % len(options)]
 
 
+def _stable_index(seed: str, dimension: str, count: int) -> int:
+    if count <= 0:
+        return 0
+    digest = hashlib.sha256(f"{seed}|{dimension}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % count
+
+
 def apply_kld_controlled_variety(
     prompt: str,
     ctx: Any,
     *,
     date_key: str,
     post_type: str,
+    source_text: str = "",
+    variation_attempt: int = 0,
 ) -> str:
     """Add deterministic composition variety without changing weather rules."""
     mode = (post_type or "evening").strip().lower()
+    metadata = kld_scene_metadata(
+        ctx,
+        date_key=date_key,
+        post_type=mode,
+        source_text=source_text,
+        variation_attempt=variation_attempt,
+    )
     seed = "|".join(
         [
             date_key,
@@ -697,15 +865,24 @@ def apply_kld_controlled_variety(
             str(getattr(ctx, "moon_phase", "unknown")),
             str(getattr(ctx, "sport", "none")),
             str(getattr(ctx, "region", "kaliningrad")),
+            metadata["scene_family"],
+            metadata["composition"],
+            str(int(variation_attempt or 0)),
         ]
     )
     detail_options = _KLD_MORNING_DETAIL if mode == "morning" else _KLD_EVENING_DETAIL
     variety_line = (
         "Controlled composition: "
+        f"dominant Baltic scene family: {metadata['scene_family']}; "
+        f"scene: {metadata['scene_text']}; "
+        f"composition: {metadata['composition']}; "
         f"{_stable_variant(seed, 'framing', _KLD_SCENE_FRAMING)}; "
         f"{_stable_variant(seed, 'foreground', _KLD_FOREGROUND)}; "
         f"{_stable_variant(seed, 'distance', _KLD_DISTANCE)}; "
-        f"{_stable_variant(seed, 'time-detail', detail_options)}."
+        f"{_stable_variant(seed, 'time-detail', detail_options)}; "
+        "photorealistic Baltic coastal photography; realistic northern vegetation; "
+        "realistic sea state; natural atmospheric perspective; no illustration; "
+        "no digital painting; no poster."
     )
     lines = str(prompt or "").splitlines()
     insert_at = next(
@@ -721,6 +898,7 @@ def _build_format_v2_visual_prompt(
     *,
     post_type: str = "evening",
     date: Optional[dt.date] = None,
+    variation_attempt: int = 0,
 ) -> Tuple[str, str]:
     """Build KLD FORMAT_V2 image prompt through VisualContext -> SceneCues.
 
@@ -745,12 +923,15 @@ def _build_format_v2_visual_prompt(
         ctx,
         date_key=date_key,
         post_type=post_type,
+        source_text=final_format_v2_message,
+        variation_attempt=variation_attempt,
     )
     style_name = _format_v2_style_name(
         ctx,
         date_key=date_key,
         post_type=post_type,
         source_text=final_format_v2_message,
+        variation_attempt=variation_attempt,
     )
     logger.info(
         "KLD_FORMAT_V2_IMG_PROMPT: post_type=%s weather=%s sport=%s/%s moon=%s source=%s",
@@ -927,6 +1108,7 @@ def build_kld_evening_prompt(
     storm: bool = False,
     final_format_v2_message: Optional[str] = None,
     post_type: str = "evening",
+    variation_attempt: int = 0,
 ) -> Tuple[str, str]:
     """
     Returns: (prompt_text, style_name)
@@ -941,6 +1123,7 @@ def build_kld_evening_prompt(
                 final_format_v2_message,
                 post_type=post_type or "evening",
                 date=date,
+                variation_attempt=variation_attempt,
             )
         except Exception:
             logger.exception("KLD_FORMAT_V2_IMG_PROMPT failed; falling back to legacy image prompt")

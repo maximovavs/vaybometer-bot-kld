@@ -37,7 +37,12 @@ pendulum_stub = types.ModuleType("pendulum")
 pendulum_stub.DateTime = object
 sys.modules.setdefault("pendulum", pendulum_stub)
 
-from image_prompt_kld import build_kld_evening_prompt  # noqa: E402
+from image_prompt_kld import (  # noqa: E402
+    KLD_SCENE_FAMILIES,
+    build_kld_evening_prompt,
+    kld_scene_metadata,
+    kld_visual_cache_key,
+)
 from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
 from post_kld import _extract_storm_warning  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
@@ -748,7 +753,7 @@ def run_morning_cases() -> None:
         "sun from the left side of frame",
         "Final image: clean unmarked natural Baltic landscape only",
         "open sky, sea, dunes, pines, clouds and daylight",
-        "pure scenic painting without graphic overlay elements",
+        "photorealistic scenic photography without graphic overlay elements",
     ]
     forbidden_positive_cues = [
         "Moon cue:",
@@ -769,7 +774,7 @@ def run_morning_cases() -> None:
         _assert_equal(case["name"], "ctx.post_type", ctx.post_type, "morning")
         _assert_equal(case["name"], "ctx.weather_main", ctx.weather_main, case["weather"])
         _assert_equal(case["name"], "cues.light_style", cues.light_style, "soft low-angle morning light")
-        _assert_equal(case["name"], "style_name", style_name, "format_v2_scene_cues_morning")
+        _assert_startswith(case["name"], "style_name", style_name, "format_v2_scene_cues_morning_")
 
         for needle in common_must_contain + case["must_contain"]:
             _assert_contains(case["name"], prompt, needle)
@@ -831,6 +836,8 @@ def run_controlled_variety_cases() -> None:
         raise AssertionError(f"{name}: different dates should select a different composition")
     _assert_contains(name, prompt_a1, "cloudy Baltic weather")
     _assert_contains(name, prompt_a1, "Controlled composition:")
+    _assert_contains(name, prompt_a1, "dominant Baltic scene family:")
+    _assert_contains(name, prompt_a1, "photorealistic Baltic coastal photography")
     _assert_contains(
         name,
         prompt_a1,
@@ -846,6 +853,7 @@ def run_controlled_variety_cases() -> None:
     if morning_a1 == morning_b:
         raise AssertionError(f"{name}: different morning dates should select a different composition")
     _assert_contains(name, morning_a1, "Controlled composition:")
+    _assert_contains(name, morning_a1, "dominant Baltic scene family:")
     _assert_contains(name, morning_a1, "cloudy Baltic weather")
     _assert_contains(name, morning_a1, "Final image: clean unmarked natural Baltic landscape only")
     for forbidden in (
@@ -875,6 +883,104 @@ def run_controlled_variety_cases() -> None:
     print(f"PASS {name}")
 
 
+def run_scene_family_rotation_cases() -> None:
+    name = "scene_family_rotation"
+    message = CASES[0]["message"]
+    scene_families: list[str] = []
+    for day in range(7):
+        date_value = dt.date(2026, 7, 1) + dt.timedelta(days=day)
+        dated_message = date_value.strftime("%d.%m.%Y") + "\n" + message
+        ctx = build_visual_context(dated_message, post_type="morning")
+        morning_meta = kld_scene_metadata(
+            ctx,
+            date_key=date_value.isoformat(),
+            post_type="morning",
+            source_text=dated_message,
+            variation_attempt=0,
+        )
+        evening_meta = kld_scene_metadata(
+            ctx,
+            date_key=date_value.isoformat(),
+            post_type="evening",
+            source_text=dated_message,
+            variation_attempt=0,
+        )
+        morning_scene = morning_meta["scene_family"]
+        evening_scene = evening_meta["scene_family"]
+        if morning_scene == evening_scene:
+            raise AssertionError(f"{name}: morning/evening scene repeated for {date_value}: {morning_scene}")
+        if scene_families and morning_scene == scene_families[-1]:
+            raise AssertionError(f"{name}: consecutive morning scene repeated: {morning_scene}")
+        scene_families.append(morning_scene)
+    if len(set(scene_families)) < 5:
+        raise AssertionError(f"{name}: expected at least 5 scene families, got {scene_families}")
+    for scene in scene_families:
+        if scene not in KLD_SCENE_FAMILIES:
+            raise AssertionError(f"{name}: unknown scene family {scene}")
+    print(f"PASS {name}")
+
+
+def run_scene_retry_and_cache_key_cases() -> None:
+    name = "scene_retry_and_cache_key"
+    message = "05.07.2026\n" + CASES[0]["message"]
+    ctx = build_visual_context(message, post_type="evening")
+    meta0 = kld_scene_metadata(
+        ctx,
+        date_key="2026-07-05",
+        post_type="evening",
+        source_text=message,
+        variation_attempt=0,
+    )
+    meta1 = kld_scene_metadata(
+        ctx,
+        date_key="2026-07-05",
+        post_type="evening",
+        source_text=message,
+        variation_attempt=1,
+    )
+    if meta0["scene_family"] == meta1["scene_family"]:
+        raise AssertionError(f"{name}: retry did not rotate scene family")
+    if meta0["composition"] == meta1["composition"]:
+        raise AssertionError(f"{name}: retry did not rotate composition")
+    key = kld_visual_cache_key(meta1)
+    for field in (
+        "region=kld",
+        "forecast_date=2026-07-05",
+        "target_date=2026-07-06",
+        "post_type=evening",
+        "prompt_version=",
+        "scene_family=",
+        "composition=",
+        "weather_scenario=",
+        "wind_gust_category=",
+        "rain_cloud_fog_category=",
+        "lunar_phase=",
+        "lunar_illumination=",
+        "variation_attempt=1",
+    ):
+        _assert_contains(name, key, field)
+
+    prompt0, style0 = build_kld_evening_prompt(
+        dt.date(2026, 7, 5),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+        variation_attempt=0,
+    )
+    prompt1, style1 = build_kld_evening_prompt(
+        dt.date(2026, 7, 5),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+        variation_attempt=1,
+    )
+    if prompt0 == prompt1 or style0 == style1:
+        raise AssertionError(f"{name}: variation_attempt must affect prompt and style")
+    print(f"PASS {name}")
+
+
 def main() -> None:
     for case in CASES:
         run_case(case)
@@ -889,7 +995,9 @@ def main() -> None:
     run_storm_overlay_warning_priority_cases()
     run_morning_cases()
     run_controlled_variety_cases()
-    print(f"OK: {len(CASES) + 13} KLD synthetic visual checks passed")
+    run_scene_family_rotation_cases()
+    run_scene_retry_and_cache_key_cases()
+    print(f"OK: {len(CASES) + 15} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":
