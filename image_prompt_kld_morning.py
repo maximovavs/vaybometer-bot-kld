@@ -18,8 +18,8 @@ _SCENIC_ONLY_GUARD = (
 
 _PURE_SCENE_CUES = (
     "Pure full-frame photorealistic Baltic coastal photography; uninterrupted Baltic scenery; "
-    "clean open sky, beach, dunes, pines and sea filling the whole image; "
-    "calm editorial-free scenic composition; realistic northern vegetation; realistic sea state; "
+    "visible sky, beach, dunes, pines and sea filling the whole image; "
+    "editorial-free scenic composition; realistic northern vegetation; realistic sea state; "
     "natural atmospheric perspective; no illustration; no digital painting; no poster."
 )
 
@@ -38,10 +38,18 @@ _TRIGGER_RE = re.compile(
 )
 
 _SAFE_MORNING_CUES = (
-    "Morning safety cues: clear daylight sky; fresh Baltic morning light; "
+    "Morning safety cues: neutral Baltic morning daylight; fresh Baltic morning light; "
     "left-side morning light, sun from the left side of frame; "
     "empty Baltic shoreline; open sea horizon; natural wave texture only; "
     "quiet beach, dunes, pines, pale cloud layers; practical weather-for-the-day mood."
+)
+
+_RAIN_MORNING_CUES = (
+    "Morning rain adherence: overcast or mostly overcast Baltic morning sky; "
+    "fresh Baltic morning light muted by clouds; diffuse left-side morning light through overcast cloud; "
+    "wet or damp sand and promenade surfaces; muted northern grey-blue palette; "
+    "cool natural color temperature; realistic rain-dark cloud cover; "
+    "subdued practical wet-weather mood."
 )
 
 _CLOUDY_DRIZZLE_SAFE_BLOCK = (
@@ -97,18 +105,26 @@ def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
     parts: list[str] = []
 
     weather = (weather_main or "").strip().lower()
-    if weather in {"cloudy", "drizzle"}:
+    if weather == "rain":
+        parts.append(_RAIN_MORNING_CUES)
+    elif weather in {"cloudy", "drizzle"}:
         parts.append(_CLOUDY_DRIZZLE_SAFE_BLOCK)
 
     if cleaned:
         parts.append(cleaned)
 
-    parts.append(_SAFE_MORNING_CUES)
+    if weather != "rain":
+        parts.append(_SAFE_MORNING_CUES)
     parts.append(_PURE_SCENE_CUES)
 
     final_prompt = "\n".join(parts)
+    if weather == "rain":
+        final_prompt = re.sub(r"clear daylight sky;?\s*", "", final_prompt, flags=re.I)
+        final_prompt = re.sub(r"bright sun(?:ny)?|golden[- ]hour|golden sunny", "", final_prompt, flags=re.I)
     # Second-pass guard for compound or unexpected trigger remnants.
     final_prompt = _TRIGGER_RE.sub("", final_prompt)
+    final_prompt = re.sub(r";\s*no\s*(?=[.;])", "", final_prompt, flags=re.I)
+    final_prompt = re.sub(r"no\s*\.", "", final_prompt, flags=re.I)
     final_prompt = re.sub(r"[ \t]{2,}", " ", final_prompt)
     final_prompt = re.sub(r"\n{3,}", "\n\n", final_prompt).strip()
     return final_prompt + "\n" + _SCENIC_ONLY_GUARD

@@ -964,6 +964,17 @@ def safecast_summary_line() -> Optional[str]:
     cpm, usvh  = sc.get("cpm"), sc.get("radiation_usvh")
     if not isinstance(usvh, (int, float)) and isinstance(cpm, (int, float)):
         usvh = float(cpm) * CPM_TO_USVH
+    baseline = sc.get("baseline_usvh") or sc.get("radiation_baseline_usvh") or sc.get("usual_usvh")
+    if not isinstance(usvh, (int, float)) or not isinstance(baseline, (int, float)):
+        logging.info("Safecast KLD omitted: missing radiation value or baseline")
+        return None
+    ts = sc.get("ts")
+    age_min = None
+    if isinstance(ts, (int, float)):
+        age_min = int((pendulum.now("UTC").int_timestamp - int(ts)) / 60)
+    if age_min is None or age_min < 0 or age_min > 24 * 60:
+        logging.info("Safecast KLD omitted: stale or missing timestamp age_min=%s", age_min)
+        return None
     parts: List[str] = []
     em, lbl = _pm_level(pm25, pm10)
     pm_parts = []
@@ -973,14 +984,18 @@ def safecast_summary_line() -> Optional[str]:
         pm_parts.append(f"PM₁₀ {pm10:.0f}")
     if pm_parts:
         parts.append(f"{em} {lbl} · " + " | ".join(pm_parts))
-    if isinstance(usvh, (int, float)):
-        r_em, r_lbl = _rad_risk(float(usvh))
-        if isinstance(cpm, (int, float)):
-            parts.append(f"{int(round(cpm))} CPM ≈ {float(usvh):.3f} μSv/h — {r_em} {r_lbl}")
-        else:
-            parts.append(f"≈ {float(usvh):.3f} μSv/h — {r_em} {r_lbl}")
-    elif isinstance(cpm, (int, float)):
-        parts.append(f"{int(round(cpm))} CPM")
+    r_em, r_lbl = _rad_risk(float(usvh))
+    delta = float(usvh) - float(baseline)
+    if delta >= 0.02:
+        interp = f"немного выше локального фона, {r_em} {r_lbl}"
+    elif delta <= -0.02:
+        interp = f"ниже локального фона, {r_em} {r_lbl}"
+    else:
+        interp = f"около локального фона, {r_em} {r_lbl}"
+    age_txt = f"{age_min} мин назад" if age_min < 180 else f"{age_min // 60}ч назад"
+    parts.append(
+        f"{float(usvh):.2f} μSv/h, обычно {float(baseline):.2f} — {interp}; замер {age_txt}"
+    )
     if not parts:
         return None
     return "🧪 Safecast: " + " · ".join(parts)
@@ -1012,9 +1027,28 @@ def _kld_quake_line_24h() -> Optional[str]:
         min_mag = 0.9
     try:
         events = get_recent_earthquakes_kld(hours=hours, radius_km=radius_km, min_mag=min_mag)
-        return build_kld_quake_line(events, tz=os.getenv("TZ", "Europe/Kaliningrad"), show_calm=show_calm)
+        return build_kld_quake_line(
+            events,
+            tz=os.getenv("TZ", "Europe/Kaliningrad"),
+            show_calm=show_calm,
+            publish_empty=show_calm,
+            publish_source_failure=False,
+        )
     except Exception:
-        return build_kld_quake_line(None, tz=os.getenv("TZ", "Europe/Kaliningrad"), show_calm=show_calm)
+        logging.warning(
+            "KLD seismic monitoring failed before formatting: hours=%s radius_km=%s min_mag=%.1f",
+            hours,
+            radius_km,
+            min_mag,
+            exc_info=True,
+        )
+        return build_kld_quake_line(
+            None,
+            tz=os.getenv("TZ", "Europe/Kaliningrad"),
+            show_calm=show_calm,
+            publish_empty=False,
+            publish_source_failure=False,
+        )
 
 
 def uvi_label(x: float) -> str:

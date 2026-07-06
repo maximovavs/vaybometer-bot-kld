@@ -181,6 +181,7 @@ def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[s
 
     if w == "rain":
         _add_unique(must_show, "visible rain streaks")
+        _add_unique(must_show, "overcast or mostly overcast sky")
         _add_unique(must_show, "wet surfaces and darker rainy clouds")
         _add_unique(must_show, "puddles or wet promenade if a promenade is visible")
         _add_unique(must_show, "steady visible rain streaks across the frame")
@@ -189,14 +190,8 @@ def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[s
         _add_unique(must_show, "wet grey Baltic atmosphere")
         _add_unique(must_show, "dark low rain clouds")
         _add_unique(must_show, "wet shoreline or wet promenade foreground")
-        _add_unique(must_show, "overcast sky with no bright sun breaks")
+        _add_unique(must_show, "continuous low overcast sky")
         _add_unique(must_show, "empty coast, no leisure mood")
-        _add_unique(must_avoid, "leisurely dry beach mood")
-        _add_unique(must_avoid, "peaceful postcard beach mood")
-        _add_unique(must_avoid, "bright clearing in the sky")
-        _add_unique(must_avoid, "beautiful bright beach mood")
-        _add_unique(must_avoid, "large sunlit opening in the clouds")
-        _add_unique(must_avoid, "dry sand foreground")
         return "rainy Baltic weather"
 
     if w == "fog":
@@ -264,6 +259,12 @@ def _sea_state(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) 
         _add_unique(must_avoid, "full calm visual language")
         _add_unique(must_avoid, "romantic glassy moon reflection path")
         sea_state = "gusty, dynamic Baltic sea"
+    elif _has(wind_gust) and wind_gust is not None and wind_gust >= 8:
+        _add_unique(must_show, "visibly textured Baltic water")
+        _add_unique(must_show, "small wind-made whitecaps where the sea is exposed")
+        _add_unique(must_show, "wind-shaped dune grass and moving pine branches")
+        _add_unique(must_avoid, "perfectly calm water")
+        sea_state = "breezy textured Baltic sea"
 
     if _has(wave_height):
         assert wave_height is not None
@@ -501,11 +502,10 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
         base_scene = "Baltic coast near Kaliningrad in daylight, dunes, pines, promenade, sea horizon"
         palette = "fresh Baltic morning grey-blue, muted sand, pine green, natural daylight"
         light_style = "soft low-angle morning light"
-        _add_unique(must_show, "daylight, not sunset")
+        _add_unique(must_show, "neutral morning daylight")
         _add_unique(must_show, "fresh Baltic morning air")
         _add_unique(must_show, "soft low-angle morning light")
         _add_unique(must_show, "practical weather-for-the-day mood")
-        _add_unique(must_show, "clear daytime visual language")
         _add_unique(must_avoid, "moon")
         _add_unique(must_avoid, "sunset colors")
         _add_unique(must_avoid, "night atmosphere")

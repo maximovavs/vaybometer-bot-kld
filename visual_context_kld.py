@@ -148,9 +148,9 @@ def _city_weather_lines(text: str) -> list[str]:
             continue
         if "°" not in line and "°c" not in low:
             continue
-        if ":" not in line:
+        if ":" not in line and "—" not in line and "-" not in line:
             continue
-        if not re.search(r":\s*-?\d+(?:[\.,]\d+)?\s*/\s*-?\d+(?:[\.,]\d+)?\s*°", line):
+        if not re.search(r"(?:[:—-]|\s+)\s*-?\d+(?:[\.,]\d+)?\s*/\s*-?\d+(?:[\.,]\d+)?\s*°", line):
             continue
         out.append(line)
     return out
@@ -305,7 +305,7 @@ def extract_temperatures(text: str) -> tuple[Optional[float], Optional[float], d
             continue
         if line not in city_lines:
             continue
-        m = re.search(r":\s*(-?\d+(?:[\.,]\d+)?)\s*/\s*(-?\d+(?:[\.,]\d+)?)\s*°", line)
+        m = re.search(r"(?:[:—-]|\s+)\s*(-?\d+(?:[\.,]\d+)?)\s*/\s*(-?\d+(?:[\.,]\d+)?)\s*°", line)
         if not m:
             continue
         a = _num(m.group(1))
@@ -353,6 +353,7 @@ def extract_wind(text: str) -> tuple[Optional[float], Optional[float], dict[str,
 
     single_patterns = [
         r"(?:^|\n)[^\n]{0,80}ветер[^\d]{0,24}(\d+(?:[\.,]\d+)?)\s*м\s*/?\s*с",
+        r"(?:^|\n)[^\n]{0,80}💨[^\d]{0,12}(\d+(?:[\.,]\d+)?)\s*м\s*/?\s*с",
         r"(?:^|\n)[^\n]{0,80}wind[^\d]{0,24}(\d+(?:[\.,]\d+)?)\s*m\s*/?\s*s",
     ]
     for p in single_patterns:

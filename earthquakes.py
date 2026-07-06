@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 import math
 import os
 from typing import Any, Dict, Iterable, List, Optional
@@ -43,6 +44,7 @@ KLD_CITY_GENITIVE = {
 
 BAD_EVENT_TYPES = ("quarry", "blast", "explosion", "mine", "chemical", "nuclear", "sonic")
 REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
+logger = logging.getLogger(__name__)
 
 
 class KldQuakeEvents(list):
@@ -389,6 +391,13 @@ def get_recent_earthquakes_kld(
         collected.extend(regional)
     except Exception as exc:
         source_status["regional"] = {"ok": False, "error": str(exc)}
+        logger.warning(
+            "KLD seismic source failed: source=regional hours=%s radius_km=%s min_mag=%.1f error=%s",
+            hours,
+            radius_km,
+            min_mag,
+            exc,
+        )
 
     try:
         usgs = fetch_usgs_events(hours=hours, radius_km=radius_km, min_mag=min_mag)
@@ -396,13 +405,36 @@ def get_recent_earthquakes_kld(
         collected.extend(usgs)
     except Exception as exc:
         source_status["usgs"] = {"ok": False, "error": str(exc)}
+        logger.warning(
+            "KLD seismic source failed: source=usgs hours=%s radius_km=%s min_mag=%.1f error=%s",
+            hours,
+            radius_km,
+            min_mag,
+            exc,
+        )
 
     if not any(status.get("ok") for status in source_status.values()):
+        logger.warning(
+            "KLD seismic unavailable: hours=%s radius_km=%s min_mag=%.1f sources=%s normalized_events=0",
+            hours,
+            radius_km,
+            min_mag,
+            source_status,
+        )
         return None
 
     filtered = _filter_events(collected, min_mag=min_mag, radius_km=radius_km, hours=hours)
+    deduped = deduplicate_events(filtered)
+    logger.info(
+        "KLD seismic query complete: hours=%s radius_km=%s min_mag=%.1f sources=%s normalized_events=%s",
+        hours,
+        radius_km,
+        min_mag,
+        source_status,
+        len(deduped),
+    )
     return KldQuakeEvents(
-        deduplicate_events(filtered),
+        deduped,
         min_mag=min_mag,
         hours=hours,
         radius_km=radius_km,
@@ -471,21 +503,61 @@ def build_kld_quake_line(
     show_calm: bool = False,
     *,
     min_mag: float = DEFAULT_KLD_QUAKE_MIN_MAG,
+    publish_empty: bool = False,
+    publish_source_failure: bool = False,
 ) -> Optional[str]:
     """Build a compact factual seismic line."""
+    publish_empty = bool(publish_empty or show_calm)
     if events is None:
+        logger.warning(
+            "KLD seismic Telegram line omitted: reason=source_unavailable hours=%s radius_km=%s min_mag=%.1f",
+            DEFAULT_KLD_QUAKE_HOURS,
+            DEFAULT_KLD_QUAKE_RADIUS_KM,
+            min_mag,
+        )
+        if not publish_source_failure:
+            return None
         return "🌍 Сейсмика: данные временно не обновились."
 
     threshold = float(getattr(events, "min_mag", min_mag))
+    hours = int(getattr(events, "hours", DEFAULT_KLD_QUAKE_HOURS))
+    radius_km = float(getattr(events, "radius_km", DEFAULT_KLD_QUAKE_RADIUS_KM))
     if _regional_failed_usgs_succeeded(events):
-        if events:
+        if events and not publish_source_failure:
+            logger.info(
+                "KLD seismic source-health warning suppressed: regional_failed=true usgs_ok=true events=%s hours=%s radius_km=%s min_mag=%.1f",
+                len(events),
+                hours,
+                radius_km,
+                threshold,
+            )
+        elif events:
             strongest = max(events, key=lambda item: float(item.get("mag") or 0))
             usgs_part = _usgs_fallback_part(strongest)
-        else:
+            return "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились." + usgs_part
+        elif publish_source_failure:
             usgs_part = " По каталогу USGS событий M2.5+ за 24 часа не найдено."
-        return "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились." + usgs_part
+            return "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились." + usgs_part
+        else:
+            logger.warning(
+                "KLD seismic Telegram line omitted: reason=regional_unavailable_no_events source_status=%s hours=%s radius_km=%s min_mag=%.1f normalized_events=0",
+                getattr(events, "source_status", {}),
+                hours,
+                radius_km,
+                threshold,
+            )
+            return None
 
     if not events:
+        logger.info(
+            "KLD seismic Telegram line omitted: reason=no_events source_status=%s hours=%s radius_km=%s min_mag=%.1f normalized_events=0",
+            getattr(events, "source_status", {}),
+            hours,
+            radius_km,
+            threshold,
+        )
+        if not publish_empty:
+            return None
         return (
             "🌍 Сейсмика 24ч: по доступным региональным каталогам событий "
             f"{_threshold_text(threshold)} рядом с Калининградской областью не найдено."
@@ -493,6 +565,16 @@ def build_kld_quake_line(
 
     clean_events = [event for event in events if float(event.get("mag") or 0) >= threshold]
     if not clean_events:
+        logger.info(
+            "KLD seismic Telegram line omitted: reason=no_qualifying_events source_status=%s hours=%s radius_km=%s min_mag=%.1f normalized_events=%s",
+            getattr(events, "source_status", {}),
+            hours,
+            radius_km,
+            threshold,
+            len(events),
+        )
+        if not publish_empty:
+            return None
         return (
             "🌍 Сейсмика 24ч: по доступным региональным каталогам событий "
             f"{_threshold_text(threshold)} рядом с Калининградской областью не найдено."

@@ -119,28 +119,34 @@ def test_m42_warning_includes_depth() -> None:
 
 def test_no_events_threshold_aware_not_absolute() -> None:
     line = build_kld_quake_line(_events([]))
-    assert "событий M0.9+ рядом с Калининградской областью не найдено" in line
-    assert "землетрясений не было" not in line
-    assert "спокойно" not in line
+    assert line is None
+    diagnostic = build_kld_quake_line(_events([]), publish_empty=True)
+    assert "событий M0.9+ рядом с Калининградской областью не найдено" in diagnostic
+    assert "землетрясений не было" not in diagnostic
+    assert "спокойно" not in diagnostic
 
 
 def test_complete_source_failure_is_not_hidden() -> None:
     line = build_kld_quake_line(None)
-    assert "данные временно не обновились" in line
+    assert line is None
+    diagnostic = build_kld_quake_line(None, publish_source_failure=True)
+    assert "данные временно не обновились" in diagnostic
 
 
 def test_regional_failure_does_not_claim_no_m09_events() -> None:
     line = build_kld_quake_line(_events([], regional_ok=False, usgs_ok=True))
-    assert "региональные данные" in line
-    assert "M0.9+ рядом" not in line
-    assert len(line.splitlines()) <= 2
+    assert line is None
+    diagnostic = build_kld_quake_line(_events([], regional_ok=False, usgs_ok=True), publish_source_failure=True)
+    assert "региональные данные" in diagnostic
+    assert "M0.9+ рядом" not in diagnostic
+    assert len(diagnostic.splitlines()) <= 2
 
 
 def test_regional_failure_preserves_usgs_m4_warning() -> None:
     line = build_kld_quake_line(
         _events([_event(4.2, lat=54.6544, lon=19.9094, depth=18, source="USGS", event_id="usgs42")], regional_ok=False)
     )
-    assert "региональные данные" in line
+    assert "региональные данные" not in line
     assert "⚠️ M4.2" in line
     assert "глубина 18 км" in line
     assert len(line.splitlines()) <= 2
@@ -198,7 +204,7 @@ def test_default_fetch_uses_m09() -> None:
 
 
 def test_format_v2_preserves_quake_line() -> None:
-    quake = "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились. По USGS: ⚠️ M4.2, 18 км от Балтийска, глубина 18 км."
+    quake = "🌍 Сейсмика 24ч: ⚠️ M4.2, 18 км от Балтийска, глубина 18 км."
     morning_legacy = "\n".join(
         [
             "Калининград сегодня",
@@ -210,11 +216,31 @@ def test_format_v2_preserves_quake_line() -> None:
         ]
     )
     morning = build_morning_format_v2("Калининград", morning_legacy)
-    assert "🌍 Сейсмика:" in morning
+    assert "🌍 Сейсмика 24ч:" in morning
 
     evening_legacy = "\n".join(["Калининградская область завтра", quake, "✅ Рекомендации"])
     evening = build_evening_format_v2("Калининград", evening_legacy)
-    assert "🌍 Сейсмика:" in evening
+    assert "🌍 Сейсмика 24ч:" in evening
+
+
+def test_format_v2_omits_empty_or_source_health_quake_lines() -> None:
+    for quake in (
+        "🌍 Сейсмика 24ч: по доступным региональным каталогам событий M0.9+ рядом с Калининградской областью не найдено.",
+        "🌍 Сейсмика: данные временно не обновились.",
+        "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились.",
+    ):
+        morning = build_morning_format_v2(
+            "Калининград",
+            "\n".join(
+                [
+                    "Калининград сегодня",
+                    "Погода: 🏙️ Калининград — 18/12 °C • облачно • 💨 3 м/с.",
+                    quake,
+                    "#Калининград #погода",
+                ]
+            ),
+        )
+        assert "🌍 Сейсмика" not in morning
 
 
 def test_air_failure_does_not_remove_seismic_output() -> None:
@@ -262,6 +288,7 @@ def main() -> None:
         test_quarry_blast_explosion_excluded,
         test_default_fetch_uses_m09,
         test_format_v2_preserves_quake_line,
+        test_format_v2_omits_empty_or_source_health_quake_lines,
         test_air_failure_does_not_remove_seismic_output,
     ]
     for test in tests:

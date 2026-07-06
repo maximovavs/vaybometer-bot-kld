@@ -154,13 +154,8 @@ CASES: list[dict[str, Any]] = [
             "wet grey Baltic atmosphere",
             "dark low rain clouds",
             "wet shoreline or wet promenade foreground",
-            "overcast sky with no bright sun breaks",
+            "continuous low overcast sky",
             "empty coast, no leisure mood",
-            "peaceful postcard beach mood",
-            "bright clearing in the sky",
-            "beautiful bright beach mood",
-            "large sunlit opening in the clouds",
-            "dry sand foreground",
             "visible SUP rider in rain",
             "relaxed SUP holiday mood",
         ],
@@ -731,6 +726,34 @@ def run_morning_cases() -> None:
             ],
         },
         {
+            "name": "morning_rain_gusty_weather_adherence",
+            "message": "\n".join(
+                [
+                    "<b>🌅 Калининград сегодня (04.07.2026)</b>",
+                    "✨ VayboMeter: 6.4/10 — нормальный, с поправками; дождь и порывы снижают комфорт.",
+                    "🏙 Калининград — 20/13 °C • 🌧 дождь • 💨 4.8 м/с • порывы до 10 м/с.",
+                    "⚠️ Главный нюанс: у воды порывы ощущаются сильнее, чем в городе.",
+                    "✅ План: дождевик и закрытая обувь; у моря выбирать защищённый маршрут.",
+                ]
+            ),
+            "weather": "rain",
+            "must_contain": [
+                "rainy Baltic weather",
+                "overcast or mostly overcast Baltic morning sky",
+                "wet or damp sand and promenade surfaces",
+                "muted northern grey-blue palette",
+                "visibly textured Baltic water",
+                "wind-shaped dune grass and moving pine branches",
+            ],
+            "must_not_contain": [
+                "clear daylight sky",
+                "golden-hour",
+                "golden sunny",
+                "bright sunny",
+                "dry sand foreground",
+            ],
+        },
+        {
             "name": "morning_clear_no_evening_mood",
             "message": "\n".join(
                 [
@@ -747,10 +770,9 @@ def run_morning_cases() -> None:
     common_must_contain = [
         "soft low-angle morning light",
         "practical weather-for-the-day mood",
-        "clear daylight sky",
+        "neutral morning daylight",
         "fresh Baltic morning light",
         "left-side morning light",
-        "sun from the left side of frame",
         "Final image: clean unmarked natural Baltic landscape only",
         "open sky, sea, dunes, pines, clouds and daylight",
         "photorealistic scenic photography without graphic overlay elements",
@@ -778,6 +800,8 @@ def run_morning_cases() -> None:
 
         for needle in common_must_contain + case["must_contain"]:
             _assert_contains(case["name"], prompt, needle)
+        for needle in case.get("must_not_contain", []):
+            _assert_not_contains(case["name"], prompt, needle)
         for needle in forbidden_positive_cues:
             _assert_not_contains(case["name"], prompt, needle)
         for forbidden in (

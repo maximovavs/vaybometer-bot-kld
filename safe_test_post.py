@@ -99,7 +99,15 @@ def _numbers(pattern: str, text: str) -> list[float]:
 
 
 def _score_label(score: float) -> str:
-    return "отлично" if score >= 8.7 else "хорошо" if score >= 7 else "с оговорками" if score >= 5.5 else "бережный режим"
+    if score >= 8.0:
+        return "очень хороший"
+    if score >= 7.0:
+        return "хороший"
+    if score >= 6.0:
+        return "нормальный, с поправками"
+    if score >= 5.0:
+        return "неустойчивый"
+    return "сложный"
 
 
 def _kld_weather_line(v2_text: str) -> str:
@@ -149,6 +157,10 @@ def _kld_feels_line(v2_text: str) -> str:
     has_rain = bool(c.get("rain"))
 
     parts: list[str] = []
+    if has_rain and ((isinstance(gust, (int, float)) and gust >= 8) or (isinstance(wind, (int, float)) and wind >= 4)):
+        return "🌡 Ощущается: прохладно и сыро; на открытых местах заметно свежее."
+    if has_rain:
+        return "🌡 Ощущается: прохладно и сыро."
     if has_rain and ((isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)):
         parts.append("прохладно, влажно и ветровито")
     elif has_rain:
@@ -165,22 +177,7 @@ def _kld_feels_line(v2_text: str) -> str:
 
 
 def _kld_best_window_line(v2_text: str) -> str:
-    c = _kld_conditions(v2_text)
-    tmax = c.get("tmax")
-    wind = c.get("wind")
-    gust = c.get("gust")
-    has_rain = bool(c.get("rain"))
-    windy = (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)
-
-    if has_rain and windy:
-        return "🕒 Лучшее окно: короткие выходы между дождём; у воды — по фактическому ветру."
-    if has_rain:
-        return "🕒 Лучшее окно: короткие выходы между дождём; для прогулки — защищённые маршруты."
-    if windy:
-        return "🕒 Лучшее окно: позднее утро и первая половина дня; у воды — по ветру."
-    if isinstance(tmax, (int, float)) and tmax <= 17:
-        return "🕒 Лучшее окно: позднее утро и первая половина дня; вечером будет свежее."
-    return "🕒 Лучшее окно: позднее утро и время ближе к закату."
+    return ""
 
 
 def _kld_smart_plan_line(v2_text: str) -> str:
@@ -201,11 +198,11 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     if isinstance(uv, (int, float)) and uv >= 6:
         return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер."
     if has_rain and windy:
-        return "✅ План: дождевик/капюшон надёжнее зонта; закрытая обувь; выходы короткими блоками между дождём; у воды осторожнее с порывами."
+        return "✅ План: дождевик и закрытая обувь; у моря выбирать защищённый маршрут."
     if has_rain:
         return "✅ План: зонт или дождевик, закрытая обувь; дела лучше короткими выходами между дождём."
     if windy:
-        return "✅ План: ветровка/слой, у воды осторожнее с порывами; прогулку лучше в защищённых местах."
+        return "✅ План: ветровка/слой; прогулку лучше в защищённых местах."
     if isinstance(uv, (int, float)) and uv >= 6:
         return "✅ План: очки/кепка и SPF; прогулка в лучшее окно; вечером взять лёгкий слой."
     return ""
@@ -223,14 +220,14 @@ def _kld_score_line(v2_text: str) -> str:
     score = 10.0
     reasons: list[str] = []
     if has_rain:
-        score -= 1.4; reasons.append("дождь")
+        score -= 1.6; reasons.append("дождь")
     if isinstance(gust, (int, float)):
-        if gust >= 12:
-            score -= 1.4; reasons.append("порывы")
+        if gust >= 13:
+            score -= 2.0; reasons.append("порывы")
         elif gust >= 10:
-            score -= 1.1; reasons.append("порывы")
-        elif gust >= 7:
-            score -= 0.8; reasons.append("ветер у воды")
+            score -= 1.3; reasons.append("порывы")
+        elif gust >= 8:
+            score -= 0.8; reasons.append("порывы")
         if isinstance(wind, (int, float)) and wind >= 6:
             score -= 0.4; reasons.append("ветер")
     elif isinstance(wind, (int, float)) and wind >= 6:
@@ -248,6 +245,8 @@ def _kld_score_line(v2_text: str) -> str:
             score -= 0.7; reasons.append("свежо")
         elif tmax <= 18:
             score -= 0.5; reasons.append("свежо")
+        elif tmax <= 21 and has_rain and isinstance(gust, (int, float)) and gust >= 8:
+            score -= 0.7; reasons.append("сыро и прохладно")
     if isinstance(uv, (int, float)) and uv >= 6:
         score -= 0.3; reasons.append("УФ высокий")
     if isinstance(aqi, (int, float)) and aqi > 80:
@@ -265,6 +264,8 @@ def _kld_score_line(v2_text: str) -> str:
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; тёплый день и высокий УФ."
         return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
     label = _score_label(score)
+    if has_rain and isinstance(gust, (int, float)) and gust >= 8:
+        return f"✨ VayboMeter: {score:.1f}/10 — {label}; дождь и порывы снижают комфорт."
     if reasons:
         return f"✨ VayboMeter: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
     return f"✨ VayboMeter: {score:.1f}/10 — {label} для обычных дел и прогулок."
@@ -590,7 +591,12 @@ def _apply_editorial_voice(v2_text: str, mode: str) -> str:
     if mode.startswith("morn"):
         if not _kld_core_weather_available(v2_text):
             return "\n".join(lines)
-        line = build_morning_human_line("Калининград", date_s or "today", conditions)
+        gust = conditions.get("gust")
+        max_temp = conditions.get("max_temp")
+        if conditions.get("rain") and isinstance(gust, (int, float)) and gust >= 8 and isinstance(max_temp, (int, float)) and max_temp <= 21:
+            line = "💬 По-человечески: прохладно и сыро; для обычных дел нормально в непромокаемой одежде."
+        else:
+            line = build_morning_human_line("Калининград", date_s or "today", conditions)
         return _insert_editorial_after(lines, line, ("🌡 Теплее всего —", "🌡 По области:", "✨ VayboMeter:"))
     line = build_evening_human_line("Калининград", date_s or "tomorrow", conditions)
     return _insert_editorial_after(lines, line, ("⚠️ Нюанс:", "⚠️ Главный нюанс:", "🧭 Главное завтра:", "✨ VayboMeter завтра:", "✨ VayboMeter:"))
@@ -916,32 +922,51 @@ def _sensor_line_from_legacy(legacy_text: str) -> str:
         low = line.lower()
         if marker.lower() not in low and "радиационный фон" not in low and "частный датчик" not in low:
             continue
-        if re.search(r"critical|alert|опасн|🔴", low):
-            return "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения."
-        return "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику."
+        value_match = re.search(
+            r"(\d+(?:[\.,]\d+)?)\s*(?:μsv/h|µsv/h|usv/h|мкзв/ч|мкз/ч)",
+            low,
+            flags=re.I,
+        )
+        baseline_match = re.search(
+            r"(?:обычно|фон|baseline|норм(?:а|ально)?|референс|диапазон)[^\d]{0,24}"
+            r"(\d+(?:[\.,]\d+)?)",
+            low,
+            flags=re.I,
+        )
+        has_age = bool(re.search(r"\b\d{1,2}:\d{2}\b|обнов|замер|🕓|timestamp|ts|\d+\s*(?:мин|ч|час)", low, flags=re.I))
+        if not (value_match and baseline_match and has_age):
+            continue
+        try:
+            value = float(value_match.group(1).replace(",", "."))
+            baseline = float(baseline_match.group(1).replace(",", "."))
+        except Exception:
+            continue
+        if re.search(r"critical|alert|опасн|🔴", low) and value >= 0.30:
+            interp = "выше контрольного уровня; проверьте динамику и официальные сообщения"
+        elif value - baseline >= 0.02:
+            interp = "немного выше локального фона"
+        elif baseline - value >= 0.02:
+            interp = "ниже локального фона"
+        else:
+            interp = "около локального фона"
+        return f"🧪 Частный датчик радиации: {value:.2f} μSv/h, обычно {baseline:.2f} — {interp}."
     return ""
 
 
 def _soften_private_sensor_wording(v2_text: str) -> str:
-    soft = "🧪 Частный датчик: выше обычной точки наблюдения; смотрим динамику."
-    text = str(v2_text or "")
-    text = text.replace(
-        "🧪 Радиационный фон: высокий по частному датчику; проверьте динамику и официальные сообщения.",
-        soft,
-    )
-    text = re.sub(
-        r"🧪\s*Радиационный фон:\s*высокий по частному датчику[^\n]*",
-        soft,
-        text,
-        flags=re.I,
-    )
-    return text
+    lines: list[str] = []
+    for line in str(v2_text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("🧪") and not _sensor_line_from_legacy(stripped):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _replace_sensor_lines(v2_text: str, line_to_add: str) -> str:
-    if not line_to_add:
-        return v2_text
     lines = [line for line in str(v2_text or "").splitlines() if not line.strip().startswith("🧪")]
+    if not line_to_add:
+        return "\n".join(lines)
     return _insert_before_anchor(
         "\n".join(lines),
         line_to_add,
@@ -986,6 +1011,8 @@ def _finalize_kld_morning_safe_text(v2_text: str, raw_msg: str, legacy_text: str
     sensor = _sensor_line_from_legacy(raw_msg) or _sensor_line_from_legacy(legacy_text) or _sensor_line_from_legacy(out)
     if sensor:
         out = _replace_sensor_lines(out, sensor)
+    else:
+        out = _replace_sensor_lines(out, "")
 
     kp_line = _kp_line_from_source(raw_msg) or _kp_line_from_source(legacy_text) or _kp_line_from_source(out)
     out = _insert_kp_line(out, kp_line)
@@ -1153,6 +1180,22 @@ def _inject_morning_best_window(v2_text: str, mode: str) -> str:
     return _inject_after_anchor(v2_text, window, ("🏙️ Калининград",))
 
 
+def _valid_best_window_line(line: str) -> bool:
+    s = str(line or "").strip()
+    if "Лучшее окно:" not in s:
+        return True
+    m = re.search(r"\b(\d{1,2}):(\d{2})\s*[–—-]\s*(\d{1,2}):(\d{2})\b", s)
+    if not m:
+        return False
+    start = int(m.group(1)) * 60 + int(m.group(2))
+    end = int(m.group(3)) * 60 + int(m.group(4))
+    return end > start and end - start >= 120
+
+
+def _remove_invalid_best_window(v2_text: str) -> str:
+    return "\n".join(line for line in str(v2_text or "").splitlines() if _valid_best_window_line(line))
+
+
 def _inject_morning_score(v2_text: str, mode: str) -> str:
     if not (mode.startswith("morn") and _env_on("MORNING_VAYBOMETER_SCORE")):
         return v2_text
@@ -1169,6 +1212,7 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
         heat_word_ok = isinstance(tmax, (int, float)) and tmax >= 28
         warm_uv_day = isinstance(tmax, (int, float)) and 25 <= tmax < 28
         uv_high = isinstance(uv, (int, float)) and uv >= 6
+        rain_or_gust = bool(c.get("rain")) or isinstance(c.get("gust"), (int, float)) and c["gust"] >= 8
         out: list[str] = []
         replaced = False
         for idx, line in enumerate(lines):
@@ -1176,7 +1220,9 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
                 if not replaced:
                     if "/10" in line:
                         cleaned = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", line.strip(), flags=re.I)
-                        if heat or (uv_high and heat_word_ok):
+                        if rain_or_gust:
+                            cleaned = score
+                        elif heat or (uv_high and heat_word_ok):
                             cleaned = re.sub(
                                 r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
                                 r"\1с оговорками; жара и высокий УФ.",
@@ -1193,7 +1239,7 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
                         elif uv_high:
                             cleaned = re.sub(
                                 r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
-                                r"\1с оговорками; высокий УФ и ветер у воды.",
+                                r"\1с оговорками; высокий УФ.",
                                 cleaned,
                                 flags=re.I,
                             )
@@ -1244,6 +1290,7 @@ def _apply_format_v2_safe_postprocess(v2_raw: str, raw_msg: str, legacy_text: st
     out = _apply_compact(out)
     out = _finalize_kld_morning_safe_text(out, raw_msg, legacy_text, mode)
     if mode.startswith("morn"):
+        out = _remove_invalid_best_window(out)
         out = _soften_private_sensor_wording(out)
     else:
         out = _finalize_kld_evening_safe_text(out, mode)
