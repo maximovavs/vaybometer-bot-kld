@@ -255,22 +255,22 @@ def kld_evening_preserves_quake_line() -> None:
 
 def kld_evening_uncertain_has_short_confidence_line() -> None:
     text = build_evening_format_v2("Калининградская область", RAIN_EVENING)
-    assert "🎯 Уверенность: по температуре спокойно; ветер/осадки лучше проверить утром." in text
+    assert "🎯 Уверенность: по температуре спокойно; осадки и условия у воды лучше проверить утром." in text
     assert "температура высокая" not in text
     assert "🎯 <b>Уверенность прогноза</b>" not in text
     legacy = text.replace(
-        "🎯 Уверенность: по температуре спокойно; ветер/осадки лучше проверить утром.",
+        "🎯 Уверенность: по температуре спокойно; осадки и условия у воды лучше проверить утром.",
         "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром.",
     )
     polished = _apply_format_v2_safe_postprocess(legacy, "", "", "evening")
-    assert "🎯 Уверенность: по температуре спокойно; ветер/осадки лучше проверить утром." in polished
+    assert "🎯 Уверенность: по температуре спокойно; осадки и условия у воды лучше проверить утром." in polished
     assert "температура высокая" not in polished
 
 
 def kld_evening_warm_uncertain_confidence_is_not_high() -> None:
     text = build_evening_format_v2("Калининградская область", WARM_UNCERTAIN_EVENING)
     assert "температура высокая" not in text
-    assert "🎯 Уверенность: температура тёплая; ветер/осадки лучше проверить утром." in text
+    assert "🎯 Уверенность: температура тёплая; осадки и условия у воды лучше проверить утром." in text
     assert text.splitlines()[-1] == "#Калининград #погода #здоровье #море"
     assert "🌒 Растущий серп" in text
 
@@ -278,8 +278,8 @@ def kld_evening_warm_uncertain_confidence_is_not_high() -> None:
 def kld_evening_sup_guidance_is_common_block() -> None:
     text = build_evening_format_v2("Калининградская область", RAIN_EVENING)
     assert text.count("SUP: на открытой воде не рекомендован") == 1
-    assert "🏄 Сёрф: только опытным; волна 0.8–0.9 м, но порывы сильные" in text
-    assert "проверить конкретный спот и предупреждения перед выходом" in text
+    assert "🏄 Сёрф: только опытным; волна 0.8–0.9 м, но выход только после проверки конкретного спота и предупреждений." in text
+    assert "после фактической проверки условий" in text
     assert "🧜‍♂️ Отлично: SUP" not in text
     assert "Отлично:" not in text
     assert "шорти 2 мм" not in text
@@ -339,15 +339,17 @@ def kld_evening_storm_sport_voc_and_background_polish() -> None:
     score_line = next(line for line in lines if line.startswith("✨ VayboMeter"))
     assert "5.7/10" in score_line
     assert "предупреждение" not in score_line.lower()
-    assert "штормовые порывы и локальные осадки" in score_line
-    assert "🧭 Главное завтра: штормовые порывы; у воды и на открытых участках особенно осторожно." in text
-    assert text.count("Штормовое предупреждение") == 1
+    assert "неустойчивый день: локальные осадки и штормовые порывы" in score_line
+    assert "с оговорками" not in score_line
+    assert "🧭 Главное завтра: неустойчивое погодное окно; береговые планы лучше держать гибкими." in text
+    assert "⚠️ Главный нюанс: на открытом берегу и пирсах порывы до 19 м/с." in text
+    assert text.count("Штормовое предупреждение") == 0
     assert "⚠️ <b>Предупреждение</b>" not in text
     assert "⚠️ Предупреждение\n" not in text
     assert "Отлично" not in text
     assert "SUP: на открытой воде не рекомендован" in text
     assert "Сёрф: только опытным" in text
-    assert "проверить конкретный спот" in text
+    assert "проверки конкретного спота" in text
     assert "короткий гидрокостюм 2 мм" not in text
     assert "⚫️ VoC: 03.07 17:15–04.07 00:00." in text
     assert "⚠️ Общий фон: неблагоприятный день." in text
@@ -393,7 +395,8 @@ def kld_evening_astro_warning_does_not_trigger_image_storm() -> None:
 def kld_evening_gust19_without_storm_word_is_storm() -> None:
     text = build_evening_format_v2("Калининградская область", GUST19_NO_STORM_WORD_EVENING)
     assert "штормовые порывы" in text
-    assert "⚠️ Штормовое предупреждение: порывы до 19 м/с." in text
+    assert "⚠️ Главный нюанс: на открытом берегу и пирсах порывы до 19 м/с." in text
+    assert "Штормовое предупреждение" not in text
     assert "Сёрф: только опытным" in text
     assert _extract_storm_warning(GUST19_NO_STORM_WORD_EVENING) is not None
 

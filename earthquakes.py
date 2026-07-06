@@ -20,6 +20,7 @@ KLD_CENTER_LAT = 54.71
 KLD_CENTER_LON = 20.51
 DEFAULT_KLD_QUAKE_MIN_MAG = 0.9
 DEFAULT_KLD_QUAKE_RADIUS_KM = 500.0
+DEFAULT_KLD_QUAKE_PUBLISH_RADIUS_KM = 300.0
 DEFAULT_KLD_QUAKE_HOURS = 24
 
 KLD_CITY_COORDS = {
@@ -457,6 +458,44 @@ def _city_distance_phrase(event: Dict[str, Any]) -> str:
     return f"рядом с {city}"
 
 
+def _event_publish_distance_km(event: Dict[str, Any]) -> Optional[float]:
+    for key in ("distance_km", "distance_from_center_km"):
+        value = event.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def _filter_publish_radius(
+    events: Iterable[Dict[str, Any]],
+    *,
+    max_publish_distance_km: Optional[float],
+) -> List[Dict[str, Any]]:
+    if max_publish_distance_km is None:
+        return list(events)
+    out: List[Dict[str, Any]] = []
+    for event in events:
+        dist = _event_publish_distance_km(event)
+        if dist is not None and dist <= float(max_publish_distance_km):
+            out.append(event)
+    return out
+
+
+def _catalog_place_phrase(event: Dict[str, Any]) -> str:
+    place = str(event.get("place") or "").strip()
+    if not place or place.lower() in ("none", "null", "earthquake"):
+        return ""
+    return " ".join(place.split())
+
+
+def _event_location_phrase(event: Dict[str, Any]) -> str:
+    distance = _city_distance_phrase(event)
+    place = _catalog_place_phrase(event)
+    if place:
+        return f"{place}, {distance}"
+    return distance
+
+
 def _micro_word(count: int) -> str:
     if count % 10 == 1 and count % 100 != 11:
         return "микрособытие"
@@ -489,11 +528,11 @@ def _usgs_fallback_part(event: Dict[str, Any]) -> str:
     if mag >= 4.0:
         depth = event.get("depth_km")
         depth_part = f", глубина {int(round(float(depth)))} км" if isinstance(depth, (int, float)) else ""
-        return f" По USGS: ⚠️ {_format_mag(mag)}, {_city_distance_phrase(event)}{depth_part}."
+        return f" По USGS: ⚠️ {_format_mag(mag)}, {_event_location_phrase(event)}{depth_part}."
     if mag >= 3.0:
-        return f" По USGS: сильнейшее событие {_format_mag(mag)}, {_city_distance_phrase(event)}."
+        return f" По USGS: сильнейшее событие {_format_mag(mag)}, {_event_location_phrase(event)}."
     if mag >= 2.0:
-        return f" По USGS: слабое событие {_format_mag(mag)}, {_city_distance_phrase(event)}."
+        return f" По USGS: слабое событие {_format_mag(mag)}, {_event_location_phrase(event)}."
     return " По USGS: только микрособытия; региональный каталог нужен для проверки слабых событий."
 
 
@@ -505,6 +544,7 @@ def build_kld_quake_line(
     min_mag: float = DEFAULT_KLD_QUAKE_MIN_MAG,
     publish_empty: bool = False,
     publish_source_failure: bool = False,
+    max_publish_distance_km: Optional[float] = DEFAULT_KLD_QUAKE_PUBLISH_RADIUS_KM,
 ) -> Optional[str]:
     """Build a compact factual seismic line."""
     publish_empty = bool(publish_empty or show_calm)
@@ -522,19 +562,31 @@ def build_kld_quake_line(
     threshold = float(getattr(events, "min_mag", min_mag))
     hours = int(getattr(events, "hours", DEFAULT_KLD_QUAKE_HOURS))
     radius_km = float(getattr(events, "radius_km", DEFAULT_KLD_QUAKE_RADIUS_KM))
+    publish_events = _filter_publish_radius(events, max_publish_distance_km=max_publish_distance_km)
     if _regional_failed_usgs_succeeded(events):
-        if events and not publish_source_failure:
+        if publish_events and not publish_source_failure:
             logger.info(
                 "KLD seismic source-health warning suppressed: regional_failed=true usgs_ok=true events=%s hours=%s radius_km=%s min_mag=%.1f",
-                len(events),
+                len(publish_events),
                 hours,
                 radius_km,
                 threshold,
             )
-        elif events:
-            strongest = max(events, key=lambda item: float(item.get("mag") or 0))
+        elif publish_events:
+            strongest = max(publish_events, key=lambda item: float(item.get("mag") or 0))
             usgs_part = _usgs_fallback_part(strongest)
             return "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились." + usgs_part
+        elif events:
+            logger.info(
+                "KLD seismic Telegram line omitted: reason=no_events_within_publish_radius source_status=%s hours=%s query_radius_km=%s publish_radius_km=%s min_mag=%.1f normalized_events=%s",
+                getattr(events, "source_status", {}),
+                hours,
+                radius_km,
+                max_publish_distance_km,
+                threshold,
+                len(events),
+            )
+            return None
         elif publish_source_failure:
             usgs_part = " По каталогу USGS событий M2.5+ за 24 часа не найдено."
             return "🌍 Сейсмика: региональные данные по слабым событиям временно не обновились." + usgs_part
@@ -548,13 +600,15 @@ def build_kld_quake_line(
             )
             return None
 
-    if not events:
+    if not publish_events:
         logger.info(
-            "KLD seismic Telegram line omitted: reason=no_events source_status=%s hours=%s radius_km=%s min_mag=%.1f normalized_events=0",
+            "KLD seismic Telegram line omitted: reason=no_events source_status=%s hours=%s query_radius_km=%s publish_radius_km=%s min_mag=%.1f normalized_events=%s publishable_events=0",
             getattr(events, "source_status", {}),
             hours,
             radius_km,
+            max_publish_distance_km,
             threshold,
+            len(events),
         )
         if not publish_empty:
             return None
@@ -563,15 +617,17 @@ def build_kld_quake_line(
             f"{_threshold_text(threshold)} рядом с Калининградской областью не найдено."
         )
 
-    clean_events = [event for event in events if float(event.get("mag") or 0) >= threshold]
+    clean_events = [event for event in publish_events if float(event.get("mag") or 0) >= threshold]
     if not clean_events:
         logger.info(
-            "KLD seismic Telegram line omitted: reason=no_qualifying_events source_status=%s hours=%s radius_km=%s min_mag=%.1f normalized_events=%s",
+            "KLD seismic Telegram line omitted: reason=no_qualifying_events source_status=%s hours=%s query_radius_km=%s publish_radius_km=%s min_mag=%.1f normalized_events=%s publishable_events=%s",
             getattr(events, "source_status", {}),
             hours,
             radius_km,
+            max_publish_distance_km,
             threshold,
             len(events),
+            len(publish_events),
         )
         if not publish_empty:
             return None
@@ -588,10 +644,10 @@ def build_kld_quake_line(
     if strongest_mag >= 4.0:
         depth = strongest.get("depth_km")
         depth_part = f", глубина {int(round(float(depth)))} км" if isinstance(depth, (int, float)) else ""
-        return f"🌍 Сейсмика 24ч: ⚠️ {_format_mag(strongest_mag)}, {_city_distance_phrase(strongest)}{depth_part}."
+        return f"🌍 Сейсмика 24ч: ⚠️ {_format_mag(strongest_mag)}, {_event_location_phrase(strongest)}{depth_part}."
 
     if strongest_mag >= 3.0:
-        return f"🌍 Сейсмика 24ч: сильнейшее событие {_format_mag(strongest_mag)}, {_city_distance_phrase(strongest)}."
+        return f"🌍 Сейсмика 24ч: сильнейшее событие {_format_mag(strongest_mag)}, {_event_location_phrase(strongest)}."
 
     if weak:
         parts: List[str] = []
@@ -601,7 +657,7 @@ def build_kld_quake_line(
         return (
             "🌍 Сейсмика 24ч: "
             + " и ".join(parts)
-            + f"; сильнейшее {_format_mag(strongest_mag)}, {_city_distance_phrase(strongest)}."
+            + f"; сильнейшее {_format_mag(strongest_mag)}, {_event_location_phrase(strongest)}."
         )
 
     micro_count = len(micro)
@@ -613,6 +669,7 @@ def build_kld_quake_line(
 
 __all__ = (
     "DEFAULT_KLD_QUAKE_MIN_MAG",
+    "DEFAULT_KLD_QUAKE_PUBLISH_RADIUS_KM",
     "KldQuakeEvents",
     "_filter_events",
     "_haversine_km",

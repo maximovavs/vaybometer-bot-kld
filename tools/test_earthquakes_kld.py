@@ -117,6 +117,39 @@ def test_m42_warning_includes_depth() -> None:
     assert "глубина 18 км" in line
 
 
+def test_event_line_includes_catalog_place_context() -> None:
+    line = build_kld_quake_line(
+        _events([
+            _event(
+                3.2,
+                lat=54.80,
+                lon=19.70,
+                event_id="place32",
+                place="Baltic Sea, 24 km NW of Baltiysk",
+            )
+        ])
+    )
+    assert "Baltic Sea, 24 km NW of Baltiysk" in line
+    assert "Балтийска" in line
+
+
+def test_far_event_beyond_300km_omitted_from_normal_post() -> None:
+    far = _events([
+        _event(
+            3.7,
+            lat=57.0,
+            lon=13.0,
+            event_id="far37",
+            place="southern Sweden",
+        )
+    ])
+    line = build_kld_quake_line(far)
+    assert line is None
+    diagnostic = build_kld_quake_line(far, max_publish_distance_km=None)
+    assert "southern Sweden" in diagnostic
+    assert "M3.7" in diagnostic
+
+
 def test_no_events_threshold_aware_not_absolute() -> None:
     line = build_kld_quake_line(_events([]))
     assert line is None
@@ -280,6 +313,8 @@ def main() -> None:
         test_m23_weak_event_line,
         test_m34_clear_without_damage_claims,
         test_m42_warning_includes_depth,
+        test_event_line_includes_catalog_place_context,
+        test_far_event_beyond_300km_omitted_from_normal_post,
         test_no_events_threshold_aware_not_absolute,
         test_complete_source_failure_is_not_hidden,
         test_regional_failure_does_not_claim_no_m09_events,

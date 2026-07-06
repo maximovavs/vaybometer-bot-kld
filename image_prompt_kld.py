@@ -415,7 +415,24 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
     source_low = str(source_text or "").lower()
     is_waning_gibbous = phase == "waning_gibbous" or "убывающ" in source_low or "waning" in source_low
     is_waxing_gibbous = phase == "waxing_gibbous" or "растущ" in source_low or "waxing" in source_low
-    if illumination is not None and 90 <= illumination < 97 and is_waning_gibbous:
+    illum_text = _fmt_percent(illumination)
+    medium_non_full = illumination is not None and 35 <= illumination < 75
+    if medium_non_full and phase == "first_quarter":
+        cue = (
+            f"a modest physically accurate waxing half-to-slight-gibbous Moon, about {illum_text} percent illuminated, "
+            "right side illuminated; small non-dominant natural scale, not a full moon and not near-full"
+        )
+    elif medium_non_full and (phase == "last_quarter" or (phase == "waning_gibbous" and is_waning_gibbous)):
+        cue = (
+            f"a modest physically accurate waning half-to-slight-gibbous Moon, about {illum_text} percent illuminated, "
+            "left side illuminated; small non-dominant natural scale, not a full moon and not near-full"
+        )
+    elif medium_non_full:
+        cue = (
+            f"a modest physically accurate non-full Moon, about {illum_text} percent illuminated; "
+            "small non-dominant natural scale, not a full moon and not near-full"
+        )
+    elif illumination is not None and 90 <= illumination < 97 and is_waning_gibbous:
         cue = "a realistic waning gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon"
     elif illumination is not None and 90 <= illumination < 97 and is_waxing_gibbous:
         cue = "a realistic waxing gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon"
@@ -435,6 +452,9 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
         "no dominant focal moon",
         "no large bright round moon",
         "no oversized round moon for quarter or crescent phases",
+        "no near-full moon for 35-75 percent illumination",
+        "no giant decorative moon",
+        "no poster-like lunar disc",
     ]
     positive_moon_blocked = (
         "bright full moon",
@@ -443,6 +463,10 @@ def _apply_moon_phase_guard(prompt: str, ctx: Any, source_text: str) -> str:
         "large bright round moon",
         "oversized full circular moon",
         "fantasy supermoon",
+        "near-full moon",
+        "giant moon",
+        "decorative moon",
+        "poster-like lunar disc",
     )
     weather = getattr(ctx, "weather_main", "unknown")
     wind_gust = getattr(ctx, "wind_gust", None)
@@ -613,32 +637,55 @@ def _apply_storm_moon_visual_guard(prompt: str, ctx: Any, source_text: str) -> s
     )
     illumination = _extract_lunar_illumination(source_text)
     phase = getattr(ctx, "moon_phase", "unknown")
-    if not stormy and not (phase == "waning_gibbous" and illumination is not None and 90 <= illumination < 97):
+    medium_non_full = illumination is not None and 35 <= illumination < 90 and phase in (
+        "first_quarter",
+        "waxing_gibbous",
+        "waning_gibbous",
+        "last_quarter",
+    )
+    if not stormy and not (phase == "waning_gibbous" and illumination is not None and 90 <= illumination < 97) and not medium_non_full:
         return prompt
 
     moon_phrase = ""
-    if phase == "waning_gibbous" and illumination is not None:
+    if medium_non_full and phase in ("last_quarter", "waning_gibbous"):
+        moon_phrase = f"physically accurate waning non-full Moon, {_fmt_percent(illumination)}% illuminated, left side lit, modest non-dominant natural scale"
+    elif medium_non_full and phase in ("first_quarter", "waxing_gibbous"):
+        moon_phrase = f"physically accurate waxing non-full Moon, {_fmt_percent(illumination)}% illuminated, right side lit, modest non-dominant natural scale"
+    elif phase == "waning_gibbous" and illumination is not None:
         moon_phrase = f"realistic waning gibbous Moon, {_fmt_percent(illumination)}% illuminated"
     elif phase == "waxing_gibbous" and illumination is not None:
         moon_phrase = f"realistic waxing gibbous Moon, {_fmt_percent(illumination)}% illuminated"
     elif illumination is not None and 90 <= illumination < 97:
         moon_phrase = f"realistic gibbous Moon, {_fmt_percent(illumination)}% illuminated"
 
-    add_lines = [
-        (
-            "Storm visual adherence: photorealistic Baltic coastline; blue-hour stormy evening; "
-            "strong wind and restless waves; natural weather-photo realism."
-        ),
+    add_lines = []
+    if stormy:
+        add_lines.append(
+            (
+                "Storm visual adherence: photorealistic Baltic coastline; blue-hour stormy evening; "
+                "strong wind and restless waves; natural weather-photo realism."
+            )
+        )
+    elif medium_non_full:
+        add_lines.append(
+            (
+                "Moon visual adherence: photorealistic Baltic evening; phase-accurate Moon stays modest, "
+                "secondary, and physically plausible; weather cues remain dominant."
+            )
+        )
+    avoid_label = "Storm visual avoid" if stormy else "Moon visual avoid"
+    add_lines.extend([
         (
             "Moon scale adherence: "
             + (moon_phrase or "phase-accurate Moon")
             + "; small-to-medium natural moon scale."
         ),
         (
-            "Storm visual avoid: no illustration, no vector art, no painting, no poster, no cartoon, "
-            "no perfect full moon, no oversized moon, no fantasy supermoon, no bright daytime."
+            f"{avoid_label}: no illustration, no vector art, no painting, no poster, no cartoon, "
+            "no perfect full moon, no near-full moon for medium illumination, no oversized moon, "
+            "no giant decorative moon, no fantasy supermoon, no bright daytime."
         ),
-    ]
+    ])
     lines = prompt.splitlines()
     insert_at = next((idx for idx, item in enumerate(lines) if item.startswith("Text restrictions:")), len(lines))
     for offset, line in enumerate(add_lines):

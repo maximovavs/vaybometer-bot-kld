@@ -397,7 +397,10 @@ def run_first_quarter_moon_guard_case() -> None:
 
     _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
     for needle in [
-        "a small non-dominant waxing half-to-gibbous Moon with the right side illuminated, not a full moon",
+        "a modest physically accurate waxing half-to-slight-gibbous Moon, about 61 percent illuminated",
+        "right side illuminated",
+        "small non-dominant natural scale",
+        "not near-full",
         "small",
         "non-dominant",
         "not a full moon",
@@ -406,12 +409,16 @@ def run_first_quarter_moon_guard_case() -> None:
         "no dominant focal moon",
         "no large bright round moon",
         "no oversized round moon for quarter or crescent phases",
+        "no near-full moon for 35-75 percent illumination",
+        "no giant decorative moon",
+        "no poster-like lunar disc",
+        "Moon scale adherence: physically accurate waxing non-full Moon, 61% illuminated, right side lit, modest non-dominant natural scale",
     ]:
         _assert_contains(name, prompt, needle)
     positive_lines = "\n".join(
         line
         for line in prompt.splitlines()
-        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:"))
+        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:", "Storm visual avoid:", "Moon visual avoid:"))
     ).lower()
     for forbidden in (
         "large full moon",
@@ -419,6 +426,59 @@ def run_first_quarter_moon_guard_case() -> None:
         "large bright round moon",
         "oversized moon",
         "dominant focal moon",
+        "near-full moon",
+        "giant decorative moon",
+    ):
+        _assert_not_contains(name, positive_lines, forbidden)
+
+    print(f"PASS {name}")
+
+
+def run_last_quarter_59_moon_guard_case() -> None:
+    name = "last_quarter_59_percent_moon_guard"
+    message = "\n".join(
+        [
+            "03.07.2026",
+            "🌊 Морские города",
+            "Балтийск: 21/16 °C • 🌥 облачно • 💨 6.9 м/с • порывы до 15 м/с • 🌊 21°C • волна 1.0 м",
+            "Зеленоградск: 21/16 °C • 🌥 облачно • 🌊 23°C",
+            "🌗 Последняя четверть, 59% освещённости",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 7, 2),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    for needle in [
+        "a modest physically accurate waning half-to-slight-gibbous Moon, about 59 percent illuminated",
+        "left side illuminated",
+        "small non-dominant natural scale",
+        "not a full moon and not near-full",
+        "physically accurate waning non-full Moon, 59% illuminated, left side lit, modest non-dominant natural scale",
+        "no near-full moon for 35-75 percent illumination",
+        "no giant decorative moon",
+        "no poster-like lunar disc",
+        "no fantasy supermoon",
+        "no oversized moon",
+    ]:
+        _assert_contains(name, prompt, needle)
+    positive_lines = "\n".join(
+        line
+        for line in prompt.splitlines()
+        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:", "Storm visual avoid:", "Moon visual avoid:"))
+    ).lower()
+    for forbidden in (
+        "large full moon",
+        "round full moon",
+        "near-full moon",
+        "giant decorative moon",
+        "fantasy supermoon",
+        "oversized moon",
     ):
         _assert_not_contains(name, positive_lines, forbidden)
 
@@ -1010,6 +1070,7 @@ def main() -> None:
         run_case(case)
     run_image_prompt_bridge_case()
     run_first_quarter_moon_guard_case()
+    run_last_quarter_59_moon_guard_case()
     run_not_quite_full_moon_guard_case()
     run_full_moon_evening_moonlit_guard_case()
     run_waning_gibbous_moon_guard_case()
@@ -1021,7 +1082,7 @@ def main() -> None:
     run_controlled_variety_cases()
     run_scene_family_rotation_cases()
     run_scene_retry_and_cache_key_cases()
-    print(f"OK: {len(CASES) + 15} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 16} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":

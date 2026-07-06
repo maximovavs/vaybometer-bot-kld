@@ -308,8 +308,8 @@ def _kld_evening_score_line(v2_text: str) -> str:
     label = _score_label(score)
     if has_warning or (isinstance(max_gust, (int, float)) and max_gust >= 15):
         if has_precip:
-            return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; штормовые порывы и локальные осадки."
-        return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; штормовые порывы."
+            return f"✨ VayboMeter завтра: {score:.1f}/10 — неустойчивый день: локальные осадки и штормовые порывы."
+        return f"✨ VayboMeter завтра: {score:.1f}/10 — день с повышенной осторожностью: штормовые порывы."
     if reasons:
         return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
@@ -615,8 +615,12 @@ def _storm_score_replacement(line: str, full_text: str) -> str:
     low = plain.lower()
     if not ("шторм" in low or (isinstance(max_gust, (int, float)) and max_gust >= 15)):
         return line
-    reason = "штормовые порывы и локальные осадки" if _has_actual_precipitation(plain) else "штормовые порывы"
-    return re.sub(r"—\s*[^.\n]*\.?", f"— с оговорками; {reason}.", line.strip(), flags=re.I)
+    replacement = (
+        "— неустойчивый день: локальные осадки и штормовые порывы."
+        if _has_actual_precipitation(plain)
+        else "— день с повышенной осторожностью: штормовые порывы."
+    )
+    return re.sub(r"—\s*[^.\n]*\.?", replacement, line.strip(), flags=re.I)
 
 
 def _storm_warning_replacement(line: str) -> str:
@@ -646,13 +650,22 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
     if "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром." in str(v2_text or ""):
         v2_text = str(v2_text or "").replace(
             "🎯 Уверенность: температура высокая; ветер/осадки лучше проверить утром.",
-            f"🎯 Уверенность: {temp_part}; ветер/осадки лучше проверить утром.",
+            f"🎯 Уверенность: {temp_part}; осадки и условия у воды лучше проверить утром.",
+        )
+    if "🎯 Уверенность: температура высокая; осадки и условия у воды лучше проверить утром." in str(v2_text or ""):
+        v2_text = str(v2_text or "").replace(
+            "🎯 Уверенность: температура высокая; осадки и условия у воды лучше проверить утром.",
+            f"🎯 Уверенность: {temp_part}; осадки и условия у воды лучше проверить утром.",
         )
 
     v2_text = str(v2_text or "")
     v2_text = v2_text.replace(
         "🧭 Главное завтра: главный фактор — ветер, порывы и осторожность у воды.",
+        "🧭 Главное завтра: неустойчивое погодное окно; береговые планы лучше держать гибкими.",
+    )
+    v2_text = v2_text.replace(
         "🧭 Главное завтра: штормовые порывы; у воды и на открытых участках особенно осторожно.",
+        "🧭 Главное завтра: неустойчивое погодное окно; береговые планы лучше держать гибкими.",
     )
     v2_text = re.sub(
         r"(?:короткий\s+)?гидрокостюм\s*(?:шорти\s*)?\d+(?:/\d+)?\s*мм|shorty\s*2\s*мм",

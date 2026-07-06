@@ -418,8 +418,8 @@ def _common_sup_water_line(lines: list[str], *, has_storm: bool = False) -> str:
         wave = _format_measure_range(wave_range, "м")
         wave_part = f"волна {wave}, но " if wave else ""
         return (
-            f"🏄 Сёрф: только опытным; {wave_part}порывы сильные — проверить конкретный спот и предупреждения перед выходом.\n"
-            "🛶 SUP: на открытой воде не рекомендован; рассматривать только защищённую акваторию после проверки фактического ветра."
+            f"🏄 Сёрф: только опытным; {wave_part}выход только после проверки конкретного спота и предупреждений.\n"
+            "🛶 SUP: на открытой воде не рекомендован; рассматривать только защищённую акваторию после фактической проверки условий."
         )
     if wave_range and 0.8 <= wave_range[1] <= 2.0 and (not isinstance(max_wind, (int, float)) or max_wind < 15):
         return "🏄 Сёрф: есть рабочие окна по волне; проверить конкретный спот."
@@ -427,7 +427,7 @@ def _common_sup_water_line(lines: list[str], *, has_storm: bool = False) -> str:
         isinstance(max_wind, (int, float)) and max_wind >= 8
     )
     if risky:
-        return "🏄 Вода/ветер: только опытным; короткая сессия, проверить порывы утром. Экипировку выбирать по длительности сессии, ветру и индивидуальной переносимости воды."
+        return "🏄 Вода/ветер: только опытным; короткая сессия после фактической проверки условий. Экипировку выбирать по длительности сессии и индивидуальной переносимости воды."
     return "🏄 SUP/вода: короткая сессия; экипировку выбирать по длительности сессии, ветру и индивидуальной переносимости воды."
 
 
@@ -632,7 +632,7 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
 
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
     if flags["storm"]:
-        return "🧭 Главное завтра: штормовые порывы; у воды и на открытых участках особенно осторожно."
+        return "🧭 Главное завтра: неустойчивое погодное окно; береговые планы лучше держать гибкими."
     if flags["heat"] and flags["wind"]:
         return "🧭 Главное завтра: днём жара, у воды — ветер; активность лучше утром/вечером."
     if flags["heat"]:
@@ -656,7 +656,10 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
 
 def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_region: bool) -> str:
     if flags["storm"]:
-        return "⚠️ Нюанс: пирсы, открытый берег и водные активности — только после проверки фактического ветра."
+        gust = flags.get("max_wind")
+        if isinstance(gust, (int, float)):
+            return f"⚠️ Главный нюанс: на открытом берегу и пирсах порывы до {_fmt_num(gust)} м/с."
+        return "⚠️ Главный нюанс: открытый берег, пирсы и водные активности — только после фактической проверки условий."
     if flags["heat"] and flags["wind"]:
         return ""
     if flags["rain"] and flags["wind"]:
@@ -681,13 +684,13 @@ def _evening_confidence_line(flags: dict[str, bool]) -> str:
             temp_part = "температура тёплая"
         else:
             temp_part = "по температуре спокойно"
-        return f"🎯 Уверенность: {temp_part}; ветер/осадки лучше проверить утром."
+        return f"🎯 Уверенность: {temp_part}; осадки и условия у воды лучше проверить утром."
     return ""
 
 
 def _evening_plan(flags: dict[str, bool]) -> str:
     if flags["storm"]:
-        return "✅ План завтра: короткий маршрут, защита от ветра/дождя и без риска на пирсах."
+        return "✅ План завтра: короткий маршрут, непромокаемый слой и без риска на пирсах."
     if flags["heat"] and flags["wind"]:
         return "✅ План завтра: основные дела утром/вечером, днём — тень и вода; у моря учитывать порывы."
     if flags["heat"]:
@@ -877,13 +880,13 @@ def _clean_evening_score_line(line: str, flags: dict[str, bool]) -> str:
     s = str(line or "").strip()
     if flags.get("storm"):
         if flags.get("storm_gust") and flags.get("rain"):
-            replacement = "— с оговорками; штормовые порывы и локальные осадки."
+            replacement = "— неустойчивый день: локальные осадки и штормовые порывы."
         elif flags.get("storm_gust"):
-            replacement = "— с оговорками; штормовые порывы."
+            replacement = "— день с повышенной осторожностью: штормовые порывы."
         elif flags.get("rain") and flags.get("wind"):
-            replacement = "— с оговорками; порывы у моря и локальные осадки."
+            replacement = "— неустойчивый день: локальные осадки и порывы у моря."
         else:
-            replacement = "— с оговорками; порывы у моря."
+            replacement = "— день с повышенной осторожностью: ветер у воды."
         s = re.sub(r"—\s*[^.\n]*\.?", replacement, s, flags=re.I)
     elif flags.get("heat") and flags.get("wind"):
         s = re.sub(r"—\s*отлично\b[^.\n]*\.?", "— жарко; у моря порывы.", s, flags=re.I)
@@ -1272,15 +1275,6 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     if kal:
         out.append(_clean_morning_weather_line(kal))
         out.append("")
-
-    if storm:
-        out.append(_clean_storm_warning_line(storm))
-        out.append("")
-    elif flags.get("storm_gust"):
-        gust = flags.get("max_wind")
-        if isinstance(gust, (int, float)):
-            out.append(f"⚠️ Штормовое предупреждение: порывы до {_fmt_num(gust)} м/с.")
-            out.append("")
 
     if sea:
         out.append("🌊 <b>Морские города</b>")
