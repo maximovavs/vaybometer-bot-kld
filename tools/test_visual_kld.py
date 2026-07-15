@@ -40,6 +40,7 @@ sys.modules.setdefault("pendulum", pendulum_stub)
 from image_prompt_kld import (  # noqa: E402
     KLD_SCENE_FAMILIES,
     build_kld_evening_prompt,
+    kld_lunar_prompt_diagnostics,
     kld_scene_metadata,
     kld_visual_cache_key,
 )
@@ -335,15 +336,16 @@ def run_image_prompt_bridge_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     for needle in [
         "Create a photorealistic Baltic coastline weather scene for VayboMeter Kaliningrad.",
         "Weather: cloudy Baltic weather.",
-        "Sky cue: cloud-dominant evening sky; celestial details hidden by clouds.",
+        "Sky cue: cloud-dominant evening sky.",
         "Activity cue: unoccupied shoreline and open Baltic water; scale: none.",
         "layered cloud cover as the main sky feature",
         "unoccupied shoreline",
         "open Baltic water with only natural wave texture",
+        "Lunar cue: one realistic thin waxing crescent Moon, right side lit, at small-to-medium natural non-dominant scale.",
         "Text restrictions: No visible text anywhere, no tiny white text at the bottom, no pseudo-caption, no text, no captions, no labels, no UI, no logos, no watermarks, no watermark, no logo, no artist signature, no signature, no letters, no artist mark, no brand marks, absolutely no letters or numbers anywhere.",
     ]:
         _assert_contains(name, prompt, needle)
@@ -395,30 +397,19 @@ def run_first_quarter_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     for needle in [
-        "a modest physically accurate waxing half-to-slight-gibbous Moon, about 61 percent illuminated",
-        "right side illuminated",
-        "small non-dominant natural scale",
-        "not near-full",
-        "small",
-        "non-dominant",
-        "not a full moon",
-        "no full moon unless the actual phase is full moon",
-        "no oversized moon",
-        "no dominant focal moon",
-        "no large bright round moon",
-        "no oversized round moon for quarter or crescent phases",
-        "no near-full moon for 35-75 percent illumination",
-        "no giant decorative moon",
-        "no poster-like lunar disc",
-        "Moon scale adherence: physically accurate waxing non-full Moon, 61% illuminated, right side lit, modest non-dominant natural scale",
+        "Lunar cue: one physically accurate first-quarter Moon, right side lit, visibly non-full, 61% illuminated, at small-to-medium natural non-dominant scale.",
+        "Lunar negative: no perfect full moon, no oversized moon, no fantasy supermoon, no duplicate moon.",
     ]:
         _assert_contains(name, prompt, needle)
+    if prompt.count("Lunar cue:") != 1:
+        raise AssertionError(f"{name}: expected exactly one positive lunar cue")
+    _assert_not_contains(name, prompt, "Moon scale adherence:")
     positive_lines = "\n".join(
         line
         for line in prompt.splitlines()
-        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:", "Storm visual avoid:", "Moon visual avoid:"))
+        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:", "Storm visual avoid:", "Moon visual avoid:", "Lunar negative:"))
     ).lower()
     for forbidden in (
         "large full moon",
@@ -453,24 +444,19 @@ def run_last_quarter_59_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     for needle in [
-        "a modest physically accurate waning half-to-slight-gibbous Moon, about 59 percent illuminated",
-        "left side illuminated",
-        "small non-dominant natural scale",
-        "not a full moon and not near-full",
-        "physically accurate waning non-full Moon, 59% illuminated, left side lit, modest non-dominant natural scale",
-        "no near-full moon for 35-75 percent illumination",
-        "no giant decorative moon",
-        "no poster-like lunar disc",
-        "no fantasy supermoon",
-        "no oversized moon",
+        "Lunar cue: one physically accurate last-quarter Moon, left side lit, visibly non-full, 59% illuminated, at small-to-medium natural non-dominant scale.",
+        "Lunar negative: no perfect full moon, no oversized moon, no fantasy supermoon, no duplicate moon.",
     ]:
         _assert_contains(name, prompt, needle)
+    if prompt.count("Lunar cue:") != 1:
+        raise AssertionError(f"{name}: expected exactly one positive lunar cue")
+    _assert_not_contains(name, prompt, "Moon scale adherence:")
     positive_lines = "\n".join(
         line
         for line in prompt.splitlines()
-        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:", "Storm visual avoid:", "Moon visual avoid:"))
+        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:", "Storm visual avoid:", "Moon visual avoid:", "Lunar negative:"))
     ).lower()
     for forbidden in (
         "large full moon",
@@ -504,18 +490,18 @@ def run_not_quite_full_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     for needle in [
-        "a realistic gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon",
-        "no perfect full moon when illumination is below 97 percent",
-        "no oversized full circular moon",
-        "no fantasy supermoon",
+        "Lunar cue: one realistic gibbous Moon, 95% illuminated, visibly not full, at small-to-medium natural non-dominant scale.",
+        "Lunar negative: no perfect full moon, no oversized moon, no fantasy supermoon, no duplicate moon.",
     ]:
         _assert_contains(name, prompt, needle)
+    if prompt.count("Lunar cue:") != 1:
+        raise AssertionError(f"{name}: expected exactly one positive lunar cue")
     positive_lines = "\n".join(
         line
         for line in prompt.splitlines()
-        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:"))
+        if not line.strip().startswith(("Must avoid:", "Evening visual avoid:", "Lunar negative:"))
     ).lower()
     for forbidden in ("bright full moon", "fantasy supermoon", "oversized full circular moon"):
         _assert_not_contains(name, positive_lines, forbidden)
@@ -542,22 +528,19 @@ def run_full_moon_evening_moonlit_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     for needle in [
-        "Evening moonlit cue: blue-hour Baltic coast",
+        "Evening light adherence: blue-hour Baltic coast",
         "soft evening twilight",
-        "visible realistic full moon",
-        "cool moonlit sea",
         "residual pale horizon glow",
         "right side of frame",
-        "realistic moon scale and natural moon position",
+        "Lunar cue: one realistic full Moon, 100% illuminated, at small-to-medium natural non-dominant scale.",
+        "Lunar negative: no oversized moon, no fantasy supermoon, no duplicate moon.",
         "Evening visual avoid: no bright daytime look",
         "no morning look",
         "no sun-dominant scene",
         "no bright golden sunset",
-        "no oversized moon",
         "no fantasy planet",
-        "no fantasy supermoon",
         "No visible text anywhere",
         "no tiny white text at the bottom",
         "no pseudo-caption",
@@ -568,6 +551,8 @@ def run_full_moon_evening_moonlit_guard_case() -> None:
         "Evening direction cue: right-side horizon glow",
     ]:
         _assert_contains(name, prompt, needle)
+    if prompt.count("Lunar cue:") != 1:
+        raise AssertionError(f"{name}: expected exactly one positive lunar cue")
 
     print(f"PASS {name}")
 
@@ -591,13 +576,15 @@ def run_waning_gibbous_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     _assert_contains(
         name,
         prompt,
-        "a realistic waning gibbous Moon, 90-96 percent illuminated, visibly not a perfect full moon",
+        "Lunar cue: one realistic waning gibbous Moon, left side lit, visibly non-full, 94% illuminated, at small-to-medium natural non-dominant scale.",
     )
-    _assert_contains(name, prompt, "no perfect full moon when illumination is below 97 percent")
+    _assert_contains(name, prompt, "Lunar negative: no perfect full moon")
+    if prompt.count("Lunar cue:") != 1:
+        raise AssertionError(f"{name}: expected exactly one positive lunar cue")
     _assert_not_contains(
         name,
         "\n".join(line for line in prompt.splitlines() if not line.strip().startswith("Must avoid:")),
@@ -636,14 +623,13 @@ def run_storm_waning_92_visual_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
-    _assert_startswith(name, "style_name_93", style_name_93, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
+    _assert_startswith(name, "style_name_93", style_name_93, "format_v2_scene_cues_v4_")
     if style_name == style_name_93:
         raise AssertionError(f"{name}: style/cache digest must change with illumination")
     for needle in [
         "photorealistic Baltic coastline",
-        "realistic waning gibbous Moon, 92% illuminated",
-        "small-to-medium natural moon scale",
+        "Lunar cue: one realistic waning gibbous Moon, left side lit, visibly non-full, 92% illuminated, at small-to-medium natural non-dominant scale.",
         "blue-hour stormy evening",
         "strong wind and restless waves",
         "no illustration",
@@ -657,6 +643,164 @@ def run_storm_waning_92_visual_guard_case() -> None:
         "no bright daytime",
     ]:
         _assert_contains(name, prompt, needle)
+    if prompt.count("Lunar cue:") != 1:
+        raise AssertionError(f"{name}: expected exactly one positive lunar cue")
+    _assert_not_contains(name, prompt, "Moon scale adherence:")
+
+    print(f"PASS {name}")
+
+
+def run_new_moon_storm_finalizer_case() -> None:
+    name = "new_moon_4_percent_storm_finalizer"
+    message = "\n".join(
+        [
+            "<b>🌅 Калининградская область завтра (17.07.2026)</b>",
+            "✨ VayboMeter завтра: 5.7/10 — с оговорками; штормовые порывы.",
+            "⚠️ Штормовое предупреждение: порывы до 19 м/с.",
+            "🌊 <b>Морские города</b>",
+            "Балтийск: 21/16 °C • облачно • 💨 7 м/с • порывы до 19 м/с • 🌊 21°C • волна 1.3 м",
+            "🌑 Новолуние во Льве — 4% освещённости.",
+        ]
+    )
+    prompt, style_name = build_kld_evening_prompt(
+        dt.date(2026, 7, 16),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+    ctx = build_visual_context(message, post_type="evening")
+    diagnostics = kld_lunar_prompt_diagnostics(prompt, ctx, message)
+
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
+    for needle in (
+        "Storm visual adherence: photorealistic Baltic coastline",
+        "strong wind and restless waves",
+        "Sea and wind state: visibly wavy Baltic sea.",
+        "Controlled composition:",
+        "New-moon sky: no visible lunar disc; moonless or nearly moonless dark sky; clouds and Baltic weather remain the visual focus.",
+        "Lunar negative: no visible moon, no crescent, no full moon, no lunar disc, no moon reflection.",
+    ):
+        _assert_contains(name, prompt, needle)
+    for forbidden in (
+        "Moon scale adherence:",
+        "phase-accurate Moon",
+        "subtle celestial detail",
+        "Moon cue:",
+        "Lunar cue:",
+        "Evening moonlit cue:",
+        "cool moonlit sea",
+        "moon reflection on Baltic water",
+    ):
+        _assert_not_contains(name, prompt, forbidden)
+    if prompt.count("New-moon sky:") != 1 or prompt.count("Lunar negative:") != 1:
+        raise AssertionError(f"{name}: expected one canonical new-moon pair")
+    expected_diagnostics = {
+        "parsed_moon_phase": "new",
+        "lunar_illumination": 4.0,
+        "visible_moon_allowed": False,
+        "final_lunar_rule": "new_moon_hidden",
+        "final_prompt_contains_visible_moon_cue": False,
+    }
+    _assert_equal(name, "diagnostics", diagnostics, expected_diagnostics)
+
+    print(f"PASS {name}")
+
+
+def run_new_moon_nonstorm_and_cloud_cases() -> None:
+    cases = (
+        (
+            "five_percent_crescent_is_hidden",
+            "Светлогорск: 20/15 °C • ☀️ ясно • 💨 3 м/с • порывы до 6 м/с • 🌊 18°C • волна 0.2 м",
+            "🌒 Растущий серп — 5% освещённости.",
+        ),
+        (
+            "new_moon_clouds_stay_dominant",
+            "Светлогорск: 20/15 °C • 🌥 облачно • 💨 4 м/с • порывы до 7 м/с • 🌊 18°C • волна 0.3 м",
+            "🌑 Новолуние — 2% освещённости.",
+        ),
+    )
+    for name, weather_line, moon_line in cases:
+        message = "\n".join(("18.07.2026", "🌊 Морские города", weather_line, moon_line))
+        prompt, _ = build_kld_evening_prompt(
+            dt.date(2026, 7, 17),
+            marine_mood="",
+            inland_mood="",
+            final_format_v2_message=message,
+            post_type="evening",
+        )
+        ctx = build_visual_context(message, post_type="evening")
+        diagnostics = kld_lunar_prompt_diagnostics(prompt, ctx, message)
+
+        _assert_contains(name, prompt, "New-moon sky: no visible lunar disc")
+        _assert_contains(name, prompt, "clouds and Baltic weather remain the visual focus")
+        _assert_not_contains(name, prompt, "Storm visual adherence:")
+        _assert_not_contains(name, prompt, "subtle celestial detail")
+        _assert_not_contains(name, prompt, "Moon scale adherence:")
+        _assert_equal(name, "visible_moon_allowed", diagnostics["visible_moon_allowed"], False)
+        _assert_equal(name, "visible cue", diagnostics["final_prompt_contains_visible_moon_cue"], False)
+        if "cloud" in name:
+            _assert_contains(name, prompt, "cloud-dominant sky")
+        print(f"PASS {name}")
+
+
+def run_unknown_moon_does_not_force_visible_cue_case() -> None:
+    name = "unknown_moon_does_not_force_visible_cue"
+    message = "\n".join(
+        (
+            "19.07.2026",
+            "🌊 Морские города",
+            "Балтийск: 21/16 °C • облачно • 💨 5 м/с • порывы до 8 м/с • 🌊 19°C • волна 0.4 м",
+        )
+    )
+    prompt, _ = build_kld_evening_prompt(
+        dt.date(2026, 7, 18),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+    ctx = build_visual_context(message, post_type="evening")
+    diagnostics = kld_lunar_prompt_diagnostics(prompt, ctx, message)
+
+    for forbidden in ("Moon cue:", "Lunar cue:", "Moon scale adherence:", "subtle celestial detail"):
+        _assert_not_contains(name, prompt, forbidden)
+    _assert_equal(name, "final_lunar_rule", diagnostics["final_lunar_rule"], "unknown_no_moon")
+    _assert_equal(name, "visible cue", diagnostics["final_prompt_contains_visible_moon_cue"], False)
+    _assert_contains(name, prompt, "Controlled composition:")
+
+    print(f"PASS {name}")
+
+
+def run_storm_full_moon_single_cue_case() -> None:
+    name = "storm_full_moon_single_natural_scale_cue"
+    message = "\n".join(
+        (
+            "<b>🌅 Калининградская область завтра (20.07.2026)</b>",
+            "⚠️ Штормовое предупреждение: порывы до 19 м/с.",
+            "🌊 <b>Морские города</b>",
+            "Балтийск: 19/14 °C • местами дождь • 💨 8 м/с • порывы до 19 м/с • 🌊 18°C • волна 1.4 м",
+            "🌕 Полнолуние — 100% освещённости.",
+        )
+    )
+    prompt, _ = build_kld_evening_prompt(
+        dt.date(2026, 7, 19),
+        marine_mood="",
+        inland_mood="",
+        final_format_v2_message=message,
+        post_type="evening",
+    )
+
+    _assert_contains(name, prompt, "Storm visual adherence:")
+    _assert_contains(
+        name,
+        prompt,
+        "Lunar cue: one realistic full Moon, 100% illuminated, at small-to-medium natural non-dominant scale.",
+    )
+    if prompt.count("Lunar cue:") != 1 or prompt.count("small-to-medium natural non-dominant scale") != 1:
+        raise AssertionError(f"{name}: full Moon must have one natural-scale positive cue")
+    _assert_not_contains(name, prompt, "Moon scale adherence:")
+    _assert_contains(name, prompt, "Controlled composition:")
 
     print(f"PASS {name}")
 
@@ -683,7 +827,7 @@ def run_nonstorm_warning_does_not_get_storm_visual_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     _assert_not_contains(name, prompt, "blue-hour stormy evening")
     _assert_not_contains(name, prompt, "storm-warning Baltic atmosphere")
     _assert_not_contains(name, prompt, "strong wind and restless waves")
@@ -712,10 +856,14 @@ def run_gust19_without_storm_word_gets_storm_visual_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v3_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v4_")
     _assert_contains(name, prompt, "blue-hour stormy evening")
     _assert_contains(name, prompt, "strong wind and restless waves")
-    _assert_contains(name, prompt, "realistic waning gibbous Moon, 92% illuminated")
+    _assert_contains(
+        name,
+        prompt,
+        "Lunar cue: one realistic waning gibbous Moon, left side lit, visibly non-full, 92% illuminated",
+    )
 
     print(f"PASS {name}")
 
@@ -1075,6 +1223,10 @@ def main() -> None:
     run_full_moon_evening_moonlit_guard_case()
     run_waning_gibbous_moon_guard_case()
     run_storm_waning_92_visual_guard_case()
+    run_new_moon_storm_finalizer_case()
+    run_new_moon_nonstorm_and_cloud_cases()
+    run_unknown_moon_does_not_force_visible_cue_case()
+    run_storm_full_moon_single_cue_case()
     run_nonstorm_warning_does_not_get_storm_visual_case()
     run_gust19_without_storm_word_gets_storm_visual_case()
     run_storm_overlay_warning_priority_cases()
@@ -1082,7 +1234,7 @@ def main() -> None:
     run_controlled_variety_cases()
     run_scene_family_rotation_cases()
     run_scene_retry_and_cache_key_cases()
-    print(f"OK: {len(CASES) + 16} KLD synthetic visual checks passed")
+    print(f"OK: {len(CASES) + 21} KLD synthetic visual checks passed")
 
 
 if __name__ == "__main__":

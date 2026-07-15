@@ -310,7 +310,26 @@ _NO_DOUBLE_MOON_GUARD = (
     "No extra bright discs."
 )
 
-_FORMAT_V2_PROMPT_VERSION = "v3"
+_FORMAT_V2_PROMPT_VERSION = "v4"
+
+_VISIBLE_MOON_PHASES = frozenset(
+    {
+        "waxing_crescent",
+        "first_quarter",
+        "waxing_gibbous",
+        "full",
+        "waning_gibbous",
+        "last_quarter",
+        "waning_crescent",
+    }
+)
+_NEW_MOON_SKY_RULE = (
+    "New-moon sky: no visible lunar disc; moonless or nearly moonless dark sky; "
+    "clouds and Baltic weather remain the visual focus."
+)
+_NEW_MOON_NEGATIVE_RULE = (
+    "Lunar negative: no visible moon, no crescent, no full moon, no lunar disc, no moon reflection."
+)
 
 KLD_SCENE_FAMILIES: tuple[str, ...] = (
     "curonian_spit_dunes",
@@ -637,6 +656,8 @@ def _apply_storm_moon_visual_guard(prompt: str, ctx: Any, source_text: str) -> s
     )
     illumination = _extract_lunar_illumination(source_text)
     phase = getattr(ctx, "moon_phase", "unknown")
+    moon_hidden = phase == "new" or (illumination is not None and illumination <= 5)
+    visible_moon = phase in _VISIBLE_MOON_PHASES and not moon_hidden
     medium_non_full = illumination is not None and 35 <= illumination < 90 and phase in (
         "first_quarter",
         "waxing_gibbous",
@@ -666,7 +687,7 @@ def _apply_storm_moon_visual_guard(prompt: str, ctx: Any, source_text: str) -> s
                 "strong wind and restless waves; natural weather-photo realism."
             )
         )
-    elif medium_non_full:
+    elif medium_non_full and visible_moon:
         add_lines.append(
             (
                 "Moon visual adherence: photorealistic Baltic evening; phase-accurate Moon stays modest, "
@@ -674,18 +695,26 @@ def _apply_storm_moon_visual_guard(prompt: str, ctx: Any, source_text: str) -> s
             )
         )
     avoid_label = "Storm visual avoid" if stormy else "Moon visual avoid"
-    add_lines.extend([
-        (
-            "Moon scale adherence: "
-            + (moon_phrase or "phase-accurate Moon")
-            + "; small-to-medium natural moon scale."
-        ),
+    if visible_moon:
+        add_lines.append(
+            (
+                "Moon scale adherence: "
+                + (moon_phrase or "phase-accurate Moon")
+                + "; small-to-medium natural moon scale."
+            )
+        )
+    lunar_avoid = (
+        "no perfect full moon, no near-full moon for medium illumination, no oversized moon, "
+        "no giant decorative moon, no fantasy supermoon, "
+        if visible_moon
+        else ""
+    )
+    add_lines.append(
         (
             f"{avoid_label}: no illustration, no vector art, no painting, no poster, no cartoon, "
-            "no perfect full moon, no near-full moon for medium illumination, no oversized moon, "
-            "no giant decorative moon, no fantasy supermoon, no bright daytime."
-        ),
-    ])
+            f"{lunar_avoid}no bright daytime."
+        )
+    )
     lines = prompt.splitlines()
     insert_at = next((idx for idx, item in enumerate(lines) if item.startswith("Text restrictions:")), len(lines))
     for offset, line in enumerate(add_lines):
@@ -940,6 +969,182 @@ def apply_kld_controlled_variety(
     return "\n".join(lines)
 
 
+def _is_lunar_prompt_fragment(value: str) -> bool:
+    low = str(value or "").lower()
+    return any(
+        token in low
+        for token in (
+            "moon",
+            "lunar",
+            "crescent",
+            "gibbous",
+            "quarter",
+            "celestial detail",
+            "celestial object",
+        )
+    )
+
+
+def _strip_lunar_list_items(line: str) -> str:
+    prefix, raw = line.split(":", 1)
+    items = [item.strip().rstrip(".") for item in raw.split(";") if item.strip()]
+    kept = [item for item in items if not _is_lunar_prompt_fragment(item)]
+    return f"{prefix}: " + "; ".join(kept) + ("." if kept else "")
+
+
+def _strip_lunar_avoid_clauses(line: str) -> str:
+    prefix, raw = line.split(":", 1)
+    clauses = [item.strip().rstrip(".") for item in re.split(r"[;,]", raw) if item.strip()]
+    kept = [item for item in clauses if not _is_lunar_prompt_fragment(item)]
+    if not kept:
+        return ""
+    if prefix.strip() == "Moon visual avoid":
+        prefix = "Visual avoid"
+    return f"{prefix}: " + "; ".join(kept) + "."
+
+
+def _canonical_visible_lunar_cue(phase: str, illumination: float | None, source_text: str) -> str | None:
+    if phase not in _VISIBLE_MOON_PHASES:
+        return None
+    pct = _fmt_percent(illumination)
+    pct_text = f", {pct}% illuminated" if pct else ""
+    source_low = str(source_text or "").lower()
+
+    if phase == "full" and illumination is not None and illumination < 97:
+        if "убывающ" in source_low or "waning" in source_low:
+            phase = "waning_gibbous"
+        elif "растущ" in source_low or "waxing" in source_low:
+            phase = "waxing_gibbous"
+        else:
+            return (
+                f"Lunar cue: one realistic gibbous Moon{pct_text}, visibly not full, "
+                "at small-to-medium natural non-dominant scale."
+            )
+
+    descriptions = {
+        "waxing_crescent": "one realistic thin waxing crescent Moon, right side lit",
+        "first_quarter": "one physically accurate first-quarter Moon, right side lit, visibly non-full",
+        "waxing_gibbous": "one realistic waxing gibbous Moon, right side lit, visibly non-full",
+        "full": "one realistic full Moon",
+        "waning_gibbous": "one realistic waning gibbous Moon, left side lit, visibly non-full",
+        "last_quarter": "one physically accurate last-quarter Moon, left side lit, visibly non-full",
+        "waning_crescent": "one realistic thin waning crescent Moon, left side lit",
+    }
+    return f"Lunar cue: {descriptions[phase]}{pct_text}, at small-to-medium natural non-dominant scale."
+
+
+def _canonical_lunar_negative(phase: str, illumination: float | None) -> str:
+    if phase == "full" and (illumination is None or illumination >= 97):
+        return "Lunar negative: no oversized moon, no fantasy supermoon, no duplicate moon."
+    if phase in ("waxing_crescent", "waning_crescent"):
+        return (
+            "Lunar negative: no round lunar disc, no oversized moon, "
+            "no duplicate moon, no water reflection path."
+        )
+    return (
+        "Lunar negative: no perfect full moon, no oversized moon, "
+        "no fantasy supermoon, no duplicate moon."
+    )
+
+
+def finalize_kld_lunar_prompt(prompt: str, ctx: Any, source_text: str) -> str:
+    """Apply the final lunar truth without changing weather or scene composition."""
+    if getattr(ctx, "post_type", "unknown") != "evening":
+        return prompt
+
+    phase = str(getattr(ctx, "moon_phase", "unknown") or "unknown")
+    illumination = _extract_lunar_illumination(source_text)
+    moon_hidden = phase == "new" or (illumination is not None and illumination <= 5)
+    visible_moon = phase in _VISIBLE_MOON_PHASES and not moon_hidden
+    out: list[str] = []
+
+    for line in str(prompt or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("Moon cue:", "Moon scale adherence:", "Moon visual adherence:", "Lunar cue:", "Lunar negative:", "New-moon sky:")):
+            continue
+        if stripped.startswith("Evening moonlit cue:"):
+            out.append(
+                "Evening light adherence: blue-hour Baltic coast; soft evening twilight; "
+                "residual pale horizon glow on the right side of frame."
+            )
+            continue
+        if stripped.startswith("Sky cue:") and _is_lunar_prompt_fragment(stripped):
+            out.append("Sky cue: cloud-dominant evening sky.")
+            continue
+        if stripped.startswith(("Must show:", "Must avoid:", "Controlled composition:")):
+            cleaned = _strip_lunar_list_items(line)
+            if cleaned.split(":", 1)[1].strip(" ."):
+                out.append(cleaned)
+            continue
+        if stripped.startswith(("Evening visual avoid:", "Storm visual avoid:", "Moon visual avoid:", "Visual avoid:")):
+            cleaned = _strip_lunar_avoid_clauses(line)
+            if cleaned:
+                out.append(cleaned)
+            continue
+        out.append(line)
+
+    insert_at = next((idx for idx, line in enumerate(out) if line.startswith("Text restrictions:")), len(out))
+    lunar_lines: list[str] = []
+    if moon_hidden:
+        lunar_lines.extend((_NEW_MOON_SKY_RULE, _NEW_MOON_NEGATIVE_RULE))
+    elif visible_moon:
+        cue = _canonical_visible_lunar_cue(phase, illumination, source_text)
+        if cue:
+            lunar_lines.append(cue)
+            lunar_lines.append(_canonical_lunar_negative(phase, illumination))
+    out[insert_at:insert_at] = lunar_lines
+    return "\n".join(out)
+
+
+def _final_prompt_contains_visible_moon_cue(prompt: str) -> bool:
+    for line in str(prompt or "").splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith(("lunar negative:", "must avoid:", "evening visual avoid:", "storm visual avoid:", "visual avoid:")):
+            continue
+        if stripped.startswith("new-moon sky:"):
+            continue
+        if stripped.startswith(("lunar cue:", "moon cue:", "moon scale adherence:", "evening moonlit cue:")):
+            return True
+        if any(
+            token in stripped
+            for token in (
+                "visible moon",
+                "bright moon",
+                "full moon",
+                "crescent moon",
+                "gibbous moon",
+                "phase-accurate moon",
+                "moonlit sea",
+                "moon reflection",
+                "lunar disc",
+                "celestial detail",
+                "celestial object",
+            )
+        ):
+            return True
+    return False
+
+
+def kld_lunar_prompt_diagnostics(prompt: str, ctx: Any, source_text: str) -> dict[str, Any]:
+    phase = str(getattr(ctx, "moon_phase", "unknown") or "unknown")
+    illumination = _extract_lunar_illumination(source_text)
+    moon_hidden = phase == "new" or (illumination is not None and illumination <= 5)
+    visible_allowed = phase in _VISIBLE_MOON_PHASES and not moon_hidden
+    if moon_hidden:
+        rule = "new_moon_hidden"
+    elif visible_allowed:
+        rule = f"{phase}_visible"
+    else:
+        rule = "unknown_no_moon"
+    return {
+        "parsed_moon_phase": phase,
+        "lunar_illumination": illumination,
+        "visible_moon_allowed": visible_allowed,
+        "final_lunar_rule": rule,
+        "final_prompt_contains_visible_moon_cue": _final_prompt_contains_visible_moon_cue(prompt),
+    }
+
+
 def _build_format_v2_visual_prompt(
     final_format_v2_message: str,
     *,
@@ -973,6 +1178,7 @@ def _build_format_v2_visual_prompt(
         source_text=final_format_v2_message,
         variation_attempt=variation_attempt,
     )
+    prompt = finalize_kld_lunar_prompt(prompt, ctx, final_format_v2_message)
     style_name = _format_v2_style_name(
         ctx,
         date_key=date_key,
@@ -988,6 +1194,14 @@ def _build_format_v2_visual_prompt(
         getattr(ctx, "sport_level", "none"),
         getattr(ctx, "moon_phase", "unknown"),
         (getattr(ctx, "evidence", {}) or {}).get("weather_source_used"),
+    )
+    logger.info(
+        "KLD lunar prompt diagnostics: %s",
+        json.dumps(
+            kld_lunar_prompt_diagnostics(prompt, ctx, final_format_v2_message),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
     )
     return prompt, style_name
 
