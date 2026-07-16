@@ -1856,6 +1856,20 @@ class KldMorningMessage(str):
         return obj
 
 
+class KldEveningMessage(str):
+    """Visible evening text plus structured next-morning visibility context."""
+
+    def __new__(
+        cls,
+        text: str,
+        *,
+        visibility_context: KldVisibilityContext | None = None,
+    ):
+        obj = str.__new__(cls, text)
+        obj.visibility_context = visibility_context
+        return obj
+
+
 def _collect_morning_region_temperatures(
     sea_cities,
     other_cities,
@@ -2307,7 +2321,7 @@ def build_message_legacy_evening(
     # (2) Вечером блоки воздуха/космопогоды/Шумана скрыты — остаются только рекомендации.
     air = get_air(KLD_LAT, KLD_LON) or {}
     schu_state = {} if (DISABLE_SCHUMANN) else get_schumann_with_fallback()
-    _visibility_context, visibility_line = _kld_visibility_for_post(
+    visibility_context, visibility_line = _kld_visibility_for_post(
         wm_main,
         air,
         post_type="evening",
@@ -2344,7 +2358,10 @@ def build_message_legacy_evening(
 
     P.append("———")
     P.append("#Калининград #погода #здоровье #море")
-    return "\n".join(P)
+    return KldEveningMessage(
+        "\n".join(P),
+        visibility_context=visibility_context,
+    )
 
 # ────────────────────────── Внешний интерфейс ──────────────────────────
 def build_message(

@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
+import json
 import logging
 import os
+from pathlib import Path
 import re
 from typing import Union
 
@@ -72,6 +76,79 @@ def _env_on(name: str, default: bool = False) -> bool:
     if val is None:
         return default
     return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+_VISIBILITY_SIDECAR_FIELDS = (
+    "current_visibility_m",
+    "morning_min_visibility_m",
+    "humidity_pct",
+    "temperature_c",
+    "dew_point_c",
+    "dew_point_spread_c",
+    "weather_code",
+    "aqi",
+    "pm25",
+    "pm10",
+    "evidence_source",
+    "observation_time",
+    "target_date",
+    "confidence",
+    "classification_reason",
+)
+
+
+def _visibility_context_sidecar_payload(context: object, *, mode: str) -> dict[str, object] | None:
+    """Normalize pre-sanitize visibility data for the image-process sidecar."""
+    if is_dataclass(context) and not isinstance(context, type):
+        source = asdict(context)
+    elif isinstance(context, Mapping):
+        source = dict(context)
+    else:
+        return None
+
+    condition = str(source.get("visibility_condition") or source.get("condition") or "clear")
+    forecast_window = str(source.get("visibility_forecast_window") or "")
+    if forecast_window not in {"current_morning", "tomorrow_morning", "none"}:
+        forecast_window = "none" if condition == "clear" else (
+            "current_morning" if mode == "morning" else "tomorrow_morning"
+        )
+
+    payload = {field: source.get(field) for field in _VISIBILITY_SIDECAR_FIELDS}
+    payload["visibility_condition"] = condition
+    payload["visibility_forecast_window"] = forecast_window
+    return payload
+
+
+def _write_visibility_context_sidecar(path_value: str, context: object, *, mode: str) -> bool:
+    """Atomically write structured visibility before any text sanitizing.
+
+    Missing context has one deterministic contract: no sidecar file. A stale
+    destination is removed so a previous run cannot leak metadata into this one.
+    """
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        return False
+    path = Path(raw_path)
+    payload = _visibility_context_sidecar_payload(context, mode=mode)
+    if payload is None:
+        path.unlink(missing_ok=True)
+        logging.info("KLD visibility sidecar omitted: structured context unavailable")
+        return False
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(path.name + ".tmp")
+    temp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(path)
+    logging.info(
+        "KLD visibility sidecar written: path=%s condition=%s window=%s",
+        path,
+        payload["visibility_condition"],
+        payload["visibility_forecast_window"],
+    )
+    return True
 
 
 def _env_any(*names: str) -> bool:
@@ -1404,6 +1481,11 @@ async def main() -> None:
     parser.add_argument("--to-test", action="store_true")
     parser.add_argument("--chat-id", default="")
     parser.add_argument("--format-v2", action="store_true", help="Build scenario-style FORMAT_V2 text after legacy sanitizing.")
+    parser.add_argument(
+        "--visibility-context-out",
+        default="",
+        help="Write pre-sanitize structured KLD visibility JSON for a separate image process.",
+    )
     parser.add_argument("--send", action="store_true", help="Actually send to CHANNEL_ID_TEST / --chat-id. Omit for dry-run.")
     parser.add_argument("--no-test-label", action="store_true", help="Do not prepend the 'Test safe post' label when sending.")
     args = parser.parse_args()
@@ -1439,6 +1521,13 @@ async def main() -> None:
             tz=TZ_STR,
             mode=mode,
         )
+
+    visibility_context = getattr(raw_msg, "visibility_context", None)
+    _write_visibility_context_sidecar(
+        args.visibility_context_out,
+        visibility_context,
+        mode=mode,
+    )
 
     legacy_result = sanitize_post_text(raw_msg)
     final_result = legacy_result

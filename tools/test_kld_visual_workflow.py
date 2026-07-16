@@ -90,6 +90,26 @@ def test_evening_waits_for_morning_without_losing_dispatch_paths() -> None:
     print("PASS evening_waits_for_morning_without_losing_dispatch_paths")
 
 
+def test_image_first_visibility_sidecar_wiring() -> None:
+    text = _read(DAILY)
+    morning = _block(text, "  morning:", "  evening:")
+    evening = _block(text, "  evening:", "  noon_fx:")
+    sidecar_out = '"--visibility-context-out", "format_v2_visibility_context.json"'
+    sidecar_in = '"--visibility-context-file", "format_v2_visibility_context.json"'
+
+    _assert("sidecar_out_both_jobs", text.count(sidecar_out) == 2)
+    _assert("sidecar_in_both_jobs", text.count(sidecar_in) == 2)
+    for name, block in (("morning", morning), ("evening", evening)):
+        _assert(f"{name}_preview_writes_sidecar", sidecar_out in block)
+        _assert(f"{name}_image_reads_sidecar", sidecar_in in block)
+        _assert(
+            f"{name}_sidecar_written_before_image",
+            block.index(sidecar_out) < block.index(sidecar_in),
+        )
+        _assert(f"{name}_image_first_order_kept", block.index("Running") < block.index("extracted text after image"))
+    print("PASS image_first_visibility_sidecar_wiring")
+
+
 def test_simulated_manual_morning_evening_history_chain() -> None:
     cache_store: dict[str, list[str]] = {}
     prefix = "kld-visual-history-prod-"
@@ -135,6 +155,7 @@ TESTS = [
     test_daily_visual_history_cache,
     test_safe_test_visual_history_cache_and_checkbox,
     test_evening_waits_for_morning_without_losing_dispatch_paths,
+    test_image_first_visibility_sidecar_wiring,
     test_simulated_manual_morning_evening_history_chain,
     test_pillow_is_bounded_dependency,
 ]

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 import datetime as dt
 import hashlib
 import json
@@ -144,14 +145,36 @@ async def _send_photo(path: str, caption: str, *, chat_id_override: str = "") ->
     print(f"Sent KLD image, chat={chat_id_raw}, message_id={getattr(msg, 'message_id', '?')}")
 
 
+def _load_visibility_context_file(path_value: str) -> Mapping[str, Any] | None:
+    """Load an optional structured sidecar, falling back safely to message text."""
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        print(f"WARNING: KLD visibility sidecar unavailable; using text-only fallback: {exc}")
+        return None
+    if not isinstance(payload, Mapping):
+        print("WARNING: KLD visibility sidecar is not a JSON object; using text-only fallback")
+        return None
+    return dict(payload)
+
+
 def build_payload(
     message: str,
     label: str,
     *,
     post_type: str = "evening",
     variation_attempt: int = 0,
+    visibility_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    ctx = build_visual_context(message, post_type=post_type)
+    ctx = build_visual_context(
+        message,
+        post_type=post_type,
+        visibility_context=visibility_context,
+    )
     cues = apply_visual_rules(ctx)
     diagnostic_prompt = build_prompt_from_cues(cues)
     if post_type == "morning":
@@ -159,6 +182,7 @@ def build_payload(
             message,
             post_type="morning",
             variation_attempt=variation_attempt,
+            visibility_context=visibility_context,
         )
     else:
         image_prompt, style_name = build_kld_evening_prompt(
@@ -168,6 +192,7 @@ def build_payload(
             final_format_v2_message=message,
             post_type="evening",
             variation_attempt=variation_attempt,
+            visibility_context=visibility_context,
         )
     date_key = _extract_prompt_date(message, dt.date(2026, 6, 19))
     metadata = kld_scene_metadata(
@@ -210,6 +235,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build/send KLD visual image")
     parser.add_argument("--scenario", choices=sorted(FIXTURES), default="")
     parser.add_argument("--message-file", default="", help="Use an already-built FORMAT_V2 message from file instead of fixture")
+    parser.add_argument(
+        "--visibility-context-file",
+        default="",
+        help="Optional JSON sidecar written by safe_test_post.py.",
+    )
     parser.add_argument("--post-type", choices=("evening", "morning"), default="evening")
     parser.add_argument("--generate", action="store_true", help="Generate local image but do not send")
     parser.add_argument("--send-to-test", action="store_true", help="Generate and send image. Defaults to CHANNEL_ID_TEST unless --chat-id is provided")
@@ -218,9 +248,16 @@ def main() -> None:
     parser.add_argument("--history-namespace", choices=("prod", "test"), default="", help="Visual history namespace for duplicate checks")
     args = parser.parse_args()
 
+    visibility_context = _load_visibility_context_file(args.visibility_context_file)
+
     if args.message_file:
         message = Path(args.message_file).read_text(encoding="utf-8")
-        payload = build_payload(message, "message_file", post_type=args.post_type)
+        payload = build_payload(
+            message,
+            "message_file",
+            post_type=args.post_type,
+            visibility_context=visibility_context,
+        )
     elif args.scenario:
         payload = build_fixture_payload(args.scenario, post_type=args.post_type)
     else:
@@ -276,7 +313,13 @@ def main() -> None:
     least_similar: tuple[dict[str, Any], str, Any] | None = None
     for attempt in range(3):
         if args.message_file:
-            candidate = build_payload(message, "message_file", post_type=args.post_type, variation_attempt=attempt)
+            candidate = build_payload(
+                message,
+                "message_file",
+                post_type=args.post_type,
+                variation_attempt=attempt,
+                visibility_context=visibility_context,
+            )
         else:
             candidate = build_fixture_payload(args.scenario, post_type=args.post_type, variation_attempt=attempt)
 

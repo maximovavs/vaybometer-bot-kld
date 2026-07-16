@@ -244,7 +244,10 @@ jobs:
                   print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
 
               if image_enabled and send_chat:
-                  preview_args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
+                  preview_args = [
+                      "safe_test_post.py", "--mode", "morning", "--format-v2",
+                      "--visibility-context-out", "format_v2_visibility_context.json",
+                  ]
                   if wd:
                       preview_args += ["--date", wd]
                   preview_cmd = [sys.executable] + preview_args
@@ -271,6 +274,7 @@ jobs:
                       sys.executable,
                       "tools/kld_visual_fixture_image.py",
                       "--message-file", "format_v2_message.txt",
+                      "--visibility-context-file", "format_v2_visibility_context.json",
                       "--post-type", "morning",
                       "--send-to-test",
                       "--chat-id", send_chat,
@@ -446,7 +450,10 @@ jobs:
                   print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
 
               if image_enabled and send_chat:
-                  preview_args = ["safe_test_post.py", "--mode", "evening", "--format-v2"]
+                  preview_args = [
+                      "safe_test_post.py", "--mode", "evening", "--format-v2",
+                      "--visibility-context-out", "format_v2_visibility_context.json",
+                  ]
                   if wd:
                       preview_args += ["--date", wd]
                   preview_cmd = [sys.executable] + preview_args
@@ -473,6 +480,7 @@ jobs:
                       sys.executable,
                       "tools/kld_visual_fixture_image.py",
                       "--message-file", "format_v2_message.txt",
+                      "--visibility-context-file", "format_v2_visibility_context.json",
                       "--send-to-test",
                       "--chat-id", send_chat,
                       "--caption", caption,

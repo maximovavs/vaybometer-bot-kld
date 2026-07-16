@@ -12,6 +12,7 @@ import re
 import sys
 import types
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -33,7 +34,17 @@ from image_prompt_kld import (  # noqa: E402
     kld_visual_cache_key,
 )
 from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
-from safe_test_post import _kld_evening_score_line, _kld_score_line  # noqa: E402
+from post_common import KldEveningMessage, KldMorningMessage  # noqa: E402
+from post_safety import sanitize_post_text  # noqa: E402
+from safe_test_post import (  # noqa: E402
+    _kld_evening_score_line,
+    _kld_score_line,
+    _write_visibility_context_sidecar,
+)
+from tools.kld_visual_fixture_image import (  # noqa: E402
+    _load_visibility_context_file,
+    build_payload,
+)
 from visibility_context import (  # noqa: E402
     KldVisibilityContext,
     build_kld_visibility_line,
@@ -138,6 +149,42 @@ def _evening_source(visibility_line: str, moon_line: str) -> str:
             "#Калининград #погода #здоровье #море",
         )
     )
+
+
+def _format_v2_as_plain_text(raw_message: str, *, post_type: str) -> str:
+    legacy_text = sanitize_post_text(raw_message).text
+    if post_type == "morning":
+        formatted = build_morning_format_v2("Калининградская область", legacy_text)
+    else:
+        formatted = build_evening_format_v2("Калининградская область", legacy_text)
+    return sanitize_post_text(formatted).text
+
+
+def _serialized_image_payload(
+    raw_message: str,
+    *,
+    post_type: str,
+    directory: Path,
+) -> tuple[dict[str, object], str, dict[str, object]]:
+    sidecar_path = directory / "format_v2_visibility_context.json"
+    message_path = directory / "format_v2_message.txt"
+    context = getattr(raw_message, "visibility_context", None)
+    assert _write_visibility_context_sidecar(str(sidecar_path), context, mode=post_type)
+
+    final_text = _format_v2_as_plain_text(raw_message, post_type=post_type)
+    message_path.write_text(final_text + "\n", encoding="utf-8")
+    serialized_text = message_path.read_text(encoding="utf-8")
+    assert type(serialized_text) is str
+
+    loaded = _load_visibility_context_file(str(sidecar_path))
+    assert isinstance(loaded, dict)
+    payload = build_payload(
+        serialized_text,
+        "serialized_workflow",
+        post_type=post_type,
+        visibility_context=loaded,
+    )
+    return payload, serialized_text, loaded
 
 
 def dense_fog_case_a() -> None:
@@ -669,6 +716,160 @@ def reported_mist_does_not_replace_structured_actual_case_i() -> None:
     assert metadata["morning_min_visibility_m"] == "300"
 
 
+def production_sidecar_morning_dense_fog_case_a() -> None:
+    structured = _context(300, 97, 45, temperature=6, dew_point=5.7)
+    line = build_kld_visibility_line(structured, post_type="morning") or ""
+    raw_message = KldMorningMessage(
+        _morning_source(line),
+        visibility_context=structured,
+    )
+    with TemporaryDirectory(prefix="kld_visibility_morning_") as tmp:
+        payload, _final_text, sidecar = _serialized_image_payload(
+            raw_message,
+            post_type="morning",
+            directory=Path(tmp),
+        )
+
+    required_fields = {
+        "visibility_condition",
+        "current_visibility_m",
+        "morning_min_visibility_m",
+        "humidity_pct",
+        "temperature_c",
+        "dew_point_c",
+        "dew_point_spread_c",
+        "weather_code",
+        "aqi",
+        "pm25",
+        "pm10",
+        "evidence_source",
+        "observation_time",
+        "target_date",
+        "confidence",
+        "classification_reason",
+    }
+    assert required_fields <= set(sidecar)
+    assert sidecar["visibility_forecast_window"] == "current_morning"
+    metadata = payload["metadata"]
+    assert metadata["morning_min_visibility_m"] == "300"
+    assert metadata["reported_visibility_threshold_m"] == "500"
+    assert "morning_min_visibility_m=300" in payload["cache_key"]
+    assert "morning_min_visibility_m=500" not in payload["cache_key"]
+
+
+def production_sidecar_evening_dense_fog_case_b() -> None:
+    structured = _context(
+        300,
+        97,
+        45,
+        temperature=6,
+        dew_point=5.7,
+        post_type="evening",
+        target=NEXT_DATE,
+    )
+    line = build_kld_visibility_line(structured, post_type="evening") or ""
+    raw_message = KldEveningMessage(
+        _evening_source(line, "🌕 Полнолуние в ♑ — 100% освещённости."),
+        visibility_context=structured,
+    )
+    assert isinstance(raw_message, str)
+    with TemporaryDirectory(prefix="kld_visibility_evening_") as tmp:
+        payload, final_text, sidecar = _serialized_image_payload(
+            raw_message,
+            post_type="evening",
+            directory=Path(tmp),
+        )
+
+    ctx = payload["context"]
+    metadata = payload["metadata"]
+    diagnostics = kld_lunar_prompt_diagnostics(payload["image_prompt"], ctx, final_text)
+    assert sidecar["visibility_forecast_window"] == "tomorrow_morning"
+    assert ctx.visibility_forecast_window == "tomorrow_morning"
+    assert metadata["morning_min_visibility_m"] == "300"
+    assert metadata["reported_visibility_threshold_m"] == "500"
+    assert diagnostics["final_lunar_rule"] == "tomorrow_morning_visibility_override"
+    assert diagnostics["visible_moon_allowed"] is False
+
+
+def production_text_only_missing_sidecar_case_c() -> None:
+    line = "🌫 Видимость: утром сильный туман; местами видимость может падать ниже 500 м."
+    final_text = build_morning_format_v2("Калининградская область", _morning_source(line))
+    with TemporaryDirectory(prefix="kld_visibility_missing_") as tmp:
+        sidecar_path = Path(tmp) / "format_v2_visibility_context.json"
+        sidecar_path.write_text('{"stale": true}', encoding="utf-8")
+        assert not _write_visibility_context_sidecar(str(sidecar_path), None, mode="morning")
+        assert not sidecar_path.exists()
+        loaded = _load_visibility_context_file(str(sidecar_path))
+        payload = build_payload(
+            final_text,
+            "missing_sidecar",
+            post_type="morning",
+            visibility_context=loaded,
+        )
+
+    ctx = payload["context"]
+    assert ctx.visibility_condition == "dense_fog"
+    assert ctx.reported_visibility_threshold_m == 500
+    assert ctx.morning_min_visibility_m is None
+    assert payload["metadata"]["morning_min_visibility_m"] == "unknown"
+
+
+def production_corrupt_sidecar_falls_back_case_d() -> None:
+    line = "🌫 Видимость: утром сильный туман; местами видимость может падать ниже 500 м."
+    final_text = build_morning_format_v2("Калининградская область", _morning_source(line))
+    with TemporaryDirectory(prefix="kld_visibility_corrupt_") as tmp:
+        sidecar_path = Path(tmp) / "format_v2_visibility_context.json"
+        sidecar_path.write_text("{broken", encoding="utf-8")
+        loaded = _load_visibility_context_file(str(sidecar_path))
+        assert loaded is None
+        payload = build_payload(
+            final_text,
+            "corrupt_sidecar",
+            post_type="morning",
+            visibility_context=loaded,
+        )
+
+    ctx = payload["context"]
+    assert ctx.visibility_condition == "dense_fog"
+    assert ctx.reported_visibility_threshold_m == 500
+    assert ctx.morning_min_visibility_m is None
+
+
+def production_sidecar_mist_reported_and_actual_case_e() -> None:
+    structured = KldVisibilityContext(
+        morning_min_visibility_m=300,
+        humidity_pct=91,
+        temperature_c=8,
+        dew_point_c=7,
+        dew_point_spread_c=1,
+        weather_code=3,
+        condition="mist",
+        evidence_source="hourly_morning",
+        observation_time="2026-07-16T06:00",
+        target_date=DATE.isoformat(),
+        confidence="high",
+        classification_reason="synthetic structured mist",
+    )
+    line = "🌫 Видимость: утром влажная дымка; местами около 2200 м; дальние ориентиры различимы хуже."
+    raw_message = KldMorningMessage(
+        _morning_source(line),
+        visibility_context=structured,
+    )
+    with TemporaryDirectory(prefix="kld_visibility_mist_") as tmp:
+        payload, _final_text, _sidecar = _serialized_image_payload(
+            raw_message,
+            post_type="morning",
+            directory=Path(tmp),
+        )
+
+    ctx = payload["context"]
+    assert ctx.visibility_condition == "mist"
+    assert ctx.morning_min_visibility_m == 300
+    assert ctx.reported_visibility_m == 2200
+    assert payload["metadata"]["morning_min_visibility_m"] == "300"
+    assert payload["metadata"]["reported_visibility_m"] == "2200"
+
+
 def main() -> None:
     checks = (
         dense_fog_case_a,
@@ -698,6 +899,11 @@ def main() -> None:
         structured_dense_fog_keeps_actual_measurement_case_g,
         text_threshold_is_not_actual_measurement_case_h,
         reported_mist_does_not_replace_structured_actual_case_i,
+        production_sidecar_morning_dense_fog_case_a,
+        production_sidecar_evening_dense_fog_case_b,
+        production_text_only_missing_sidecar_case_c,
+        production_corrupt_sidecar_falls_back_case_d,
+        production_sidecar_mist_reported_and_actual_case_e,
     )
     for check in checks:
         check()
