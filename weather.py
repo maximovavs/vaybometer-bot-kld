@@ -94,6 +94,8 @@ def _openmeteo_hourly_daily(
     hourly_list = [
         "temperature_2m",
         "relative_humidity_2m",
+        "dew_point_2m",
+        "visibility",
         "surface_pressure",
         "cloud_cover",
         "weathercode",
@@ -114,6 +116,10 @@ def _openmeteo_hourly_daily(
         start_date=start_date,
         end_date=end_date,
         current_weather="true",
+        current=(
+            "temperature_2m,relative_humidity_2m,dew_point_2m,weather_code,visibility,"
+            "surface_pressure,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m"
+        ),
         daily=",".join(daily_list),
         hourly=",".join(hourly_list),
     )
@@ -307,11 +313,20 @@ def _openweather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
             unified_current = {
                 "temperature":    cur.get("temp"),
+                "temperature_2m": cur.get("temp"),
                 "pressure":       cur.get("pressure"),
                 "clouds":         cur.get("clouds", 0),
                 "windspeed":      windspeed_kmh,          # км/ч
                 "winddirection":  cur.get("wind_deg"),
                 "weathercode":    (cur.get("weather", [{}])[0] or {}).get("id"),
+                "visibility":     cur.get("visibility"),
+                "relative_humidity_2m": cur.get("humidity"),
+                "dew_point_2m":   cur.get("dew_point"),
+                "time": (
+                    pendulum.from_timestamp(cur.get("dt"), tz="UTC").to_iso8601_string()
+                    if isinstance(cur.get("dt"), (int, float))
+                    else None
+                ),
             }
 
             unified_hourly = {
@@ -357,8 +372,16 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         start_date=today,
         end_date=tomorrow,
         current_weather="true",
+        current=(
+            "temperature_2m,relative_humidity_2m,dew_point_2m,weather_code,visibility,"
+            "surface_pressure,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m"
+        ),
         daily="temperature_2m_max,temperature_2m_min,weathercode,wind_speed_10m_max,wind_gusts_10m_max,uv_index_max,sunrise,sunset",
-        hourly="surface_pressure,cloud_cover,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m,rain,thunderstorm_probability,uv_index,uv_index_clear_sky",
+        hourly=(
+            "temperature_2m,relative_humidity_2m,dew_point_2m,visibility,surface_pressure,"
+            "cloud_cover,weathercode,wind_speed_10m,wind_direction_10m,wind_gusts_10m,"
+            "rain,thunderstorm_probability,uv_index,uv_index_clear_sky"
+        ),
     )
     if not om or "current_weather" not in om or "daily" not in om or "hourly" not in om:
         logging.debug("_openmeteo — отсутствуют нужные ключи")
@@ -366,16 +389,26 @@ def _openmeteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
     try:
         cw = om.get("current_weather", {}) or {}
-        cur_pressure = (om.get("hourly", {}).get("surface_pressure", [None]) or [None])[0]
-        cur_clouds = (om.get("hourly", {}).get("cloud_cover", [None]) or [None])[0]
+        current = om.get("current", {}) or {}
+        cur_pressure = current.get("surface_pressure")
+        if not isinstance(cur_pressure, (int, float)):
+            cur_pressure = (om.get("hourly", {}).get("surface_pressure", [None]) or [None])[0]
+        cur_clouds = current.get("cloud_cover")
+        if not isinstance(cur_clouds, (int, float)):
+            cur_clouds = (om.get("hourly", {}).get("cloud_cover", [None]) or [None])[0]
 
         unified_current = {
-            "temperature":    cw.get("temperature"),
+            "temperature":    current.get("temperature_2m", cw.get("temperature")),
+            "temperature_2m": current.get("temperature_2m", cw.get("temperature")),
             "pressure":       cur_pressure if isinstance(cur_pressure, (int, float)) else None,
             "clouds":         cur_clouds if isinstance(cur_clouds, (int, float)) else None,
-            "windspeed":      cw.get("windspeed"),     # км/ч
-            "winddirection":  cw.get("winddirection"),
-            "weathercode":    cw.get("weathercode"),
+            "windspeed":      current.get("wind_speed_10m", cw.get("windspeed")),     # км/ч
+            "winddirection":  current.get("wind_direction_10m", cw.get("winddirection")),
+            "weathercode":    current.get("weather_code", cw.get("weathercode")),
+            "visibility":     current.get("visibility"),
+            "relative_humidity_2m": current.get("relative_humidity_2m"),
+            "dew_point_2m":   current.get("dew_point_2m"),
+            "time":           current.get("time", cw.get("time")),
         }
 
         om["current"] = unified_current
@@ -396,6 +429,10 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         longitude=lon,
         timezone="UTC",
         current_weather="true",
+        current=(
+            "temperature_2m,relative_humidity_2m,dew_point_2m,weather_code,visibility,"
+            "surface_pressure,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m"
+        ),
     )
     if not om or "current_weather" not in om:
         logging.debug("_openmeteo_current_only — нет 'current_weather'")
@@ -403,13 +440,19 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
     try:
         cw = om.get("current_weather", {}) or {}
+        current = om.get("current", {}) or {}
         unified_current = {
-            "temperature":    cw.get("temperature"),
-            "pressure":       None,
-            "clouds":         None,
-            "windspeed":      cw.get("windspeed"),  # км/ч
-            "winddirection":  cw.get("winddirection"),
-            "weathercode":    cw.get("weathercode"),
+            "temperature":    current.get("temperature_2m", cw.get("temperature")),
+            "temperature_2m": current.get("temperature_2m", cw.get("temperature")),
+            "pressure":       current.get("surface_pressure"),
+            "clouds":         current.get("cloud_cover"),
+            "windspeed":      current.get("wind_speed_10m", cw.get("windspeed")),  # км/ч
+            "winddirection":  current.get("wind_direction_10m", cw.get("winddirection")),
+            "weathercode":    current.get("weather_code", cw.get("weathercode")),
+            "visibility":     current.get("visibility"),
+            "relative_humidity_2m": current.get("relative_humidity_2m"),
+            "dew_point_2m":   current.get("dew_point_2m"),
+            "time":           current.get("time", cw.get("time")),
         }
         om["current"] = unified_current
 
@@ -420,6 +463,11 @@ def _openmeteo_current_only(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             "weathercode":        [unified_current["weathercode"], unified_current["weathercode"]],
         }
         om["hourly"] = {
+            "time":                [unified_current["time"]],
+            "temperature_2m":      [unified_current["temperature_2m"]],
+            "relative_humidity_2m": [unified_current["relative_humidity_2m"]],
+            "dew_point_2m":        [unified_current["dew_point_2m"]],
+            "visibility":          [unified_current["visibility"]],
             "surface_pressure":    [unified_current["pressure"]],
             "cloud_cover":         [unified_current["clouds"]],
             "weathercode":         [unified_current["weathercode"]],
@@ -455,6 +503,29 @@ def get_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
             return data
 
     return None
+
+
+def get_visibility_weather(
+    lat: float,
+    lon: float,
+    *,
+    tz: str = "Europe/Kaliningrad",
+    target_date: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch the local 04:00-10:00 visibility inputs from the existing source.
+
+    Callers use this only when the primary weather payload lacks an hourly
+    visibility window (for example, when OpenWeather won the normal fallback
+    chain).  Failure is intentionally non-fatal.
+    """
+    return _openmeteo_hourly_daily(
+        lat=lat,
+        lon=lon,
+        tz=tz or "Europe/Kaliningrad",
+        start_date=target_date,
+        end_date=target_date,
+        need_sun=False,
+    )
 
 
 # ───────────────────────────── Солнце и УФ ───────────────────────────────────

@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from statistics import median
 from typing import Any, Literal, Optional
 
+from visibility_context import visibility_condition_from_text
+
 Region = Literal["kaliningrad"]
 PostType = Literal["morning", "evening", "forecast_tomorrow", "unknown"]
 WeatherMain = Literal[
@@ -50,6 +52,16 @@ MoonPhase = Literal[
     "unknown",
 ]
 TimeHint = Literal["day", "sunrise", "sunset", "night", "unknown"]
+VisibilityCondition = Literal[
+    "dense_fog",
+    "fog",
+    "mist",
+    "reduced_visibility",
+    "dust_haze",
+    "mixed_visibility",
+    "clear",
+]
+VisibilityForecastWindow = Literal["current_morning", "tomorrow_morning", "none"]
 
 SECTION_MARKERS = (
     "морские города",
@@ -84,6 +96,10 @@ class VisualContext:
     time_hint: TimeHint = "unknown"
     uv_index: Optional[float] = None
     score: Optional[float] = None
+    visibility_condition: VisibilityCondition = "clear"
+    visibility_forecast_window: VisibilityForecastWindow = "none"
+    current_visibility_m: Optional[float] = None
+    morning_min_visibility_m: Optional[float] = None
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
@@ -248,6 +264,26 @@ def detect_time_hint(post_type: PostType, text: str) -> TimeHint:
     if post_type == "morning":
         return "day"
     return "unknown"
+
+
+def _visibility_facts(text: str, post_type: PostType) -> tuple[VisibilityCondition, VisibilityForecastWindow, Optional[float], dict[str, Any]]:
+    condition = visibility_condition_from_text(text)
+    line = next((line for line in _lines(text) if line.startswith("🌫 Видимость:")), "")
+    value = _first_num(r"(?:около|ниже)\s*(\d+(?:[\.,]\d+)?)\s*м\b", line)
+    if condition == "clear":
+        window: VisibilityForecastWindow = "none"
+    elif post_type == "morning":
+        window = "current_morning"
+    elif post_type in {"evening", "forecast_tomorrow"} and "завтра утром" in line.lower():
+        window = "tomorrow_morning"
+    else:
+        window = "none"
+    return condition, window, value, {
+        "visibility_condition": condition,
+        "visibility_forecast_window": window,
+        "visibility_line": line or None,
+        "morning_min_visibility_m": value,
+    }
 
 
 def detect_weather_main(text: str, temp_max: Optional[float] = None) -> tuple[WeatherMain, dict[str, Any]]:
@@ -471,6 +507,7 @@ def build_visual_context(message: str, *, post_type: str | None = None) -> Visua
     moon_phase = extract_moon_phase(clean)
     score = extract_score(clean)
     time_hint = detect_time_hint(pt, clean)
+    visibility_condition, visibility_window, morning_visibility, visibility_ev = _visibility_facts(clean, pt)
 
     evidence: dict[str, Any] = {}
     evidence.update(weather_ev)
@@ -478,6 +515,7 @@ def build_visual_context(message: str, *, post_type: str | None = None) -> Visua
     evidence.update(wind_ev)
     evidence.update(sea_ev)
     evidence.update(sport_ev)
+    evidence.update(visibility_ev)
 
     return VisualContext(
         region="kaliningrad",
@@ -495,6 +533,10 @@ def build_visual_context(message: str, *, post_type: str | None = None) -> Visua
         time_hint=time_hint,
         uv_index=None,
         score=score,
+        visibility_condition=visibility_condition,
+        visibility_forecast_window=visibility_window,
+        current_visibility_m=morning_visibility if pt == "morning" else None,
+        morning_min_visibility_m=morning_visibility,
         evidence=evidence,
     )
 

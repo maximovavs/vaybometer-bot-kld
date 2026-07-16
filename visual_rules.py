@@ -57,6 +57,8 @@ class SceneCues:
     sea_state: str
     activity_visual: str
     activity_scale: str
+    visibility_visual: str
+    visibility_forecast_window: str
     moon_visual: str
     overall_mood: str
     must_show: list[str] = field(default_factory=list)
@@ -89,6 +91,12 @@ def _score_mood(score: Optional[float]) -> str:
 
 
 def _derived_mood(ctx: VisualContext) -> str:
+    visibility = getattr(ctx, "visibility_condition", "clear")
+    if visibility in {"dense_fog", "fog"}:
+        return "visibly cautious Baltic morning"
+    if visibility in {"mist", "reduced_visibility", "dust_haze", "mixed_visibility"}:
+        return "soft cautious atmospheric mood"
+
     score = getattr(ctx, "score", None)
     if _has(score):
         return _score_mood(score)
@@ -223,6 +231,99 @@ def _weather_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[s
         return "storm-warning Baltic atmosphere"
 
     return "general Baltic weather mood"
+
+
+def _visibility_visual(
+    ctx: VisualContext,
+    must_show: list[str],
+    must_avoid: list[str],
+    validation_notes: list[str],
+) -> str:
+    condition = str(getattr(ctx, "visibility_condition", "clear") or "clear")
+    window = str(getattr(ctx, "visibility_forecast_window", "none") or "none")
+    if condition == "clear" or window not in {"current_morning", "tomorrow_morning"}:
+        return "normal visibility unless the stated weather implies otherwise"
+
+    # The visibility observation is more specific than a generic clear-weather
+    # horizon cue.  Keep the underlying weather, but remove only the directly
+    # contradictory positive visibility claims.
+    must_show[:] = [
+        cue
+        for cue in must_show
+        if cue not in {"good visibility and readable horizon", "mostly clear sky"}
+    ]
+
+    if window == "tomorrow_morning":
+        _add_unique(must_show, "next-day early-morning forecast window only")
+        _add_unique(must_avoid, "evening twilight or moon-led scene")
+        _add_unique(must_avoid, "all-day fog implication")
+        _add_unique(validation_notes, "Tomorrow-morning visibility overrides ordinary evening moon/twilight staging")
+
+    if condition == "dense_fog":
+        for cue in (
+            "dense humid fog",
+            "heavily reduced distant visibility",
+            "partially obscured horizon",
+            "soft diffused light",
+            "muted contrast",
+            "moist atmospheric depth",
+            "low cloud ceiling",
+            "soft Baltic morning haze",
+        ):
+            _add_unique(must_show, cue)
+        visual = "dense humid Baltic fog with heavily reduced distant visibility"
+    elif condition == "fog":
+        for cue in (
+            "humid coastal fog",
+            "reduced distant visibility",
+            "partially obscured horizon",
+            "soft diffused light",
+            "muted contrast",
+            "moist atmospheric depth",
+            "soft Baltic morning haze",
+        ):
+            _add_unique(must_show, cue)
+        visual = "humid coastal Baltic fog with a softly obscured horizon"
+    elif condition == "mist":
+        for cue in ("humid morning mist", "gentle atmospheric depth", "softened distant clarity"):
+            _add_unique(must_show, cue)
+        _add_unique(must_avoid, "dense wall of fog")
+        visual = "humid Baltic morning mist with softened distant clarity"
+    elif condition == "reduced_visibility":
+        for cue in ("reduced distant clarity", "softened horizon", "restrained contrast"):
+            _add_unique(must_show, cue)
+        _add_unique(must_avoid, "invented dense humid fog")
+        _add_unique(must_avoid, "wet atmosphere without wet-weather evidence")
+        visual = "reduced distant clarity without invented dense fog"
+    elif condition == "dust_haze":
+        for cue in ("muted beige-grey dry atmospheric haze", "dry suspended particles", "reduced clarity"):
+            _add_unique(must_show, cue)
+        _add_unique(must_avoid, "humid coastal fog")
+        _add_unique(must_avoid, "moist fog depth")
+        visual = "muted beige-grey dry atmospheric haze with dry suspended particles"
+    else:
+        for cue in (
+            "muted grey atmospheric haze",
+            "reduced distant clarity",
+            "restrained humid softness",
+            "restrained polluted-air haze",
+        ):
+            _add_unique(must_show, cue)
+        _add_unique(must_avoid, "dense wall of fog")
+        _add_unique(must_avoid, "exaggerated Sahara palette")
+        visual = "muted grey mixed haze with restrained humid and polluted-air softness"
+
+    if condition in {"dense_fog", "fog"}:
+        for cue in (
+            "crisp distant horizon",
+            "perfectly clear horizon",
+            "sharp postcard visibility",
+            "completely transparent air",
+            "beige Sahara dust palette",
+        ):
+            _add_unique(must_avoid, cue)
+    _add_unique(validation_notes, f"Visibility visual rule: {condition}/{window}")
+    return visual
 
 
 def _sea_state(ctx: VisualContext, must_show: list[str], must_avoid: list[str]) -> str:
@@ -399,6 +500,12 @@ def _moon_visual(ctx: VisualContext, must_show: list[str], must_avoid: list[str]
     phase = getattr(ctx, "moon_phase", "unknown")
     post_type = getattr(ctx, "post_type", "unknown")
     time_hint = getattr(ctx, "time_hint", "unknown")
+    visibility_window = getattr(ctx, "visibility_forecast_window", "none")
+
+    if visibility_window == "tomorrow_morning" and getattr(ctx, "visibility_condition", "clear") != "clear":
+        _add_unique(must_avoid, "moon-led scene")
+        _add_unique(validation_notes, "Tomorrow-morning visibility scene: suppress ordinary lunar staging")
+        return "not emphasized for next-day early-morning visibility forecast"
 
     if post_type == "morning":
         _add_unique(must_avoid, "moon")
@@ -497,11 +604,13 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
     palette = "cool Baltic grey-blue, muted sand, pine green, restrained northern light"
     light_style = "soft northern light"
     post_type = getattr(ctx, "post_type", "unknown")
+    visibility_window = getattr(ctx, "visibility_forecast_window", "none")
+    visibility_condition = getattr(ctx, "visibility_condition", "clear")
 
-    if post_type == "morning":
+    if post_type == "morning" or (visibility_window == "tomorrow_morning" and visibility_condition != "clear"):
         base_scene = "Baltic coast near Kaliningrad in daylight, dunes, pines, promenade, sea horizon"
-        palette = "fresh Baltic morning grey-blue, muted sand, pine green, natural daylight"
-        light_style = "soft low-angle morning light"
+        palette = "fresh Baltic morning grey-blue, muted sand, pine green, natural neutral daylight"
+        light_style = "soft diffused early-morning light" if visibility_condition != "clear" else "soft low-angle morning light"
         _add_unique(must_show, "neutral morning daylight")
         _add_unique(must_show, "fresh Baltic morning air")
         _add_unique(must_show, "soft low-angle morning light")
@@ -522,6 +631,7 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
     _temperature_visual(ctx, must_show, must_avoid)
 
     weather_visual = _weather_visual(ctx, must_show, must_avoid)
+    visibility_visual = _visibility_visual(ctx, must_show, must_avoid, validation_notes)
     sea_state = _sea_state(ctx, must_show, must_avoid)
     activity_visual, activity_scale = _activity_visual(ctx, must_show, must_avoid, validation_notes)
     moon_visual = _moon_visual(ctx, must_show, must_avoid, validation_notes)
@@ -540,6 +650,8 @@ def apply_visual_rules(ctx: VisualContext) -> SceneCues:
         sea_state=sea_state,
         activity_visual=activity_visual,
         activity_scale=activity_scale,
+        visibility_visual=visibility_visual,
+        visibility_forecast_window=str(visibility_window),
         moon_visual=moon_visual,
         overall_mood=overall_mood,
         must_show=must_show,
@@ -558,10 +670,11 @@ def build_prompt_from_cues(cues: SceneCues) -> str:
         f"Weather: {cues.weather_visual}.",
         f"Sea and wind state: {cues.sea_state}.",
         f"Activity cue: {cues.activity_visual}; scale: {cues.activity_scale}.",
+        f"Visibility cue: {cues.visibility_visual}.",
         f"Overall mood: {cues.overall_mood}.",
     ]
-    if cues.post_type != "morning":
-        parts.insert(7, f"Moon cue: {cues.moon_visual}.")
+    if cues.post_type != "morning" and cues.visibility_forecast_window != "tomorrow_morning":
+        parts.insert(8, f"Moon cue: {cues.moon_visual}.")
     if cues.must_show:
         parts.append("Must show: " + "; ".join(cues.must_show) + ".")
     if cues.must_avoid:

@@ -310,7 +310,7 @@ _NO_DOUBLE_MOON_GUARD = (
     "No extra bright discs."
 )
 
-_FORMAT_V2_PROMPT_VERSION = "v4"
+_FORMAT_V2_PROMPT_VERSION = "v5"
 
 _VISIBLE_MOON_PHASES = frozenset(
     {
@@ -759,6 +759,9 @@ def _gust_category(ctx: Any) -> str:
 
 
 def _rain_cloud_fog_category(ctx: Any) -> str:
+    visibility = str(getattr(ctx, "visibility_condition", "clear") or "clear")
+    if visibility != "clear":
+        return visibility
     weather = _weather_scenario(ctx)
     if weather in {"rain", "storm", "drizzle", "snow", "fog", "cloudy"}:
         return weather
@@ -805,6 +808,9 @@ def kld_scene_metadata(
         "weather_scenario": weather,
         "wind_gust_category": _gust_category(ctx),
         "rain_cloud_fog_category": _rain_cloud_fog_category(ctx),
+        "visibility_condition": str(getattr(ctx, "visibility_condition", "clear") or "clear"),
+        "visibility_forecast_window": str(getattr(ctx, "visibility_forecast_window", "none") or "none"),
+        "morning_min_visibility_m": _fmt_percent(getattr(ctx, "morning_min_visibility_m", None)) or "unknown",
         "lunar_phase": str(getattr(ctx, "moon_phase", "unknown") or "unknown"),
         "lunar_illumination": _fmt_percent(illumination) or "unknown",
         "variation_attempt": str(int(variation_attempt or 0)),
@@ -823,6 +829,9 @@ def kld_visual_cache_key(metadata: dict[str, str]) -> str:
         "weather_scenario",
         "wind_gust_category",
         "rain_cloud_fog_category",
+        "visibility_condition",
+        "visibility_forecast_window",
+        "morning_min_visibility_m",
         "lunar_phase",
         "lunar_illumination",
         "variation_attempt",
@@ -853,6 +862,8 @@ def _format_v2_style_name(
             str(getattr(ctx, "weather_main", "unknown")),
             storm_state,
             str(getattr(ctx, "moon_phase", "unknown")),
+            str(getattr(ctx, "visibility_condition", "clear")),
+            str(getattr(ctx, "visibility_forecast_window", "none")),
             _fmt_percent(illumination) or "illum_unknown",
             str(int(variation_attempt or 0)),
         ]
@@ -889,6 +900,11 @@ _KLD_MORNING_DETAIL = (
     "broad daylight depth with a clearly readable horizon",
     "fresh daylight separation between shore, sea, and sky",
     "practical daytime shoreline emphasis",
+)
+_KLD_VISIBILITY_DETAIL = (
+    "softened Baltic horizon matching the stated visibility",
+    "atmospheric depth carries the early-morning composition",
+    "shoreline landmarks fade naturally with distance",
 )
 
 
@@ -946,7 +962,12 @@ def apply_kld_controlled_variety(
             str(int(variation_attempt or 0)),
         ]
     )
-    detail_options = _KLD_MORNING_DETAIL if mode == "morning" else _KLD_EVENING_DETAIL
+    visibility_window = str(getattr(ctx, "visibility_forecast_window", "none") or "none")
+    visibility_condition = str(getattr(ctx, "visibility_condition", "clear") or "clear")
+    if visibility_window in {"current_morning", "tomorrow_morning"} and visibility_condition != "clear":
+        detail_options = _KLD_VISIBILITY_DETAIL
+    else:
+        detail_options = _KLD_MORNING_DETAIL if mode == "morning" else _KLD_EVENING_DETAIL
     variety_line = (
         "Controlled composition: "
         f"dominant Baltic scene family: {metadata['scene_family']}; "
@@ -1056,6 +1077,10 @@ def finalize_kld_lunar_prompt(prompt: str, ctx: Any, source_text: str) -> str:
     illumination = _extract_lunar_illumination(source_text)
     moon_hidden = phase == "new" or (illumination is not None and illumination <= 5)
     visible_moon = phase in _VISIBLE_MOON_PHASES and not moon_hidden
+    visibility_override = (
+        str(getattr(ctx, "visibility_forecast_window", "none") or "none") == "tomorrow_morning"
+        and str(getattr(ctx, "visibility_condition", "clear") or "clear") != "clear"
+    )
     out: list[str] = []
 
     for line in str(prompt or "").splitlines():
@@ -1063,10 +1088,11 @@ def finalize_kld_lunar_prompt(prompt: str, ctx: Any, source_text: str) -> str:
         if stripped.startswith(("Moon cue:", "Moon scale adherence:", "Moon visual adherence:", "Lunar cue:", "Lunar negative:", "New-moon sky:")):
             continue
         if stripped.startswith("Evening moonlit cue:"):
-            out.append(
-                "Evening light adherence: blue-hour Baltic coast; soft evening twilight; "
-                "residual pale horizon glow on the right side of frame."
-            )
+            if not visibility_override:
+                out.append(
+                    "Evening light adherence: blue-hour Baltic coast; soft evening twilight; "
+                    "residual pale horizon glow on the right side of frame."
+                )
             continue
         if stripped.startswith("Sky cue:") and _is_lunar_prompt_fragment(stripped):
             out.append("Sky cue: cloud-dominant evening sky.")
@@ -1085,7 +1111,16 @@ def finalize_kld_lunar_prompt(prompt: str, ctx: Any, source_text: str) -> str:
 
     insert_at = next((idx for idx, line in enumerate(out) if line.startswith("Text restrictions:")), len(out))
     lunar_lines: list[str] = []
-    if moon_hidden:
+    if visibility_override:
+        lunar_lines.extend(
+            (
+                "Visibility time adherence: next-day early-morning forecast window only; neutral diffused Baltic morning light; not an all-day condition.",
+                "Visibility visual avoid: no evening twilight; no moon-led scene; no all-day fog implication.",
+            )
+        )
+        if moon_hidden:
+            lunar_lines.append(_NEW_MOON_NEGATIVE_RULE)
+    elif moon_hidden:
         lunar_lines.extend((_NEW_MOON_SKY_RULE, _NEW_MOON_NEGATIVE_RULE))
     elif visible_moon:
         cue = _canonical_visible_lunar_cue(phase, illumination, source_text)
@@ -1099,7 +1134,7 @@ def finalize_kld_lunar_prompt(prompt: str, ctx: Any, source_text: str) -> str:
 def _final_prompt_contains_visible_moon_cue(prompt: str) -> bool:
     for line in str(prompt or "").splitlines():
         stripped = line.strip().lower()
-        if stripped.startswith(("lunar negative:", "must avoid:", "evening visual avoid:", "storm visual avoid:", "visual avoid:")):
+        if stripped.startswith(("lunar negative:", "must avoid:", "evening visual avoid:", "storm visual avoid:", "visual avoid:", "visibility visual avoid:")):
             continue
         if stripped.startswith("new-moon sky:"):
             continue
@@ -1129,9 +1164,15 @@ def kld_lunar_prompt_diagnostics(prompt: str, ctx: Any, source_text: str) -> dic
     phase = str(getattr(ctx, "moon_phase", "unknown") or "unknown")
     illumination = _extract_lunar_illumination(source_text)
     moon_hidden = phase == "new" or (illumination is not None and illumination <= 5)
-    visible_allowed = phase in _VISIBLE_MOON_PHASES and not moon_hidden
+    visibility_override = (
+        str(getattr(ctx, "visibility_forecast_window", "none") or "none") == "tomorrow_morning"
+        and str(getattr(ctx, "visibility_condition", "clear") or "clear") != "clear"
+    )
+    visible_allowed = phase in _VISIBLE_MOON_PHASES and not moon_hidden and not visibility_override
     if moon_hidden:
         rule = "new_moon_hidden"
+    elif visibility_override:
+        rule = "tomorrow_morning_visibility_override"
     elif visible_allowed:
         rule = f"{phase}_visible"
     else:

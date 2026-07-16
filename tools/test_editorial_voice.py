@@ -173,7 +173,7 @@ def test_morning_output_has_one_human_line_and_keeps_facts() -> None:
     text = build_morning_format_v2("Калининградская область", MORNING)
     assert text.count("💬 По-человечески:") == 1
     assert "Калининград — 26/18 °C" in text
-    assert "Гвардейск (27°)" in text
+    assert "Гвардейск 27°" in text
     assert "Балтика: вода 21°C" in text
     assert "Kp 0.3" in text
     assert "96% освещённости" in text

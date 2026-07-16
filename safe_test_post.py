@@ -16,6 +16,11 @@ from telegram import Bot, constants
 from editorial_voice import build_evening_human_line, build_morning_human_line
 from post_common import build_message
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
+from visibility_context import (
+    visibility_air_penalty,
+    visibility_condition_from_text,
+    visibility_reason,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -123,7 +128,7 @@ def _kld_weather_line(v2_text: str) -> str:
     )
 
 
-def _kld_conditions(v2_text: str) -> dict[str, float | bool | None]:
+def _kld_conditions(v2_text: str) -> dict[str, float | bool | str | None]:
     weather = _kld_weather_line(v2_text)
     p = _plain(weather)
     uv_line = next((x.strip() for x in str(v2_text or "").splitlines() if x.strip().startswith("☀️")), "")
@@ -136,6 +141,7 @@ def _kld_conditions(v2_text: str) -> dict[str, float | bool | None]:
         "rain": any(w in p.lower() for w in ("дожд", "морось", "ливень")),
         "uv": _num(r"УФ\s*(\d+(?:[\.,]\d+)?)", uv_line),
         "aqi": _num(r"AQI\s*(\d+(?:[\.,]\d+)?)", air_line),
+        "visibility_condition": visibility_condition_from_text(v2_text),
     }
 
 
@@ -188,6 +194,14 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     windy = (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)
     uv = c.get("uv")
     tmax = c.get("tmax")
+    visibility = str(c.get("visibility_condition") or "clear")
+
+    if visibility in {"dense_fog", "fog"}:
+        return "✅ План: утром учитывать плохую видимость; позже ориентироваться на ветер, осадки и температуру."
+    if visibility in {"mist", "reduced_visibility"}:
+        return "✅ План: утром оставить запас дистанции и времени; позже сверить ветер и осадки."
+    if visibility in {"dust_haze", "mixed_visibility"}:
+        return "✅ План: утром проверить воздух и дальность обзора; прогулку скорректировать по факту."
 
     if (isinstance(tmax, (int, float)) and tmax >= 35) or (
         isinstance(tmax, (int, float)) and tmax >= 28 and isinstance(uv, (int, float)) and uv >= 6
@@ -216,6 +230,7 @@ def _kld_score_line(v2_text: str) -> str:
     has_rain = bool(c.get("rain"))
     uv = c.get("uv")
     aqi = c.get("aqi")
+    visibility = str(c.get("visibility_condition") or "clear")
 
     score = 10.0
     reasons: list[str] = []
@@ -249,8 +264,14 @@ def _kld_score_line(v2_text: str) -> str:
             score -= 0.7; reasons.append("сыро и прохладно")
     if isinstance(uv, (int, float)) and uv >= 6:
         score -= 0.3; reasons.append("УФ высокий")
-    if isinstance(aqi, (int, float)) and aqi > 80:
-        score -= 0.8; reasons.append("воздух похуже")
+    air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
+    atmospheric_penalty = visibility_air_penalty(visibility, air_penalty)
+    if atmospheric_penalty:
+        score -= atmospheric_penalty
+        if visibility != "clear":
+            reasons.append(visibility_reason(visibility))
+        elif air_penalty:
+            reasons.append("воздух похуже")
 
     score = max(1.0, min(10.0, score))
     if isinstance(tmax, (int, float)) and tmax >= 35:
@@ -262,6 +283,8 @@ def _kld_score_line(v2_text: str) -> str:
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
         if isinstance(tmax, (int, float)) and tmax >= 25:
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; тёплый день и высокий УФ."
+        if visibility != "clear":
+            return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и {visibility_reason(visibility)}."
         return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
     label = _score_label(score)
     if has_rain and isinstance(gust, (int, float)) and gust >= 8:
@@ -278,6 +301,7 @@ def _kld_evening_score_line(v2_text: str) -> str:
     gusts = _numbers(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", text)
     max_t = max(temps) if temps else None
     max_gust = max(gusts) if gusts else None
+    visibility = visibility_condition_from_text(text)
     score = 10.0
     reasons: list[str] = []
 
@@ -303,6 +327,10 @@ def _kld_evening_score_line(v2_text: str) -> str:
             score -= 0.5; reasons.append("свежо")
     if "локально" in low or "неравномерно" in low:
         score -= 0.2; reasons.append("локальность прогноза")
+    visibility_score_penalty = visibility_air_penalty(visibility, 0.0)
+    if visibility_score_penalty:
+        score -= visibility_score_penalty
+        reasons.append(visibility_reason(visibility))
 
     score = max(1.0, min(10.0, score))
     label = _score_label(score)
@@ -486,6 +514,13 @@ def _apply_score_conclusion(v2_text: str) -> str:
 
 def _kld_main_nuance(v2_text: str) -> str:
     low = (_score_reasons(v2_text) + " " + _plain(v2_text)).lower()
+    visibility = visibility_condition_from_text(v2_text)
+    if visibility in {"dense_fog", "fog"}:
+        return "⚠️ Главный нюанс: утром осторожнее на дорогах, развязках, мостах и открытых участках."
+    if visibility in {"mist", "reduced_visibility"}:
+        return "⚠️ Главный нюанс: утром обзор местами короче обычного; на дорогах держать запас дистанции."
+    if visibility in {"dust_haze", "mixed_visibility"}:
+        return "⚠️ Главный нюанс: утром воздух и дальняя видимость могут быть хуже обычного."
     precip = any(x in low for x in ("осадки", "морось", "дожд"))
     cool = any(x in low for x in ("прохлад", "свеж"))
     wind = any(x in low for x in ("порыв", "ветер"))
@@ -1228,7 +1263,11 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
         heat_word_ok = isinstance(tmax, (int, float)) and tmax >= 28
         warm_uv_day = isinstance(tmax, (int, float)) and 25 <= tmax < 28
         uv_high = isinstance(uv, (int, float)) and uv >= 6
-        rain_or_gust = bool(c.get("rain")) or isinstance(c.get("gust"), (int, float)) and c["gust"] >= 8
+        rain_or_gust = (
+            bool(c.get("rain"))
+            or isinstance(c.get("gust"), (int, float)) and c["gust"] >= 8
+            or str(c.get("visibility_condition") or "clear") != "clear"
+        )
         out: list[str] = []
         replaced = False
         for idx, line in enumerate(lines):

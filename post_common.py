@@ -39,11 +39,18 @@ import pendulum
 from telegram import Bot, constants
 
 from utils   import compass, get_fact
-from weather import get_sunrise_sunset, get_weather
+from weather import get_sunrise_sunset, get_visibility_weather, get_weather
 from air     import get_air, get_sst, get_kp, get_solar_wind
 from pollen  import get_pollen
 from radiation import get_radiation
 from earthquakes import build_kld_quake_line, get_recent_earthquakes_kld
+from visibility_context import (
+    KldVisibilityContext,
+    build_kld_visibility_line,
+    get_kld_visibility_context,
+    visibility_diagnostics,
+    visibility_payload_has_morning_window,
+)
 
 try:
     from gpt import gpt_blurb, gpt_complete  # type: ignore
@@ -701,6 +708,60 @@ def _get_weather_with_retry(
         if attempt < total:
             time.sleep(max(0.0, float(backoff_s)))
     return last or {}
+
+
+def _kld_visibility_for_post(
+    weather_data: Dict[str, Any],
+    air_data: Dict[str, Any],
+    *,
+    post_type: str,
+    target_date: str,
+    tz_name: str,
+) -> tuple[KldVisibilityContext, Optional[str]]:
+    payload: Dict[str, Any] = weather_data if isinstance(weather_data, dict) else {}
+    if not visibility_payload_has_morning_window(payload, target_date=target_date, tz=tz_name):
+        try:
+            dedicated = get_visibility_weather(
+                KLD_LAT,
+                KLD_LON,
+                tz=tz_name,
+                target_date=target_date,
+            ) or {}
+        except Exception as exc:
+            dedicated = {}
+            logging.info("KLD visibility source unavailable: %s", exc)
+        if dedicated:
+            if post_type.startswith("morn") and not isinstance(dedicated.get("current"), dict):
+                current = payload.get("current")
+                if isinstance(current, dict):
+                    dedicated["current"] = current
+            payload = dedicated
+
+    context = get_kld_visibility_context(
+        payload,
+        post_type=post_type,
+        target_date=target_date,
+        tz=tz_name,
+        air_data=air_data,
+        location_label="Калининград",
+    )
+    line = build_kld_visibility_line(context, post_type=post_type)
+    aqi = air_data.get("aqi") if isinstance(air_data, dict) else None
+    air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
+    logging.info(
+        "KLD visibility diagnostics: %s",
+        json.dumps(
+            visibility_diagnostics(
+                context,
+                air_penalty=air_penalty,
+                fog_text_added=bool(line),
+                fog_visual_rule=context.condition != "clear",
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )
+    return context, line
 
 def day_night_stats(lat: float, lon: float, tz: str = "UTC") -> Dict[str, Optional[float]]:
     wm = get_weather(lat, lon) or {}
@@ -1779,9 +1840,11 @@ class KldMorningMessage(str):
         text: str,
         *,
         regional_city_temperatures: list[tuple[str, float, float | None]] | None = None,
+        visibility_context: KldVisibilityContext | None = None,
     ):
         obj = str.__new__(cls, text)
         obj.regional_city_temperatures = tuple(regional_city_temperatures or ())
+        obj.visibility_context = visibility_context
         return obj
 
 
@@ -1951,6 +2014,14 @@ def build_message_morning_compact(
     if pollen_risk:
         air_line += f" • 🌿 пыльца: {pollen_risk}"
 
+    visibility_context, visibility_line = _kld_visibility_for_post(
+        wm_klg,
+        air,
+        post_type="morning",
+        target_date=date_local.add(days=DAY_OFFSET).to_date_string(),
+        tz_name=tz_obj.name,
+    )
+
     # УФ — только если есть смысл
     uvi_info = uvi_for_offset(wm_klg, tz_obj, DAY_OFFSET)
     uvi_line = None
@@ -2017,6 +2088,8 @@ def build_message_morning_compact(
         P.append(air_line)
         if uvi_line:
             P.append(uvi_line)
+    if visibility_line:
+        P.append(visibility_line)
     if sunset_line:
         P.append(sunset_line)
     P.append(build_astro_section(date_local=date_local, tz_local=tz_obj.name))
@@ -2041,6 +2114,7 @@ def build_message_morning_compact(
     return KldMorningMessage(
         "\n".join(P),
         regional_city_temperatures=regional_city_temperatures,
+        visibility_context=visibility_context,
     )
 
 # ────────────────────────── Evening (legacy) ──────────────────────────
@@ -2225,6 +2299,16 @@ def build_message_legacy_evening(
     # (2) Вечером блоки воздуха/космопогоды/Шумана скрыты — остаются только рекомендации.
     air = get_air(KLD_LAT, KLD_LON) or {}
     schu_state = {} if (DISABLE_SCHUMANN) else get_schumann_with_fallback()
+    _visibility_context, visibility_line = _kld_visibility_for_post(
+        wm_main,
+        air,
+        post_type="evening",
+        target_date=date_weather.to_date_string(),
+        tz_name=tz_name,
+    )
+    if visibility_line:
+        P.append(visibility_line)
+        P.append("———")
     quake_line = _kld_quake_line_24h()
     if quake_line:
         P.append(quake_line)

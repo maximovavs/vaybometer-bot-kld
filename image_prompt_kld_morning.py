@@ -59,6 +59,33 @@ _CLOUDY_DRIZZLE_SAFE_BLOCK = (
     "quiet dunes and pines; fresh practical morning weather mood."
 )
 
+_VISIBILITY_MORNING_CUES = {
+    "dense_fog": (
+        "Morning visibility adherence: dense humid fog; heavily reduced distant visibility; "
+        "partially obscured Baltic horizon; soft diffused daylight; muted contrast; moist atmospheric depth."
+    ),
+    "fog": (
+        "Morning visibility adherence: humid coastal fog; reduced distant visibility; "
+        "softened Baltic horizon; diffused neutral daylight; soft Baltic morning haze."
+    ),
+    "mist": (
+        "Morning visibility adherence: humid morning mist; gentle atmospheric depth; "
+        "softened distant clarity; fresh neutral Baltic daylight."
+    ),
+    "reduced_visibility": (
+        "Morning visibility adherence: reduced distant clarity; softened horizon; restrained contrast; "
+        "neutral Baltic daylight without invented dense fog."
+    ),
+    "dust_haze": (
+        "Morning visibility adherence: muted beige-grey dry atmospheric haze; dry suspended particles; "
+        "reduced clarity; neutral Baltic daylight."
+    ),
+    "mixed_visibility": (
+        "Morning visibility adherence: muted grey mixed atmospheric haze; reduced distant clarity; "
+        "restrained humid softness; restrained polluted-air haze."
+    ),
+}
+
 
 def _fallback_morning_prompt() -> str:
     return "\n".join(
@@ -95,7 +122,12 @@ def _remove_trigger_lines(prompt: str) -> str:
     return "\n".join(cleaned)
 
 
-def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
+def _sanitize_morning_prompt(
+    prompt: str,
+    *,
+    weather_main: str = "",
+    visibility_condition: str = "clear",
+) -> str:
     """Remove object/night/layout trigger words from final morning prompt.
 
     Image generators often treat negative words as objects, so morning prompts use
@@ -105,6 +137,10 @@ def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
     parts: list[str] = []
 
     weather = (weather_main or "").strip().lower()
+    visibility = (visibility_condition or "clear").strip().lower()
+    visibility_cue = _VISIBILITY_MORNING_CUES.get(visibility)
+    if visibility_cue:
+        parts.append(visibility_cue)
     if weather == "rain":
         parts.append(_RAIN_MORNING_CUES)
     elif weather in {"cloudy", "drizzle"}:
@@ -113,7 +149,7 @@ def _sanitize_morning_prompt(prompt: str, *, weather_main: str = "") -> str:
     if cleaned:
         parts.append(cleaned)
 
-    if weather != "rain":
+    if weather != "rain" and not visibility_cue:
         parts.append(_SAFE_MORNING_CUES)
     parts.append(_PURE_SCENE_CUES)
 
@@ -144,7 +180,11 @@ def build_kld_morning_prompt(
         ctx = build_visual_context(final_format_v2_message, post_type=post_type or "morning")
         cues = apply_visual_rules(ctx)
         prompt = build_prompt_from_cues(cues)
-        prompt = _sanitize_morning_prompt(prompt, weather_main=getattr(ctx, "weather_main", ""))
+        prompt = _sanitize_morning_prompt(
+            prompt,
+            weather_main=getattr(ctx, "weather_main", ""),
+            visibility_condition=getattr(ctx, "visibility_condition", "clear"),
+        )
         from image_prompt_kld import _extract_prompt_date, _format_v2_style_name, apply_kld_controlled_variety
 
         date_key = _extract_prompt_date(final_format_v2_message, dt.date.today())
