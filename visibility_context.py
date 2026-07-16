@@ -342,6 +342,7 @@ def get_kld_visibility_context(
     target_date: Any = None,
     tz: str = "Europe/Kaliningrad",
     air_data: Optional[Mapping[str, Any]] = None,
+    forecast_air_data: Optional[Mapping[str, Any]] = None,
     location_label: str = "Калининград",
 ) -> KldVisibilityContext:
     payload = weather_data if isinstance(weather_data, Mapping) else {}
@@ -377,9 +378,10 @@ def get_kld_visibility_context(
                 None,
             )
 
-    aqi = _air_value(air_data, "aqi")
-    pm25 = _air_value(air_data, "pm25", "pm2_5", "pm2.5")
-    pm10 = _air_value(air_data, "pm10")
+    classification_air_data = air_data if post_type.startswith("morn") else forecast_air_data
+    aqi = _air_value(classification_air_data, "aqi")
+    pm25 = _air_value(classification_air_data, "pm25", "pm2_5", "pm2.5")
+    pm10 = _air_value(classification_air_data, "pm10")
     selected = selected or {
         "visibility": None,
         "humidity": None,

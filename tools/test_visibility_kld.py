@@ -33,8 +33,9 @@ from image_prompt_kld import (  # noqa: E402
     kld_visual_cache_key,
 )
 from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
-from safe_test_post import _kld_score_line  # noqa: E402
+from safe_test_post import _kld_evening_score_line, _kld_score_line  # noqa: E402
 from visibility_context import (  # noqa: E402
+    KldVisibilityContext,
     build_kld_visibility_line,
     classify_visibility_values,
     dew_point_spread_c,
@@ -99,7 +100,7 @@ def _context(
 
 
 def _score_value(text: str) -> float:
-    match = re.search(r"VayboMeter:\s*(\d+(?:[.,]\d+)?)/10", text)
+    match = re.search(r"VayboMeter(?: завтра)?:\s*(\d+(?:[.,]\d+)?)/10", text)
     assert match, text
     return float(match.group(1).replace(",", "."))
 
@@ -333,6 +334,127 @@ def post_builder_visibility_fallback_is_nonfatal() -> None:
         post_common.get_visibility_weather = original
 
 
+def _production_evening_visibility(
+    visibility: object,
+    humidity: object,
+    *,
+    temperature: object,
+    dew_point: object,
+    weather_code: object = 3,
+    forecast_air_data: dict[str, object] | None = None,
+):
+    payload = _payload(
+        [
+            (
+                f"{NEXT_DATE.isoformat()}T06:00",
+                visibility,
+                humidity,
+                temperature,
+                dew_point,
+                weather_code,
+            )
+        ]
+    )
+    return post_common._kld_visibility_for_post(
+        payload,
+        {"aqi": 150, "pm25": 55, "pm10": 110},
+        post_type="evening",
+        target_date=NEXT_DATE.isoformat(),
+        tz_name="Europe/Kaliningrad",
+        forecast_air_data=forecast_air_data,
+    )
+
+
+def evening_current_air_does_not_create_dust_case_a() -> None:
+    ctx, line = _production_evening_visibility(
+        4000,
+        40,
+        temperature=24,
+        dew_point=16,
+    )
+    assert ctx.condition == "reduced_visibility"
+    assert ctx.condition != "dust_haze"
+    assert ctx.aqi is None and ctx.pm25 is None and ctx.pm10 is None
+    assert line and "местами снижена" in line and "сухая дымка" not in line
+
+
+def evening_current_air_does_not_make_fog_mixed_case_b() -> None:
+    ctx, line = _production_evening_visibility(
+        900,
+        95,
+        temperature=7,
+        dew_point=6.5,
+        weather_code=45,
+    )
+    assert ctx.condition == "fog"
+    assert ctx.condition != "mixed_visibility"
+    assert line and "местами туман" in line and "загрязнения" not in line
+
+
+def evening_current_air_does_not_create_clear_haze_case_c() -> None:
+    ctx, line = _production_evening_visibility(
+        16000,
+        40,
+        temperature=24,
+        dew_point=16,
+    )
+    assert ctx.condition == "clear"
+    assert line is None
+
+
+def evening_fog_score_ignores_current_air_case_d() -> None:
+    ctx, line = _production_evening_visibility(
+        900,
+        95,
+        temperature=7,
+        dew_point=6.5,
+        weather_code=45,
+    )
+    assert line
+    weather_text = "🏙️ Калининград: дн/ночь 22/14 °C • ясно • 💨 2 м/с."
+    base_score = _score_value(_kld_evening_score_line(weather_text))
+    fog_score = _score_value(_kld_evening_score_line(weather_text + "\n" + line))
+    assert visibility_air_penalty(ctx, 0.0) == 0.5
+    assert round(base_score - fog_score, 1) == 0.5
+
+
+def evening_reduced_score_ignores_current_air_case_e() -> None:
+    ctx, line = _production_evening_visibility(
+        4000,
+        40,
+        temperature=24,
+        dew_point=16,
+    )
+    assert line
+    weather_text = "🏙️ Калининград: дн/ночь 22/14 °C • ясно • 💨 2 м/с."
+    base_score = _score_value(_kld_evening_score_line(weather_text))
+    reduced_score = _score_value(_kld_evening_score_line(weather_text + "\n" + line))
+    assert visibility_air_penalty(ctx, 0.0) == 0.2
+    assert round(base_score - reduced_score, 1) == 0.2
+
+
+def explicit_forecast_air_enables_dust_and_mixed_case_f() -> None:
+    forecast_air = {"aqi": 150, "pm25": 55, "pm10": 110}
+    dry_ctx, _dry_line = _production_evening_visibility(
+        4000,
+        40,
+        temperature=24,
+        dew_point=16,
+        forecast_air_data=forecast_air,
+    )
+    wet_ctx, _wet_line = _production_evening_visibility(
+        900,
+        95,
+        temperature=7,
+        dew_point=6.5,
+        weather_code=45,
+        forecast_air_data=forecast_air,
+    )
+    assert dry_ctx.condition == "dust_haze"
+    assert wet_ctx.condition == "mixed_visibility"
+    assert dry_ctx.aqi == 150 and wet_ctx.pm25 == 55
+
+
 def score_uses_max_air_or_visibility_penalty() -> None:
     fog = "🌫 Видимость: утром местами туман и низкая облачность; дальние объекты различимы хуже."
     clear_score = _score_value(_kld_score_line(_morning_source(aqi=22)))
@@ -450,8 +572,59 @@ def new_moon_visibility_never_returns_full_moon() -> None:
     assert diagnostics["visible_moon_allowed"] is False
 
 
-def visual_metadata_and_cache_include_visibility_identity() -> None:
-    message = _morning_source("🌫 Видимость: утром влажная дымка; местами около 2200 м; дальние ориентиры различимы хуже.")
+def structured_dense_fog_keeps_actual_measurement_case_g() -> None:
+    structured = _context(300, 97, 45, temperature=6, dew_point=5.7)
+    line = build_kld_visibility_line(structured, post_type="morning") or ""
+    assert "ниже 500 м" in line
+    message = _morning_source(line)
+    ctx = build_visual_context(
+        message,
+        post_type="morning",
+        visibility_context=structured,
+    )
+    metadata = kld_scene_metadata(
+        ctx,
+        date_key=DATE.isoformat(),
+        post_type="morning",
+        source_text=message,
+    )
+    assert ctx.morning_min_visibility_m == 300
+    assert ctx.reported_visibility_threshold_m == 500
+    assert metadata["visibility_condition"] == "dense_fog"
+    assert metadata["visibility_forecast_window"] == "current_morning"
+    assert metadata["morning_min_visibility_m"] == "300"
+    assert metadata["reported_visibility_threshold_m"] == "500"
+    cache_key = kld_visual_cache_key(metadata)
+    assert "morning_min_visibility_m=300" in cache_key
+    assert "morning_min_visibility_m=500" not in cache_key
+    sidecar_ctx = build_visual_context(
+        message,
+        post_type="morning",
+        visibility_context=metadata,
+    )
+    assert sidecar_ctx.visibility_condition == "dense_fog"
+    assert sidecar_ctx.morning_min_visibility_m == 300
+    assert sidecar_ctx.reported_visibility_threshold_m == 500
+
+    _prompt, structured_style = build_kld_morning_prompt(
+        message,
+        visibility_context=structured,
+    )
+    sidecar_message = post_common.KldMorningMessage(
+        message,
+        visibility_context=structured,
+    )
+    _sidecar_prompt, sidecar_style = build_kld_morning_prompt(sidecar_message)
+    _text_prompt, text_only_style = build_kld_morning_prompt(message)
+    assert structured_style.startswith("format_v2_scene_cues_morning_")
+    assert sidecar_style == structured_style
+    assert structured_style != text_only_style
+
+
+def text_threshold_is_not_actual_measurement_case_h() -> None:
+    message = _morning_source(
+        "🌫 Видимость: утром сильный туман; местами видимость может падать ниже 500 м."
+    )
     ctx = build_visual_context(message, post_type="morning")
     metadata = kld_scene_metadata(
         ctx,
@@ -459,13 +632,41 @@ def visual_metadata_and_cache_include_visibility_identity() -> None:
         post_type="morning",
         source_text=message,
     )
-    assert metadata["visibility_condition"] == "mist"
-    assert metadata["visibility_forecast_window"] == "current_morning"
-    assert metadata["morning_min_visibility_m"] == "2200"
-    cache_key = kld_visual_cache_key(metadata)
-    assert "visibility_condition=mist" in cache_key
-    assert "visibility_forecast_window=current_morning" in cache_key
-    assert "morning_min_visibility_m=2200" in cache_key
+    assert ctx.visibility_condition == "dense_fog"
+    assert ctx.reported_visibility_threshold_m == 500
+    assert ctx.reported_visibility_m is None
+    assert ctx.current_visibility_m is None
+    assert ctx.morning_min_visibility_m is None
+    assert metadata["morning_min_visibility_m"] == "unknown"
+    assert metadata["reported_visibility_threshold_m"] == "500"
+
+
+def reported_mist_does_not_replace_structured_actual_case_i() -> None:
+    message = _morning_source(
+        "🌫 Видимость: утром влажная дымка; местами около 2200 м; дальние ориентиры различимы хуже."
+    )
+    structured = KldVisibilityContext(
+        morning_min_visibility_m=300,
+        condition="mist",
+        target_date=DATE.isoformat(),
+    )
+    ctx = build_visual_context(
+        message,
+        post_type="morning",
+        visibility_context=structured,
+    )
+    metadata = kld_scene_metadata(
+        ctx,
+        date_key=DATE.isoformat(),
+        post_type="morning",
+        source_text=message,
+    )
+    assert ctx.visibility_condition == "mist"
+    assert ctx.reported_visibility_m == 2200
+    assert ctx.reported_visibility_threshold_m is None
+    assert ctx.morning_min_visibility_m == 300
+    assert metadata["reported_visibility_m"] == "2200"
+    assert metadata["morning_min_visibility_m"] == "300"
 
 
 def main() -> None:
@@ -481,6 +682,12 @@ def main() -> None:
         invalid_values_and_wmo_fallback,
         weather_fetch_fields_are_requested_offline,
         post_builder_visibility_fallback_is_nonfatal,
+        evening_current_air_does_not_create_dust_case_a,
+        evening_current_air_does_not_make_fog_mixed_case_b,
+        evening_current_air_does_not_create_clear_haze_case_c,
+        evening_fog_score_ignores_current_air_case_d,
+        evening_reduced_score_ignores_current_air_case_e,
+        explicit_forecast_air_enables_dust_and_mixed_case_f,
         score_uses_max_air_or_visibility_penalty,
         morning_format_text_warning_plan_and_regional_regression,
         evening_format_is_explicitly_next_morning,
@@ -488,7 +695,9 @@ def main() -> None:
         dust_and_humid_fog_are_visually_distinct_case_j,
         evening_visibility_overrides_lunar_staging_only_when_needed,
         new_moon_visibility_never_returns_full_moon,
-        visual_metadata_and_cache_include_visibility_identity,
+        structured_dense_fog_keeps_actual_measurement_case_g,
+        text_threshold_is_not_actual_measurement_case_h,
+        reported_mist_does_not_replace_structured_actual_case_i,
     )
     for check in checks:
         check()

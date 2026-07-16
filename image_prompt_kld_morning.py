@@ -171,13 +171,21 @@ def build_kld_morning_prompt(
     *,
     post_type: str = "morning",
     variation_attempt: int = 0,
+    visibility_context: object | None = None,
 ) -> Tuple[str, str]:
     """Build a deterministic morning prompt from the final FORMAT_V2 message."""
     try:
         from visual_context_kld import build_visual_context
         from visual_rules import apply_visual_rules, build_prompt_from_cues
 
-        ctx = build_visual_context(final_format_v2_message, post_type=post_type or "morning")
+        structured_visibility = visibility_context
+        if structured_visibility is None:
+            structured_visibility = getattr(final_format_v2_message, "visibility_context", None)
+        ctx = build_visual_context(
+            final_format_v2_message,
+            post_type=post_type or "morning",
+            visibility_context=structured_visibility,
+        )
         cues = apply_visual_rules(ctx)
         prompt = build_prompt_from_cues(cues)
         prompt = _sanitize_morning_prompt(

@@ -336,7 +336,7 @@ def run_image_prompt_bridge_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     for needle in [
         "Create a photorealistic Baltic coastline weather scene for VayboMeter Kaliningrad.",
         "Weather: cloudy Baltic weather.",
@@ -397,7 +397,7 @@ def run_first_quarter_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     for needle in [
         "Lunar cue: one physically accurate first-quarter Moon, right side lit, visibly non-full, 61% illuminated, at small-to-medium natural non-dominant scale.",
         "Lunar negative: no perfect full moon, no oversized moon, no fantasy supermoon, no duplicate moon.",
@@ -444,7 +444,7 @@ def run_last_quarter_59_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     for needle in [
         "Lunar cue: one physically accurate last-quarter Moon, left side lit, visibly non-full, 59% illuminated, at small-to-medium natural non-dominant scale.",
         "Lunar negative: no perfect full moon, no oversized moon, no fantasy supermoon, no duplicate moon.",
@@ -490,7 +490,7 @@ def run_not_quite_full_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     for needle in [
         "Lunar cue: one realistic gibbous Moon, 95% illuminated, visibly not full, at small-to-medium natural non-dominant scale.",
         "Lunar negative: no perfect full moon, no oversized moon, no fantasy supermoon, no duplicate moon.",
@@ -528,7 +528,7 @@ def run_full_moon_evening_moonlit_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     for needle in [
         "Evening light adherence: blue-hour Baltic coast",
         "soft evening twilight",
@@ -576,7 +576,7 @@ def run_waning_gibbous_moon_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     _assert_contains(
         name,
         prompt,
@@ -623,8 +623,8 @@ def run_storm_waning_92_visual_guard_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
-    _assert_startswith(name, "style_name_93", style_name_93, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
+    _assert_startswith(name, "style_name_93", style_name_93, "format_v2_scene_cues_v6_")
     if style_name == style_name_93:
         raise AssertionError(f"{name}: style/cache digest must change with illumination")
     for needle in [
@@ -672,7 +672,7 @@ def run_new_moon_storm_finalizer_case() -> None:
     ctx = build_visual_context(message, post_type="evening")
     diagnostics = kld_lunar_prompt_diagnostics(prompt, ctx, message)
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     for needle in (
         "Storm visual adherence: photorealistic Baltic coastline",
         "strong wind and restless waves",
@@ -827,7 +827,7 @@ def run_nonstorm_warning_does_not_get_storm_visual_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     _assert_not_contains(name, prompt, "blue-hour stormy evening")
     _assert_not_contains(name, prompt, "storm-warning Baltic atmosphere")
     _assert_not_contains(name, prompt, "strong wind and restless waves")
@@ -856,7 +856,7 @@ def run_gust19_without_storm_word_gets_storm_visual_case() -> None:
         post_type="evening",
     )
 
-    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v5_")
+    _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     _assert_contains(name, prompt, "blue-hour stormy evening")
     _assert_contains(name, prompt, "strong wind and restless waves")
     _assert_contains(
@@ -1186,6 +1186,10 @@ def run_scene_retry_and_cache_key_cases() -> None:
         "weather_scenario=",
         "wind_gust_category=",
         "rain_cloud_fog_category=",
+        "current_visibility_m=",
+        "morning_min_visibility_m=",
+        "reported_visibility_m=",
+        "reported_visibility_threshold_m=",
         "lunar_phase=",
         "lunar_illumination=",
         "variation_attempt=1",

@@ -310,7 +310,7 @@ _NO_DOUBLE_MOON_GUARD = (
     "No extra bright discs."
 )
 
-_FORMAT_V2_PROMPT_VERSION = "v5"
+_FORMAT_V2_PROMPT_VERSION = "v6"
 
 _VISIBLE_MOON_PHASES = frozenset(
     {
@@ -810,7 +810,10 @@ def kld_scene_metadata(
         "rain_cloud_fog_category": _rain_cloud_fog_category(ctx),
         "visibility_condition": str(getattr(ctx, "visibility_condition", "clear") or "clear"),
         "visibility_forecast_window": str(getattr(ctx, "visibility_forecast_window", "none") or "none"),
+        "current_visibility_m": _fmt_percent(getattr(ctx, "current_visibility_m", None)) or "unknown",
         "morning_min_visibility_m": _fmt_percent(getattr(ctx, "morning_min_visibility_m", None)) or "unknown",
+        "reported_visibility_m": _fmt_percent(getattr(ctx, "reported_visibility_m", None)) or "unknown",
+        "reported_visibility_threshold_m": _fmt_percent(getattr(ctx, "reported_visibility_threshold_m", None)) or "unknown",
         "lunar_phase": str(getattr(ctx, "moon_phase", "unknown") or "unknown"),
         "lunar_illumination": _fmt_percent(illumination) or "unknown",
         "variation_attempt": str(int(variation_attempt or 0)),
@@ -831,7 +834,10 @@ def kld_visual_cache_key(metadata: dict[str, str]) -> str:
         "rain_cloud_fog_category",
         "visibility_condition",
         "visibility_forecast_window",
+        "current_visibility_m",
         "morning_min_visibility_m",
+        "reported_visibility_m",
+        "reported_visibility_threshold_m",
         "lunar_phase",
         "lunar_illumination",
         "variation_attempt",
@@ -864,6 +870,10 @@ def _format_v2_style_name(
             str(getattr(ctx, "moon_phase", "unknown")),
             str(getattr(ctx, "visibility_condition", "clear")),
             str(getattr(ctx, "visibility_forecast_window", "none")),
+            _fmt_percent(getattr(ctx, "current_visibility_m", None)) or "current_visibility_unknown",
+            _fmt_percent(getattr(ctx, "morning_min_visibility_m", None)) or "morning_visibility_unknown",
+            _fmt_percent(getattr(ctx, "reported_visibility_m", None)) or "reported_visibility_unknown",
+            _fmt_percent(getattr(ctx, "reported_visibility_threshold_m", None)) or "visibility_threshold_unknown",
             _fmt_percent(illumination) or "illum_unknown",
             str(int(variation_attempt or 0)),
         ]
@@ -1192,6 +1202,7 @@ def _build_format_v2_visual_prompt(
     post_type: str = "evening",
     date: Optional[dt.date] = None,
     variation_attempt: int = 0,
+    visibility_context: Any = None,
 ) -> Tuple[str, str]:
     """Build KLD FORMAT_V2 image prompt through VisualContext -> SceneCues.
 
@@ -1202,7 +1213,14 @@ def _build_format_v2_visual_prompt(
     from visual_context_kld import build_visual_context
     from visual_rules import apply_visual_rules, build_prompt_from_cues
 
-    ctx = build_visual_context(final_format_v2_message, post_type=post_type)
+    structured_visibility = visibility_context
+    if structured_visibility is None:
+        structured_visibility = getattr(final_format_v2_message, "visibility_context", None)
+    ctx = build_visual_context(
+        final_format_v2_message,
+        post_type=post_type,
+        visibility_context=structured_visibility,
+    )
     cues = apply_visual_rules(ctx)
     prompt = build_prompt_from_cues(cues)
     prompt = _apply_moon_phase_guard(prompt, ctx, final_format_v2_message)
@@ -1411,6 +1429,7 @@ def build_kld_evening_prompt(
     final_format_v2_message: Optional[str] = None,
     post_type: str = "evening",
     variation_attempt: int = 0,
+    visibility_context: Any = None,
 ) -> Tuple[str, str]:
     """
     Returns: (prompt_text, style_name)
@@ -1426,6 +1445,7 @@ def build_kld_evening_prompt(
                 post_type=post_type or "evening",
                 date=date,
                 variation_attempt=variation_attempt,
+                visibility_context=visibility_context,
             )
         except Exception:
             logger.exception("KLD_FORMAT_V2_IMG_PROMPT failed; falling back to legacy image prompt")

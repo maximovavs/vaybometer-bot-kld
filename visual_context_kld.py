@@ -21,9 +21,9 @@ import re
 import sys
 from dataclasses import dataclass, field
 from statistics import median
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 
-from visibility_context import visibility_condition_from_text
+from visibility_context import normalize_visibility_m, visibility_condition_from_text
 
 Region = Literal["kaliningrad"]
 PostType = Literal["morning", "evening", "forecast_tomorrow", "unknown"]
@@ -100,6 +100,8 @@ class VisualContext:
     visibility_forecast_window: VisibilityForecastWindow = "none"
     current_visibility_m: Optional[float] = None
     morning_min_visibility_m: Optional[float] = None
+    reported_visibility_m: Optional[float] = None
+    reported_visibility_threshold_m: Optional[float] = None
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
@@ -266,10 +268,20 @@ def detect_time_hint(post_type: PostType, text: str) -> TimeHint:
     return "unknown"
 
 
-def _visibility_facts(text: str, post_type: PostType) -> tuple[VisibilityCondition, VisibilityForecastWindow, Optional[float], dict[str, Any]]:
+def _visibility_facts(
+    text: str,
+    post_type: PostType,
+) -> tuple[
+    VisibilityCondition,
+    VisibilityForecastWindow,
+    Optional[float],
+    Optional[float],
+    dict[str, Any],
+]:
     condition = visibility_condition_from_text(text)
     line = next((line for line in _lines(text) if line.startswith("🌫 Видимость:")), "")
-    value = _first_num(r"(?:около|ниже)\s*(\d+(?:[\.,]\d+)?)\s*м\b", line)
+    reported_value = _first_num(r"\bоколо\s*(\d+(?:[\.,]\d+)?)\s*м\b", line)
+    reported_threshold = _first_num(r"\bниже\s*(\d+(?:[\.,]\d+)?)\s*м\b", line)
     if condition == "clear":
         window: VisibilityForecastWindow = "none"
     elif post_type == "morning":
@@ -278,12 +290,19 @@ def _visibility_facts(text: str, post_type: PostType) -> tuple[VisibilityConditi
         window = "tomorrow_morning"
     else:
         window = "none"
-    return condition, window, value, {
+    return condition, window, reported_value, reported_threshold, {
         "visibility_condition": condition,
         "visibility_forecast_window": window,
         "visibility_line": line or None,
-        "morning_min_visibility_m": value,
+        "reported_visibility_m": reported_value,
+        "reported_visibility_threshold_m": reported_threshold,
     }
+
+
+def _structured_visibility_value(data: Any, key: str) -> Any:
+    if isinstance(data, Mapping):
+        return data.get(key)
+    return getattr(data, key, None) if data is not None else None
 
 
 def detect_weather_main(text: str, temp_max: Optional[float] = None) -> tuple[WeatherMain, dict[str, Any]]:
@@ -496,7 +515,12 @@ def extract_moon_phase(text: str) -> MoonPhase:
     return "unknown"
 
 
-def build_visual_context(message: str, *, post_type: str | None = None) -> VisualContext:
+def build_visual_context(
+    message: str,
+    *,
+    post_type: str | None = None,
+    visibility_context: Any = None,
+) -> VisualContext:
     clean = _clean_text(message)
     pt = detect_post_type(clean, post_type)
     temp_max, temp_min, temp_ev = extract_temperatures(clean)
@@ -507,7 +531,62 @@ def build_visual_context(message: str, *, post_type: str | None = None) -> Visua
     moon_phase = extract_moon_phase(clean)
     score = extract_score(clean)
     time_hint = detect_time_hint(pt, clean)
-    visibility_condition, visibility_window, morning_visibility, visibility_ev = _visibility_facts(clean, pt)
+    (
+        visibility_condition,
+        visibility_window,
+        reported_visibility,
+        reported_threshold,
+        visibility_ev,
+    ) = _visibility_facts(clean, pt)
+    structured_condition = str(
+        _structured_visibility_value(visibility_context, "condition")
+        or _structured_visibility_value(visibility_context, "visibility_condition")
+        or ""
+    )
+    structured_window = str(
+        _structured_visibility_value(visibility_context, "visibility_forecast_window") or ""
+    )
+    if structured_condition in {
+        "dense_fog",
+        "fog",
+        "mist",
+        "reduced_visibility",
+        "dust_haze",
+        "mixed_visibility",
+        "clear",
+    }:
+        visibility_condition = structured_condition  # type: ignore[assignment]
+        if visibility_condition == "clear":
+            visibility_window = "none"
+        elif structured_window in {"current_morning", "tomorrow_morning"}:
+            visibility_window = structured_window  # type: ignore[assignment]
+        elif visibility_window == "none":
+            visibility_window = "current_morning" if pt == "morning" else "tomorrow_morning"
+    current_visibility = normalize_visibility_m(
+        _structured_visibility_value(visibility_context, "current_visibility_m")
+    )
+    morning_visibility = normalize_visibility_m(
+        _structured_visibility_value(visibility_context, "morning_min_visibility_m")
+    )
+    if reported_visibility is None:
+        reported_visibility = normalize_visibility_m(
+            _structured_visibility_value(visibility_context, "reported_visibility_m")
+        )
+    if reported_threshold is None:
+        reported_threshold = normalize_visibility_m(
+            _structured_visibility_value(visibility_context, "reported_visibility_threshold_m")
+        )
+    visibility_ev.update(
+        {
+            "visibility_condition": visibility_condition,
+            "visibility_forecast_window": visibility_window,
+            "current_visibility_m": current_visibility,
+            "morning_min_visibility_m": morning_visibility,
+            "reported_visibility_m": reported_visibility,
+            "reported_visibility_threshold_m": reported_threshold,
+            "structured_visibility_context": visibility_context is not None,
+        }
+    )
 
     evidence: dict[str, Any] = {}
     evidence.update(weather_ev)
@@ -535,8 +614,10 @@ def build_visual_context(message: str, *, post_type: str | None = None) -> Visua
         score=score,
         visibility_condition=visibility_condition,
         visibility_forecast_window=visibility_window,
-        current_visibility_m=morning_visibility if pt == "morning" else None,
+        current_visibility_m=current_visibility,
         morning_min_visibility_m=morning_visibility,
+        reported_visibility_m=reported_visibility,
+        reported_visibility_threshold_m=reported_threshold,
         evidence=evidence,
     )
 

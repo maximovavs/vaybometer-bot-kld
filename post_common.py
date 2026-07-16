@@ -712,11 +712,12 @@ def _get_weather_with_retry(
 
 def _kld_visibility_for_post(
     weather_data: Dict[str, Any],
-    air_data: Dict[str, Any],
+    air_data: Optional[Dict[str, Any]],
     *,
     post_type: str,
     target_date: str,
     tz_name: str,
+    forecast_air_data: Optional[Dict[str, Any]] = None,
 ) -> tuple[KldVisibilityContext, Optional[str]]:
     payload: Dict[str, Any] = weather_data if isinstance(weather_data, dict) else {}
     if not visibility_payload_has_morning_window(payload, target_date=target_date, tz=tz_name):
@@ -737,16 +738,23 @@ def _kld_visibility_for_post(
                     dedicated["current"] = current
             payload = dedicated
 
+    # Current AQI/PM describes the observation time, not tomorrow morning.
+    # A future forecast must be passed explicitly instead of inheriting
+    # ``air_data`` from the existing evening recommendation path.
+    classification_air_data = (
+        air_data if post_type.startswith("morn") else forecast_air_data
+    )
     context = get_kld_visibility_context(
         payload,
         post_type=post_type,
         target_date=target_date,
         tz=tz_name,
         air_data=air_data,
+        forecast_air_data=forecast_air_data,
         location_label="Калининград",
     )
     line = build_kld_visibility_line(context, post_type=post_type)
-    aqi = air_data.get("aqi") if isinstance(air_data, dict) else None
+    aqi = classification_air_data.get("aqi") if isinstance(classification_air_data, dict) else None
     air_penalty = 0.8 if isinstance(aqi, (int, float)) and aqi > 80 else 0.0
     logging.info(
         "KLD visibility diagnostics: %s",
@@ -2305,6 +2313,7 @@ def build_message_legacy_evening(
         post_type="evening",
         target_date=date_weather.to_date_string(),
         tz_name=tz_name,
+        forecast_air_data=None,
     )
     if visibility_line:
         P.append(visibility_line)
