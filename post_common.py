@@ -1771,6 +1771,71 @@ def build_astro_section(astro_date=None, tz_obj=None, *, date_local=None, tz_loc
     return "\n".join(lines)
 
 # ────────────────────────── Morning (compact) ──────────────────────────
+class KldMorningMessage(str):
+    """Visible morning text plus current-run regional temperatures for FORMAT_V2."""
+
+    def __new__(
+        cls,
+        text: str,
+        *,
+        regional_city_temperatures: list[tuple[str, float, float | None]] | None = None,
+    ):
+        obj = str.__new__(cls, text)
+        obj.regional_city_temperatures = tuple(regional_city_temperatures or ())
+        return obj
+
+
+def _collect_morning_region_temperatures(
+    sea_cities,
+    other_cities,
+    tz_obj: pendulum.Timezone,
+    *,
+    kaliningrad_high: float | None,
+    kaliningrad_low: float | None,
+) -> list[tuple[str, float, float | None]]:
+    rows: list[tuple[str, float, float | None]] = []
+    if isinstance(kaliningrad_high, (int, float)):
+        low = float(kaliningrad_low) if isinstance(kaliningrad_low, (int, float)) else None
+        rows.append(("Калининград", float(kaliningrad_high), low))
+
+    seen = {"калининград"}
+    for city, coords in list(sea_cities or []) + list(other_cities or []):
+        city_name = str(city or "").strip()
+        key = city_name.casefold()
+        if not city_name or key in seen:
+            continue
+        seen.add(key)
+        try:
+            lat, lon = coords
+            wm = _get_weather_with_retry(
+                float(lat),
+                float(lon),
+                source_label=f"KLD morning regional weather: {city_name}",
+                validator=lambda data: all(
+                    isinstance(value, (int, float))
+                    for value in _temps_for_offset_from_weather(data, tz_obj, DAY_OFFSET)[:2]
+                ),
+                attempts=2,
+                backoff_s=0.2,
+            )
+            high, low, _code = _temps_for_offset_from_weather(wm, tz_obj, DAY_OFFSET)
+        except Exception as exc:
+            logging.warning("KLD morning regional weather unavailable for %s: %s", city_name, exc)
+            continue
+        if not isinstance(high, (int, float)):
+            continue
+        rows.append(
+            (
+                city_name,
+                float(high),
+                float(low) if isinstance(low, (int, float)) else None,
+            )
+        )
+
+    logging.info("KLD morning regional temperatures collected for %d cities", len(rows))
+    return rows
+
+
 def build_message_morning_compact(
     region_name: str,
     sea_label: str,
@@ -1812,6 +1877,16 @@ def build_message_morning_compact(
         pass
     if gust is None:
         gust = kmh_to_ms(_daily_wind_kmh_for_offset(wm_klg, tz_obj, DAY_OFFSET, gust=True))
+
+    regional_city_temperatures = []
+    if _env_on("FORMAT_V2", False):
+        regional_city_temperatures = _collect_morning_region_temperatures(
+            sea_cities,
+            other_cities,
+            tz_obj,
+            kaliningrad_high=t_day,
+            kaliningrad_low=t_night,
+        )
 
     desc = code_desc(wcode) or "—"
     tday_i   = int(round(t_day))   if isinstance(t_day, (int, float)) else None
@@ -1963,7 +2038,10 @@ def build_message_morning_compact(
     P.append(today_line)
     P.append("")
     P.append("#Калининград #погода #здоровье #сегодня #море")
-    return "\n".join(P)
+    return KldMorningMessage(
+        "\n".join(P),
+        regional_city_temperatures=regional_city_temperatures,
+    )
 
 # ────────────────────────── Evening (legacy) ──────────────────────────
 def build_message_legacy_evening(

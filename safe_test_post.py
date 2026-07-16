@@ -597,7 +597,7 @@ def _apply_editorial_voice(v2_text: str, mode: str) -> str:
             line = "💬 По-человечески: прохладно и сыро; для обычных дел нормально в непромокаемой одежде."
         else:
             line = build_morning_human_line("Калининград", date_s or "today", conditions)
-        return _insert_editorial_after(lines, line, ("🌡 Теплее всего —", "🌡 По области:", "✨ VayboMeter:"))
+        return _insert_editorial_after(lines, line, ("✨ VayboMeter:",))
     line = build_evening_human_line("Калининград", date_s or "tomorrow", conditions)
     return _insert_editorial_after(lines, line, ("⚠️ Нюанс:", "⚠️ Главный нюанс:", "🧭 Главное завтра:", "✨ VayboMeter завтра:", "✨ VayboMeter:"))
 
@@ -728,35 +728,28 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
     return "\n".join(out)
 
 
-def _city_temperature_pairs(text: str) -> list[tuple[str, float, float]]:
-    out: list[tuple[str, float, float]] = []
-    for line in str(text or "").splitlines():
-        s = _plain(line).replace("\u00a0", " ").lstrip("• ").strip()
-        s = re.sub(r"^Погода:\s*", "", s, flags=re.I)
-        s = re.sub(r"^\s*(?:[-–—*•]+|\d+[.)])\s*", "", s)
-        s = re.sub(r"^[^A-Za-zА-Яа-яЁё]+", "", s).strip()
-        m = re.match(
-            r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40}?)(?:[:—-]|\s+)\s*(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°?\s*C",
-            s,
-        )
-        if not m:
-            continue
-        try:
-            out.append((m.group("city").strip(), float(m.group("hi").replace(",", ".")), float(m.group("lo").replace(",", "."))))
-        except Exception:
-            continue
-    return out
+def _city_temperature_pairs(text: str) -> list[tuple[str, float, float | None]]:
+    from format_v2 import _city_temperature_pairs as parse_city_temperature_pairs
+
+    return parse_city_temperature_pairs(text)
 
 
 def _regional_context_from_source(source_text: str) -> str:
-    pairs = _city_temperature_pairs(source_text)
-    if len(pairs) < 2:
-        return ""
-    warm = max(pairs, key=lambda item: item[1])
-    cool = min(pairs, key=lambda item: item[1])
-    if warm[0] == cool[0]:
-        return ""
-    return f"🌡 Теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°) (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)."
+    from format_v2 import _morning_region_context_from_pairs
+
+    structured = getattr(source_text, "regional_city_temperatures", None)
+    if structured:
+        line = _morning_region_context_from_pairs(structured)
+        if line:
+            return line
+    for raw in str(source_text or "").splitlines():
+        line = raw.strip()
+        if line.startswith("🌡 По области:") and any(
+            marker in line
+            for marker in ("днём теплее всего", "дневные температуры почти одинаковые", "теплее всего —")
+        ):
+            return line
+    return _morning_region_context_from_pairs(_city_temperature_pairs(source_text))
 
 
 def _kp_line_from_source(source_text: str) -> str:
@@ -865,7 +858,17 @@ def _replace_or_insert_regional_line(v2_text: str, line_to_add: str) -> str:
         for line in lines
         if not line.strip().startswith(("🌡 По области:", "🌡 Теплее всего —"))
     ]
-    return _inject_after_anchor("\n".join(out), line_to_add, ("✨ VayboMeter",))
+    insert_after = next(
+        (idx for idx, line in reversed(list(enumerate(out))) if line.strip().startswith("💬 По-человечески:")),
+        None,
+    )
+    if insert_after is None:
+        insert_after = next(
+            (idx for idx, line in enumerate(out) if line.strip().startswith("✨ VayboMeter")),
+            0,
+        )
+    out.insert(insert_after + 1, line_to_add)
+    return "\n".join(out)
 
 
 def _remove_vague_regional_fallback(v2_text: str) -> str:

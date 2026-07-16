@@ -25,6 +25,8 @@ telegram_stub.constants = types.SimpleNamespace(ParseMode=types.SimpleNamespace(
 sys.modules.setdefault("telegram", telegram_stub)
 
 from post_safety import sanitize_post_text  # noqa: E402
+import post_common  # noqa: E402
+from post_common import KldMorningMessage  # noqa: E402
 from safe_test_post import (  # noqa: E402
     _apply_format_v2_safe_postprocess,
     _finalize_kld_morning_safe_text,
@@ -225,6 +227,21 @@ RAINY_GUSTY_MORNING_FIXTURE = """<b>🌅 Калининградская обла
 #Калининград #погода #здоровье #сегодня #море
 """
 
+REGIONAL_CONTRAST_FIXTURE = """<b>🌅 Калининградская область: погода на сегодня (16.07.2026)</b>
+✨ VayboMeter: 8.0/10 — обычный летний день.
+Погода: 🏙️ Калининград — 27/16 °C • ясно • 💨 4.0 м/с • давл. 1015 гПа.
+• Балтийск: 24.0/14.0 °C • облачно
+🌤 Черняховск — 28,0/13,0 °C • ясно
+- Янтарный: 21.0/15.0 °C • облачно
+🏭 Воздух: 🟢 низкий (AQI 30) • PM₂.₅ 7 / PM₁₀ 13
+🌇 Закат сегодня: 21:10
+📻 <b>Астрособытия</b>
+🌙 Убывающая Луна (70%)
+💚 В плюсе: спокойные дела.
+✅ План: прогулка в удобное окно.
+#Калининград #погода #здоровье #сегодня #море
+"""
+
 
 def _astro_lines(text: str) -> list[str]:
     lines = text.splitlines()
@@ -350,7 +367,7 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     window_lines = [line for line in lines if line.startswith("🕘 Лучшее окно")]
     assert vaybo_lines == ["✨ VayboMeter: 7.2/10 — с оговорками; жара и высокий УФ."]
     assert "7.2/10" in vaybo_lines[0]
-    assert "🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°)." in lines
+    assert "🌡 По области: днём теплее всего — Гвардейск 39°, прохладнее — Балтийск 31°; ночью холоднее всего — Неман 17°." in lines
     assert text.count("💬 По-человечески:") == 1
     assert "🌡 По области: жарко; у Балтики обычно свежее" not in text
     assert window_lines == []
@@ -378,9 +395,9 @@ def kld_morning_hot_day_uses_cyprus_style_skeleton() -> None:
     weather_i = next(i for i, line in enumerate(lines) if line.startswith("🏙 Калининград"))
     feels_i = lines.index("🌡 Ощущается: жарко; на солнце высокая нагрузка.")
     nuance_i = lines.index("⚠️ Главный нюанс: у воды порывы ощущаются сильнее, чем в городе.")
-    context_i = lines.index("🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°).")
+    context_i = lines.index("🌡 По области: днём теплее всего — Гвардейск 39°, прохладнее — Балтийск 31°; ночью холоднее всего — Неман 17°.")
     voice_i = next(i for i, line in enumerate(lines) if line.startswith("💬 По-человечески:"))
-    assert context_i < voice_i < weather_i < feels_i < nuance_i < uv_i < air_i < kp_i < baltic_i < fx_i < astro_i
+    assert voice_i < context_i < weather_i < feels_i < nuance_i < uv_i < air_i < kp_i < baltic_i < fx_i < astro_i
     assert lines[fx_i + 1] == ""
     assert fx_i + 2 == astro_i
     assert fx_i > weather_i + 1
@@ -395,7 +412,7 @@ def kld_morning_mild_uv_avoids_heat_wording_and_keeps_details() -> None:
     assert "короткие выходы" not in text
     assert "✨ VayboMeter: 8.3/10 — с оговорками; высокий УФ." in text
     assert "✅ План: SPF, очки/кепка и короткие паузы в тени." in text
-    assert "🌡 Теплее всего — Гвардейск (23°), прохладнее — Балтийск (19°) (диапазон 19–23°)." in text
+    assert "🌡 По области: днём теплее всего — Гвардейск 23°, прохладнее — Балтийск 19°; ночью холоднее всего — Неман 12°." in text
     assert "🌊 Балтика: вода 20°C; волна 0.2 м; у воды свежее, ветер ощущается заметнее." in text
     assert "✅ Общий фон: благоприятный, без перегруза." in text
     assert "💚 В плюсе: прогулки, восстановление." in text
@@ -541,7 +558,7 @@ def kld_morning_real_safe_pipeline_uses_raw_context() -> None:
     assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
     assert any(line.startswith("✨ VayboMeter:") and "/10 — с оговорками; жара и высокий УФ." in line for line in lines)
     assert "✨ VayboMeter: с оговорками; жара и высокий УФ." not in text
-    assert "🌡 Теплее всего — Гвардейск (39°), прохладнее — Балтийск (31°) (диапазон 31–39°)." in text
+    assert "🌡 По области: днём теплее всего — Гвардейск 39°, прохладнее — Балтийск 31°; ночью холоднее всего — Неман 17°." in text
     assert "🌡 По области: жарко; у Балтики обычно свежее" not in text
     assert text.count("🧪") == 0
     assert "Радиационный фон: высокий" not in text
@@ -588,7 +605,7 @@ def kld_morning_real_safe_pipeline_handles_warm_uv_without_heat_wording() -> Non
     assert "короткие выходы" not in text
     assert "✨ VayboMeter: 7.9/10 — с оговорками; тёплый день и высокий УФ." in text
     assert "✅ План: дела и прогулка утром/вечером; днём — SPF, вода, тень и паузы." in text
-    assert "🌡 Теплее всего — Калининград (26°), прохладнее — Светлогорск (20°) (диапазон 20–26°)." in text
+    assert "🌡 По области: днём теплее всего — Калининград, Гвардейск 26°, прохладнее — Светлогорск 20°; ночью холоднее всего — Светлогорск 15°." in text
     assert "По области: тепло; у Балтики свежее и ветренее" not in text
     assert "🌊 Балтика: вода 21–22°C" in text
     assert "у воды свежее, ветер ощущается заметнее" in text
@@ -658,6 +675,149 @@ def kld_morning_rainy_gusty_integrated_fixture_is_not_too_optimistic() -> None:
     assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
 
 
+def kld_morning_region_contrast_uses_all_city_row_variants() -> None:
+    text = build_morning_format_v2("Калининградская область", REGIONAL_CONTRAST_FIXTURE)
+    lines = text.splitlines()
+    expected = (
+        "🌡 По области: днём теплее всего — Черняховск 28°, прохладнее — Янтарный 21°; "
+        "ночью холоднее всего — Черняховск 13°."
+    )
+    assert lines.count(expected) == 1
+    assert sum(line.startswith("🌡 По области:") for line in lines) == 1
+    assert "🏙 Калининград — 27/16 °C" in text
+    assert "\nБалтийск:" not in text
+    assert "\nЧерняховск" not in text
+    assert "\nЯнтарный:" not in text
+    assert len(expected) <= 180
+
+    score_i = next(i for i, line in enumerate(lines) if line.startswith("✨ VayboMeter:"))
+    voice_i = next(i for i, line in enumerate(lines) if line.startswith("💬 По-человечески:"))
+    region_i = lines.index(expected)
+    weather_i = next(i for i, line in enumerate(lines) if line.startswith("🏙 Калининград"))
+    assert score_i < voice_i < region_i < weather_i
+    assert lines[-1] == "#Калининград #погода #здоровье #сегодня #море"
+
+    source_with_line = REGIONAL_CONTRAST_FIXTURE.replace(
+        "✨ VayboMeter: 8.0/10 — обычный летний день.",
+        "✨ VayboMeter: 8.0/10 — обычный летний день.\n" + expected,
+    )
+    assert build_morning_format_v2("Калининградская область", source_with_line).count(expected) == 1
+
+    evening = build_evening_format_v2("Калининградская область", EVENING_FIXTURE)
+    assert "🌡 По области:" not in evening
+    assert "🌊 <b>Морские города</b>" in evening
+
+
+def kld_morning_region_context_is_omitted_for_one_city() -> None:
+    fixture = "\n".join(
+        line
+        for line in REGIONAL_CONTRAST_FIXTURE.splitlines()
+        if not any(city in line for city in ("Балтийск", "Черняховск", "Янтарный"))
+    )
+    text = build_morning_format_v2("Калининградская область", fixture)
+    assert "🌡 По области:" not in text
+    assert "🏙 Калининград — 27/16 °C" in text
+
+
+def kld_morning_equal_daytime_shows_only_coldest_night() -> None:
+    fixture = REGIONAL_CONTRAST_FIXTURE.replace(
+        "• Балтийск: 24.0/14.0 °C • облачно\n🌤 Черняховск — 28,0/13,0 °C • ясно\n- Янтарный: 21.0/15.0 °C • облачно",
+        "• Балтийск: 27.0/14.0 °C • облачно\n🌤 Черняховск — 27,0/13,0 °C • ясно\n- Янтарный: 27.0/15.0 °C • облачно",
+    )
+    text = build_morning_format_v2("Калининградская область", fixture)
+    expected = "🌡 По области: дневные температуры почти одинаковые; холоднее всего ночью — Черняховск 13°."
+    assert expected in text
+    assert "теплее всего" not in text
+    assert "прохладнее" not in text
+
+
+def kld_morning_structured_current_run_temperatures_survive_safe_pipeline() -> None:
+    raw_msg = KldMorningMessage(
+        REAL_LEGACY_WITHOUT_REGION,
+        regional_city_temperatures=[
+            ("Калининград", 27.0, 16.0),
+            ("Балтийск", 24.0, 14.0),
+            ("Черняховск", 28.0, 13.0),
+            ("Янтарный", 21.0, 15.0),
+        ],
+    )
+    legacy_result = sanitize_post_text(raw_msg)
+    assert "Балтийск: 24" not in legacy_result.text
+    assert "Черняховск: 28" not in legacy_result.text
+    assert "Янтарный: 21" not in legacy_result.text
+
+    v2 = build_format_v2("Калининградская область", "morning", legacy_result.text)
+    text = _apply_format_v2_safe_postprocess(v2, raw_msg, legacy_result.text, "morning")
+    text = sanitize_post_text(text).text
+    text = _finalize_kld_morning_safe_text(text, raw_msg, legacy_result.text, "morning")
+    expected = (
+        "🌡 По области: днём теплее всего — Черняховск 28°, прохладнее — Янтарный 21°; "
+        "ночью холоднее всего — Черняховск 13°."
+    )
+    assert text.count(expected) == 1
+    assert text.count("🌡 По области:") == 1
+    assert "🏙 Калининград" in text
+    assert "KLD_REGION" not in text
+    assert text.splitlines()[-1] == "#Калининград #погода #здоровье #сегодня #море"
+
+
+def kld_morning_structured_daytime_only_uses_short_form() -> None:
+    raw_msg = KldMorningMessage(
+        REAL_LEGACY_WITHOUT_REGION,
+        regional_city_temperatures=[
+            ("Калининград", 27.0, None),
+            ("Балтийск", 24.0, None),
+        ],
+    )
+    legacy_result = sanitize_post_text(raw_msg)
+    v2 = build_format_v2("Калининградская область", "morning", legacy_result.text)
+    text = _apply_format_v2_safe_postprocess(v2, raw_msg, legacy_result.text, "morning")
+    assert "🌡 По области: теплее всего — Калининград 27°, прохладнее — Балтийск 24°." in text
+    assert "ночью" not in next(line for line in text.splitlines() if line.startswith("🌡 По области:"))
+
+
+def kld_morning_collector_uses_current_run_city_lists() -> None:
+    original_get = post_common._get_weather_with_retry
+    original_temps = post_common._temps_for_offset_from_weather
+    original_offset = post_common.DAY_OFFSET
+    offsets: list[int] = []
+    values = {
+        (54.649, 20.055): (24.0, 14.0),
+        (54.630, 21.811): (28.0, 13.0),
+    }
+
+    def fake_get(lat, lon, **_kwargs):
+        return {"coords": (round(float(lat), 3), round(float(lon), 3))}
+
+    def fake_temps(weather, _tz, offset):
+        offsets.append(offset)
+        high, low = values[weather["coords"]]
+        return high, low, 0
+
+    try:
+        post_common.DAY_OFFSET = 0
+        post_common._get_weather_with_retry = fake_get
+        post_common._temps_for_offset_from_weather = fake_temps
+        rows = post_common._collect_morning_region_temperatures(
+            [("Балтийск", (54.649, 20.055))],
+            [("Черняховск", (54.630, 21.811))],
+            object(),
+            kaliningrad_high=27.0,
+            kaliningrad_low=16.0,
+        )
+    finally:
+        post_common._get_weather_with_retry = original_get
+        post_common._temps_for_offset_from_weather = original_temps
+        post_common.DAY_OFFSET = original_offset
+
+    assert rows == [
+        ("Калининград", 27.0, 16.0),
+        ("Балтийск", 24.0, 14.0),
+        ("Черняховск", 28.0, 13.0),
+    ]
+    assert offsets and set(offsets) == {0}
+
+
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     assert "cron: '30 0 * * *'" in workflow
@@ -691,6 +851,12 @@ def main() -> None:
         kld_morning_final_sensor_wording_is_softened,
         kld_morning_final_production_path_softens_sensor_after_sanitize,
         kld_morning_rainy_gusty_integrated_fixture_is_not_too_optimistic,
+        kld_morning_region_contrast_uses_all_city_row_variants,
+        kld_morning_region_context_is_omitted_for_one_city,
+        kld_morning_equal_daytime_shows_only_coldest_night,
+        kld_morning_structured_current_run_temperatures_survive_safe_pipeline,
+        kld_morning_structured_daytime_only_uses_short_form,
+        kld_morning_collector_uses_current_run_city_lists,
         kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,

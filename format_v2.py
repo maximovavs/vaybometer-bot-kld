@@ -457,23 +457,108 @@ def _morning_kaliningrad_temps(lines: list[str]) -> tuple[float | None, float | 
         return None, None
 
 
-def _city_temperature_pairs(lines: list[str]) -> list[tuple[str, float, float]]:
-    out: list[tuple[str, float, float]] = []
-    for line in lines:
+def _city_temperature_pairs(lines: list[str] | str) -> list[tuple[str, float, float | None]]:
+    source_lines = str(lines or "").splitlines() if isinstance(lines, str) else lines
+    out: list[tuple[str, float, float | None]] = []
+    seen: set[str] = set()
+    for line in source_lines:
         p = _plain(line).lstrip("• ").strip()
         p = re.sub(r"^Погода:\s*", "", p, flags=re.I)
+        p = re.sub(r"^\s*(?:[-–—*•]+|\d+[.)])\s*", "", p)
         p = re.sub(r"^[^A-Za-zА-Яа-яЁё]+", "", p).strip()
         m = re.match(
-            r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40})[:—]\s*(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°C",
+            r"(?P<city>[А-ЯЁA-Z][^:—\n]{1,40}?)(?:[:—-]|\s+)\s*"
+            r"(?P<hi>-?\d+(?:[\.,]\d+)?)\s*/\s*(?P<lo>-?\d+(?:[\.,]\d+)?)\s*°?\s*C",
             p,
         )
         if not m:
             continue
         try:
-            out.append((m.group("city").strip(), float(m.group("hi").replace(",", ".")), float(m.group("lo").replace(",", "."))))
+            city = m.group("city").strip()
+            key = city.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                (
+                    city,
+                    float(m.group("hi").replace(",", ".")),
+                    float(m.group("lo").replace(",", ".")),
+                )
+            )
         except Exception:
             continue
     return out
+
+
+def _normalize_city_temperature_pairs(values: object) -> list[tuple[str, float, float | None]]:
+    out: list[tuple[str, float, float | None]] = []
+    seen: set[str] = set()
+    for item in values or []:  # type: ignore[union-attr]
+        try:
+            city = str(item[0]).strip()
+            high = float(item[1])
+            low = float(item[2]) if len(item) >= 3 and item[2] is not None else None
+        except Exception:
+            continue
+        key = city.casefold()
+        if not city or key in seen:
+            continue
+        seen.add(key)
+        out.append((city, high, low))
+    return out
+
+
+def _format_region_temperature(value: float) -> str:
+    return str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _region_tie_label(
+    pairs: list[tuple[str, float, float | None]],
+    target: float,
+    value_index: int,
+) -> str:
+    cities = [item[0] for item in pairs if item[value_index] is not None and abs(float(item[value_index]) - target) < 1e-9]
+    return ", ".join(cities[:2])
+
+
+def _morning_region_context_from_pairs(values: object) -> str:
+    pairs = _normalize_city_temperature_pairs(values)
+    if len(pairs) < 2:
+        return ""
+
+    highs = [item[1] for item in pairs]
+    warm_high = max(highs)
+    cool_high = min(highs)
+    has_day_contrast = abs(warm_high - cool_high) >= 0.1
+    night_pairs = [item for item in pairs if item[2] is not None]
+    cold_low = min(float(item[2]) for item in night_pairs) if len(night_pairs) >= 2 else None
+
+    if not has_day_contrast:
+        if len(night_pairs) < 2:
+            return ""
+        night_values = [float(item[2]) for item in night_pairs]
+        if max(night_values) - min(night_values) < 0.1:
+            return ""
+        cold_cities = _region_tie_label(pairs, float(cold_low), 2)
+        return (
+            "🌡 По области: дневные температуры почти одинаковые; "
+            f"холоднее всего ночью — {cold_cities} {_format_region_temperature(float(cold_low))}°."
+        )
+
+    warm_cities = _region_tie_label(pairs, warm_high, 1)
+    cool_cities = _region_tie_label(pairs, cool_high, 1)
+    day_part = (
+        f"теплее всего — {warm_cities} {_format_region_temperature(warm_high)}°, "
+        f"прохладнее — {cool_cities} {_format_region_temperature(cool_high)}°"
+    )
+    if cold_low is None:
+        return f"🌡 По области: {day_part}."
+    cold_cities = _region_tie_label(pairs, float(cold_low), 2)
+    return (
+        f"🌡 По области: днём {day_part}; ночью холоднее всего — "
+        f"{cold_cities} {_format_region_temperature(float(cold_low))}°."
+    )
 
 
 def _max_wind_ms(text: str) -> float | None:
@@ -1061,13 +1146,15 @@ def _morning_plan_line(lines: list[str], flags: dict[str, bool], has_warning: bo
 
 
 def _morning_region_context_line(lines: list[str], flags: dict[str, bool]) -> str:
-    pairs = _city_temperature_pairs(lines)
-    if len(pairs) >= 2:
-        warm = max(pairs, key=lambda item: item[1])
-        cool = min(pairs, key=lambda item: item[1])
-        if warm[0] != cool[0]:
-            return f"🌡 Теплее всего — {warm[0]} ({warm[1]:.0f}°), прохладнее — {cool[0]} ({cool[1]:.0f}°) (диапазон {cool[1]:.0f}–{warm[1]:.0f}°)."
-    return ""
+    del flags
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("🌡 По области:") and any(
+            marker in stripped
+            for marker in ("днём теплее всего", "дневные температуры почти одинаковые", "теплее всего —")
+        ):
+            return stripped
+    return _morning_region_context_from_pairs(_city_temperature_pairs(lines))
 
 
 def _morning_human_line(lines: list[str], flags: dict[str, object], date_s: str) -> str:
@@ -1193,12 +1280,12 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     for line in (_morning_score_line(score, flags), scenario):
         if line and line not in out:
             out.append(line)
-    region_context = _morning_region_context_line(lines, flags)
-    if region_context:
-        out.append(region_context)
     human_line = _morning_human_line(lines, flags, date_s)
     if human_line:
         out.append(human_line)
+    region_context = _morning_region_context_line(lines, flags)
+    if region_context:
+        out.append(region_context)
     if weather:
         out.append(_clean_morning_weather_line(weather))
     out.append(_morning_feels_line(feels, flags))
