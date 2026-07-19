@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,6 +22,41 @@ _GUST_RE = re.compile(rf"порыв\w*\s*(?:до\s*)?({_NUMBER})\s*м/с", re.IG
 _SEA_RE = re.compile(rf"🌊\s*({_NUMBER})\s*°?C", re.IGNORECASE)
 _WAVE_RE = re.compile(rf"волна\s*({_NUMBER})\s*м", re.IGNORECASE)
 _DATE_RE = re.compile(r"\b(\d{2}\.\d{2}\.\d{4})\b")
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_EDITORIAL_LINE_RE = re.compile(
+    r"^\W*(?:главный\s+нюанс|нюанс|vaybometer|план|рекомендации|уверенность)"
+    r"(?:\s+[^:]{1,32})?\s*:",
+    re.IGNORECASE,
+)
+_STORM_NEGATION_RE = re.compile(
+    r"(?:штормов\w*\s+предупрежден\w*\s+нет|"
+    r"шторм\w*\s+не\s+ожида\w*|без\s+шторма|"
+    r"риск\s+шторма\s+низк\w*|шторм\w*\s+не\s+подтвержд\w*|"
+    r"гроз\w*\s+не\s+ожида\w*)",
+    re.IGNORECASE,
+)
+_STORM_UNCERTAIN_RE = re.compile(
+    r"(?:риск|вероятност\w*)\s+(?:шторма|гроз\w*)|"
+    r"(?:шторм|гроз)\w*[^.!?\n]*(?:провер|уточн|возмож|вероятн|не\s+исключ)",
+    re.IGNORECASE,
+)
+_STORM_RE = re.compile(r"(?:шторм\w*|⛈|гроз\w*)", re.IGNORECASE)
+_THUNDERSTORM_RE = re.compile(r"(?:⛈|гроз\w*)", re.IGNORECASE)
+_PRECIPITATION_NEGATION_RE = re.compile(
+    r"(?:без\s+осадков|дожд\w*\s+не\s+ожида\w*|преимущественно\s+сух\w*|"
+    r"вероятност\w*\s+дожд\w*\s+низк\w*|осадк\w*\s+не\s+подтвержд\w*)",
+    re.IGNORECASE,
+)
+_PRECIPITATION_UNCERTAIN_RE = re.compile(
+    r"(?:вероятност\w*\s+(?:дожд|осад)\w*|"
+    r"(?:дожд|осад)\w*[^.!?\n]*(?:провер|уточн|возмож|вероятн|не\s+исключ))",
+    re.IGNORECASE,
+)
+_RAIN_RE = re.compile(r"(?:🌧|🌦|дожд\w*|лив\w*)", re.IGNORECASE)
+_DRIZZLE_RE = re.compile(r"морос\w*", re.IGNORECASE)
+_SNOW_RE = re.compile(r"(?:❄|снег\w*)", re.IGNORECASE)
+_PRECIPITATION_RE = re.compile(r"осад\w*", re.IGNORECASE)
+_STRONG_WIND_RE = re.compile(r"(?:сильн\w*\s+ветер|штормов\w*\s+ветер)", re.IGNORECASE)
 
 
 def _number(value: object) -> float | None:
@@ -45,6 +81,61 @@ def _first_match(pattern: re.Pattern[str], text: str) -> tuple[float, ...]:
     return tuple(value for value in values if value is not None)
 
 
+def _factual_weather_truth(message: str) -> dict[str, bool]:
+    """Parse explicit weather facts without promoting editorial advice to observations."""
+    explicit_storm = False
+    actual_precipitation = False
+    rain = False
+    drizzle = False
+    snow = False
+    thunderstorm = False
+    strong_wind = False
+
+    for raw_line in message.splitlines():
+        line = _HTML_TAG_RE.sub("", raw_line).strip().lower()
+        if not line or _EDITORIAL_LINE_RE.match(line):
+            continue
+
+        gust_match = _GUST_RE.search(line)
+        gust = _number(gust_match.group(1)) if gust_match else None
+        if (gust is not None and gust >= 12) or _STRONG_WIND_RE.search(line):
+            strong_wind = True
+
+        storm_negated = bool(_STORM_NEGATION_RE.search(line))
+        storm_uncertain = bool(_STORM_UNCERTAIN_RE.search(line))
+        if not storm_negated and not storm_uncertain:
+            if _STORM_RE.search(line):
+                explicit_storm = True
+            if _THUNDERSTORM_RE.search(line):
+                thunderstorm = True
+
+        precipitation_negated = bool(_PRECIPITATION_NEGATION_RE.search(line))
+        precipitation_uncertain = bool(_PRECIPITATION_UNCERTAIN_RE.search(line))
+        if precipitation_negated or precipitation_uncertain:
+            continue
+
+        line_rain = bool(_RAIN_RE.search(line))
+        line_drizzle = bool(_DRIZZLE_RE.search(line))
+        line_snow = bool(_SNOW_RE.search(line))
+        line_precipitation = bool(_PRECIPITATION_RE.search(line))
+        rain = rain or line_rain
+        drizzle = drizzle or line_drizzle
+        snow = snow or line_snow
+        actual_precipitation = actual_precipitation or any(
+            (line_rain, line_drizzle, line_snow, line_precipitation)
+        )
+
+    return {
+        "explicit_storm": explicit_storm,
+        "actual_precipitation": actual_precipitation,
+        "rain": rain,
+        "drizzle": drizzle,
+        "snow": snow,
+        "thunderstorm": thunderstorm,
+        "strong_wind": strong_wind,
+    }
+
+
 def _weather_flags(
     message: str,
     visibility_context: Mapping[str, Any] | None,
@@ -53,7 +144,7 @@ def _weather_flags(
 ) -> dict[str, bool | str]:
     lowered = message.lower()
     condition = str((visibility_context or {}).get("visibility_condition") or "").strip().lower()
-    explicit_storm = any(token in lowered for token in ("штормовое предупреждение", "шторм", "⛈", "гроза"))
+    factual = _factual_weather_truth(message)
     weather_main = "unknown"
     try:
         from visual_context_kld import build_visual_context
@@ -66,9 +157,13 @@ def _weather_flags(
     except Exception:
         # The fallback cover must remain available even if optional visual parsing fails.
         weather_main = "unknown"
-    if weather_main == "unknown":
-        weather_main = "rain" if any(token in message for token in ("🌧", "🌦")) else "unknown"
-    rain = explicit_storm or weather_main in {"rain", "drizzle", "storm"}
+    if weather_main == "unknown" and factual["actual_precipitation"]:
+        if factual["rain"]:
+            weather_main = "rain"
+        elif factual["drizzle"]:
+            weather_main = "drizzle"
+        elif factual["snow"]:
+            weather_main = "snow"
     fog = condition in {"dense_fog", "fog", "mist"}
     dust = condition == "dust_haze"
     mixed = condition == "mixed_visibility"
@@ -81,9 +176,8 @@ def _weather_flags(
     return {
         "condition": condition or "clear",
         "weather_main": weather_main,
-        "storm": explicit_storm,
-        "rain": rain,
-        "drizzle": weather_main == "drizzle",
+        "storm": factual["explicit_storm"],
+        **factual,
         "fog": fog,
         "dust_haze": dust,
         "mixed_visibility": mixed,
@@ -117,12 +211,16 @@ def extract_kld_cover_facts(
             break
 
     facts: list[str] = []
-    if flags["storm"]:
+    if flags["explicit_storm"]:
         facts.append("ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ")
+    elif flags["snow"]:
+        facts.append("СНЕГ МЕСТАМИ")
     elif flags["drizzle"]:
         facts.append("МОРОСЬ МЕСТАМИ")
     elif flags["rain"]:
         facts.append("ДОЖДЬ МЕСТАМИ")
+    elif flags["actual_precipitation"]:
+        facts.append("ОСАДКИ МЕСТАМИ")
     elif flags["fog"]:
         facts.append("ТУМАН УТРОМ")
     elif flags["dust_haze"]:
@@ -196,15 +294,54 @@ def _font(size: int, *, bold: bool = False):
 
 def _palette(metadata: Mapping[str, Any]) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
     weather = metadata["weather"]
-    if weather["storm"]:
+    if weather["explicit_storm"]:
         return (32, 46, 59), (73, 91, 105), (190, 204, 211)
-    if weather["rain"]:
+    if weather["actual_precipitation"]:
         return (80, 105, 122), (134, 154, 166), (220, 229, 233)
     if weather["fog"] or weather["mixed_visibility"]:
         return (184, 190, 190), (216, 220, 216), (240, 239, 229)
     if weather["dust_haze"]:
         return (167, 156, 135), (205, 194, 171), (232, 224, 204)
     return (111, 154, 181), (182, 204, 214), (231, 228, 207)
+
+
+def _draw_weather_graphics(
+    draw: Any,
+    *,
+    width: int,
+    weather: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Draw visible factual motifs and return coordinates for pixel regressions."""
+    rain_color = (203, 220, 228)
+    lightning_color = (235, 226, 170)
+    wind_color = (220, 230, 232)
+    rain_lines: list[tuple[int, int, int, int]] = []
+    lightning_line: tuple[tuple[int, int], ...] = ()
+    wind_arcs: list[tuple[int, int, int, int]] = []
+
+    if weather["rain"]:
+        for x in range(30, width, 65):
+            y = 610 + (x % 130)
+            segment = (x, y, x - 24, y + 90)
+            rain_lines.append(segment)
+            draw.line(segment, fill=rain_color, width=3)
+    if weather["explicit_storm"]:
+        lightning_line = ((850, 615), (805, 710), (850, 700), (790, 825))
+        draw.line(lightning_line, fill=lightning_color, width=8)
+    if weather["strong_wind"] and not weather["rain"]:
+        for y in (625, 690, 755):
+            arc = (700, y, 1040, y + 95)
+            wind_arcs.append(arc)
+            draw.arc(arc, 180, 350, fill=wind_color, width=4)
+
+    return {
+        "rain_lines": rain_lines,
+        "rain_color": rain_color,
+        "lightning_line": lightning_line,
+        "lightning_color": lightning_color,
+        "wind_arcs": wind_arcs,
+        "wind_color": wind_color,
+    }
 
 
 def render_kld_informative_cover(
@@ -215,7 +352,7 @@ def render_kld_informative_cover(
     output_path: str | Path = "outputs/kld_informative_cover.png",
 ) -> dict[str, Any]:
     """Render a deterministic 1080px factual card with no external calls."""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, PngImagePlugin
 
     metadata = extract_kld_cover_facts(
         message,
@@ -245,17 +382,9 @@ def render_kld_informative_cover(
     draw.polygon(((0, 850), (240, 795), (520, 850), (810, 800), (1080, 835), (1080, 1080), (0, 1080)), fill=sand)
 
     weather = metadata["weather"]
-    if weather["rain"]:
-        for x in range(20, width, 65):
-            draw.line((x, 120 + (x % 170), x - 24, 225 + (x % 170)), fill=(203, 220, 228), width=3)
-    if weather["storm"]:
-        draw.line((835, 135, 790, 250, 838, 240, 785, 370), fill=(235, 226, 170), width=8)
-    gust = metadata["actual_values"].get("gust_mps")
-    if isinstance(gust, (int, float)) and gust >= 12 and not weather["rain"]:
-        for y in (180, 235, 295):
-            draw.arc((720, y, 1040, y + 95), 180, 350, fill=(220, 230, 232), width=4)
     if weather["fog"] or weather["mixed_visibility"]:
         draw.rounded_rectangle((0, 500, width, 760), radius=80, fill=(224, 225, 218))
+    graphics = _draw_weather_graphics(draw, width=width, weather=weather)
 
     # Branded information panel; no pseudo-photographic text.
     draw.rounded_rectangle((70, 70, 1010, 590), radius=42, fill=(20, 34, 45), outline=(230, 238, 240), width=3)
@@ -274,7 +403,18 @@ def render_kld_informative_cover(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")
-    image.save(temporary, format="PNG", optimize=True)
+    metadata["graphics"] = graphics
+    metadata["rain_graphics"] = bool(graphics["rain_lines"])
+    metadata["lightning_graphics"] = bool(graphics["lightning_line"])
+    png_info = PngImagePlugin.PngInfo()
+    png_info.add_text("renderer_version", RENDERER_VERSION)
+    png_info.add_text("weather_flags", json.dumps(weather, ensure_ascii=False, sort_keys=True))
+    png_info.add_text("graphics", json.dumps(graphics, ensure_ascii=False, sort_keys=True))
+    png_info.add_text("explicit_storm", str(bool(weather["explicit_storm"])).lower())
+    png_info.add_text("actual_precipitation", str(bool(weather["actual_precipitation"])).lower())
+    png_info.add_text("rain_graphics", str(metadata["rain_graphics"]).lower())
+    png_info.add_text("lightning_graphics", str(metadata["lightning_graphics"]).lower())
+    image.save(temporary, format="PNG", optimize=True, pnginfo=png_info)
     temporary.replace(output)
     metadata["path"] = str(output)
     metadata["width"] = width

@@ -385,6 +385,125 @@ def local_cover_is_png_1080_and_weather_factual() -> None:
     assert ranged_facts["actual_values"]["wind_mps"] is None
 
 
+def storm_and_precipitation_truth_are_independent() -> None:
+    base = """<b>🌅 Калининградская область завтра (21.07.2026)</b>
+🏙 Калининград — 20/14 °C • ☁️ облачно • 💨 5 м/с
+#Калининград #погода
+"""
+    scenarios = {
+        "dry_storm": (
+            base + "Штормовое предупреждение: штормовой ветер, без осадков.\n",
+            {"explicit_storm": True, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+        ),
+        "negated_storm": (
+            base + "Штормовых предупреждений нет; преимущественно сухо.\n",
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+        ),
+        "negated_thunderstorm": (
+            base + "Грозы не ожидаются; дождя не ожидается.\n",
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+        ),
+        "thunderstorm_without_rain": (
+            base + "⛈ Гроза, без осадков.\n",
+            {"explicit_storm": True, "actual_precipitation": False, "rain": False, "thunderstorm": True},
+        ),
+        "rain_without_storm": (
+            base.replace("☁️ облачно", "🌧 дождь"),
+            {"explicit_storm": False, "actual_precipitation": True, "rain": True, "thunderstorm": False},
+        ),
+        "drizzle_without_rain": (
+            base.replace("☁️ облачно", "морось"),
+            {
+                "explicit_storm": False,
+                "actual_precipitation": True,
+                "rain": False,
+                "drizzle": True,
+                "thunderstorm": False,
+            },
+        ),
+        "storm_and_rain": (
+            base + "Штормовое предупреждение: сильный ветер.\n🌧 Дождь подтверждён.\n",
+            {"explicit_storm": True, "actual_precipitation": True, "rain": True, "thunderstorm": False},
+        ),
+        "editorial_storm": (
+            base
+            + "✨ VayboMeter завтра: шторм и дождь требуют внимания.\n"
+            + "⚠️ Главный нюанс: шторм у воды.\n"
+            + "✅ План: дождь проверить утром.\n"
+            + "🎯 Уверенность: гроза возможна.\n",
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+        ),
+        "uncertain_rain": (
+            base + "Вероятность дождя проверить утром.\n",
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+        ),
+        "dry_severe_wind": (
+            base.replace("💨 5 м/с", "💨 9 м/с • порывы до 17.5 м/с") + "Преимущественно сухо.\n",
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+        ),
+    }
+
+    from PIL import Image
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name, (message, expected) in scenarios.items():
+            output = root / f"{name}.png"
+            metadata = render_kld_informative_cover(
+                message,
+                post_type="evening",
+                output_path=output,
+            )
+            weather = metadata["weather"]
+            assert all(
+                flag in weather
+                for flag in (
+                    "explicit_storm",
+                    "actual_precipitation",
+                    "rain",
+                    "drizzle",
+                    "snow",
+                    "thunderstorm",
+                    "strong_wind",
+                )
+            )
+            for flag, value in expected.items():
+                assert weather[flag] is value, (name, flag, weather)
+
+            rain_expected = expected["rain"]
+            storm_expected = expected["explicit_storm"]
+            assert metadata["rain_graphics"] is rain_expected, name
+            assert metadata["lightning_graphics"] is storm_expected, name
+            assert bool(metadata["graphics"]["rain_lines"]) is rain_expected, name
+            assert bool(metadata["graphics"]["lightning_line"]) is storm_expected, name
+
+            with Image.open(output) as image:
+                assert image.size == (1080, 1080)
+                embedded_weather = json.loads(image.info["weather_flags"])
+                embedded_graphics = json.loads(image.info["graphics"])
+                assert embedded_weather["explicit_storm"] is storm_expected, name
+                assert embedded_weather["rain"] is rain_expected, name
+                assert image.info["actual_precipitation"] == str(expected["actual_precipitation"]).lower()
+                assert image.info["rain_graphics"] == str(rain_expected).lower()
+                assert image.info["lightning_graphics"] == str(storm_expected).lower()
+                crop = image.crop((0, 590, 1080, 850))
+                pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
+                pixels = list(pixel_source())
+                rain_pixels = pixels.count(tuple(embedded_graphics["rain_color"]))
+                lightning_pixels = pixels.count(tuple(embedded_graphics["lightning_color"]))
+                assert (rain_pixels > 0) is rain_expected, (name, rain_pixels)
+                assert (lightning_pixels > 0) is storm_expected, (name, lightning_pixels)
+
+            if name == "dry_storm":
+                assert weather["strong_wind"] is True
+                assert metadata["facts"][0] == "ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ"
+            if name == "dry_severe_wind":
+                assert weather["strong_wind"] is True
+                assert metadata["graphics"]["wind_arcs"]
+            if name == "rain_without_storm":
+                assert metadata["facts"][0] == "ДОЖДЬ МЕСТАМИ"
+
+
 TESTS = [
     pollinations_failure_uses_cover_and_text_once,
     exact_duplicates_are_nonfatal_and_text_once,
@@ -396,6 +515,7 @@ TESTS = [
     morning_uses_same_nonblocking_image_behavior,
     visibility_sidecar_actuals_and_safe_fallback,
     local_cover_is_png_1080_and_weather_factual,
+    storm_and_precipitation_truth_are_independent,
 ]
 
 
