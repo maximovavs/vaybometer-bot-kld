@@ -566,6 +566,16 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
             rain_expected = expected["rain"]
             drizzle_expected = expected["drizzle"] and not rain_expected
             snow_expected = expected["snow"]
+            if snow_expected:
+                display_expected = "snow"
+            elif rain_expected:
+                display_expected = "rain"
+            elif drizzle_expected:
+                display_expected = "drizzle"
+            else:
+                display_expected = "none"
+            assert weather["precipitation_display"] == display_expected, name
+            assert metadata["precipitation_display"] == display_expected, name
             assert metadata["rain_graphics"] is rain_expected, name
             assert metadata["drizzle_graphics"] is drizzle_expected, name
             assert metadata["snow_graphics"] is snow_expected, name
@@ -579,6 +589,8 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
                 assert image.info["rain_graphics"] == str(rain_expected).lower(), name
                 assert image.info["drizzle_graphics"] == str(drizzle_expected).lower(), name
                 assert image.info["snow_graphics"] == str(snow_expected).lower(), name
+                assert image.info["precipitation_display"] == display_expected, name
+                assert embedded_graphics["precipitation_display"] == display_expected, name
 
                 crop = image.crop((0, 590, 1080, 850))
                 pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
@@ -598,6 +610,95 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
                 assert metadata["facts"][0] == "СНЕГ МЕСТАМИ"
 
 
+def mixed_regional_precipitation_keeps_text_and_graphics_aligned() -> None:
+    base = """<b>🌅 Калининградская область завтра (23.07.2026)</b>
+🏙 Калининград — 18/12 °C • ☁️ облачно • 💨 5 м/с
+"""
+    scenarios = {
+        "mixed_regional_rain_drizzle": (
+            base
+            + "Светлогорск — 16/12 °C • 🌦 морось\n"
+            + "Пионерский — 16/12 °C • 🌦 морось\n"
+            + "Мамоново — 19/13 °C • 🌧 дождь\n",
+            {"rain": True, "drizzle": True, "snow": False},
+            "rain_and_drizzle",
+            "ДОЖДЬ И МОРОСЬ МЕСТАМИ",
+            (True, False, False),
+        ),
+        "drizzle_only": (
+            base + "Светлогорск — 16/12 °C • 🌦 морось\n",
+            {"rain": False, "drizzle": True, "snow": False},
+            "drizzle",
+            "МОРОСЬ МЕСТАМИ",
+            (False, True, False),
+        ),
+        "rain_only": (
+            base + "Мамоново — 19/13 °C • 🌧 дождь\n",
+            {"rain": True, "drizzle": False, "snow": False},
+            "rain",
+            "ДОЖДЬ МЕСТАМИ",
+            (True, False, False),
+        ),
+        "snow_and_rain": (
+            base + "Черняховск — 2/-1 °C • ❄ снег\nМамоново — 3/0 °C • 🌧 дождь\n",
+            {"rain": True, "drizzle": False, "snow": True},
+            "mixed_snow_rain",
+            "СНЕГ И ДОЖДЬ МЕСТАМИ",
+            (True, False, True),
+        ),
+        "snow_and_drizzle": (
+            base + "Черняховск — 2/-1 °C • ❄ снег\nСветлогорск — 3/0 °C • 🌦 морось\n",
+            {"rain": False, "drizzle": True, "snow": True},
+            "snow_and_drizzle",
+            "СНЕГ И МОРОСЬ МЕСТАМИ",
+            (False, True, True),
+        ),
+        "snow_only": (
+            base + "Черняховск — 2/-1 °C • ❄ снег\n",
+            {"rain": False, "drizzle": False, "snow": True},
+            "snow",
+            "СНЕГ МЕСТАМИ",
+            (False, False, True),
+        ),
+    }
+
+    from PIL import Image
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name, (message, expected_flags, display, fact, expected_graphics) in scenarios.items():
+            output = root / f"{name}.png"
+            metadata = render_kld_informative_cover(message, post_type="evening", output_path=output)
+            weather = metadata["weather"]
+            assert weather["actual_precipitation"] is True, name
+            for flag, value in expected_flags.items():
+                assert weather[flag] is value, (name, flag, weather)
+            assert weather["precipitation_display"] == display, name
+            assert metadata["precipitation_display"] == display, name
+            assert metadata["facts"][0] == fact, (name, metadata["facts"])
+
+            rain_graphics, drizzle_graphics, snow_graphics = expected_graphics
+            assert metadata["rain_graphics"] is rain_graphics, name
+            assert metadata["drizzle_graphics"] is drizzle_graphics, name
+            assert metadata["snow_graphics"] is snow_graphics, name
+
+            with Image.open(output) as image:
+                embedded_weather = json.loads(image.info["weather_flags"])
+                embedded_graphics = json.loads(image.info["graphics"])
+                assert image.info["precipitation_display"] == display, name
+                assert embedded_weather["precipitation_display"] == display, name
+                assert embedded_graphics["precipitation_display"] == display, name
+                crop = image.crop((0, 590, 1080, 850))
+                pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
+                pixels = list(pixel_source())
+                rain_pixels = pixels.count(tuple(embedded_graphics["rain_color"]))
+                drizzle_pixels = pixels.count(tuple(embedded_graphics["drizzle_color"]))
+                snow_pixels = pixels.count(tuple(embedded_graphics["snow_color"]))
+                assert (rain_pixels > 0) is rain_graphics, (name, rain_pixels)
+                assert (drizzle_pixels > 0) is drizzle_graphics, (name, drizzle_pixels)
+                assert (snow_pixels > 0) is snow_graphics, (name, snow_pixels)
+
+
 TESTS = [
     pollinations_failure_uses_cover_and_text_once,
     exact_duplicates_are_nonfatal_and_text_once,
@@ -611,6 +712,7 @@ TESTS = [
     local_cover_is_png_1080_and_weather_factual,
     storm_and_precipitation_truth_are_independent,
     drizzle_rain_and_snow_icons_keep_factual_intensity,
+    mixed_regional_precipitation_keeps_text_and_graphics_aligned,
 ]
 
 

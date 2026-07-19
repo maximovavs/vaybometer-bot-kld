@@ -145,6 +145,28 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
     }
 
 
+def _precipitation_display(factual: Mapping[str, bool]) -> str:
+    """Resolve one deterministic presentation without changing factual truth flags."""
+    rain = bool(factual.get("rain"))
+    drizzle = bool(factual.get("drizzle"))
+    snow = bool(factual.get("snow"))
+    if snow and rain:
+        return "mixed_snow_rain"
+    if snow and drizzle:
+        return "snow_and_drizzle"
+    if snow:
+        return "snow"
+    if rain and drizzle:
+        return "rain_and_drizzle"
+    if rain:
+        return "rain"
+    if drizzle:
+        return "drizzle"
+    if factual.get("actual_precipitation"):
+        return "precipitation"
+    return "none"
+
+
 def _weather_flags(
     message: str,
     visibility_context: Mapping[str, Any] | None,
@@ -187,6 +209,7 @@ def _weather_flags(
         "weather_main": weather_main,
         "storm": factual["explicit_storm"],
         **factual,
+        "precipitation_display": _precipitation_display(factual),
         "fog": fog,
         "dust_haze": dust,
         "mixed_visibility": mixed,
@@ -222,14 +245,17 @@ def extract_kld_cover_facts(
     facts: list[str] = []
     if flags["explicit_storm"]:
         facts.append("ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ")
-    elif flags["snow"]:
-        facts.append("СНЕГ МЕСТАМИ")
-    elif flags["drizzle"]:
-        facts.append("МОРОСЬ МЕСТАМИ")
-    elif flags["rain"]:
-        facts.append("ДОЖДЬ МЕСТАМИ")
-    elif flags["actual_precipitation"]:
-        facts.append("ОСАДКИ МЕСТАМИ")
+    elif flags["precipitation_display"] != "none":
+        precipitation_facts = {
+            "drizzle": "МОРОСЬ МЕСТАМИ",
+            "rain": "ДОЖДЬ МЕСТАМИ",
+            "rain_and_drizzle": "ДОЖДЬ И МОРОСЬ МЕСТАМИ",
+            "snow": "СНЕГ МЕСТАМИ",
+            "snow_and_drizzle": "СНЕГ И МОРОСЬ МЕСТАМИ",
+            "mixed_snow_rain": "СНЕГ И ДОЖДЬ МЕСТАМИ",
+            "precipitation": "ОСАДКИ МЕСТАМИ",
+        }
+        facts.append(precipitation_facts[str(flags["precipitation_display"])])
     elif flags["fog"]:
         facts.append("ТУМАН УТРОМ")
     elif flags["dust_haze"]:
@@ -305,7 +331,12 @@ def _palette(metadata: Mapping[str, Any]) -> tuple[tuple[int, int, int], tuple[i
     weather = metadata["weather"]
     if weather["explicit_storm"]:
         return (32, 46, 59), (73, 91, 105), (190, 204, 211)
-    if weather["actual_precipitation"]:
+    precipitation_display = weather["precipitation_display"]
+    if precipitation_display in {"snow", "snow_and_drizzle"}:
+        return (126, 151, 165), (181, 198, 205), (232, 235, 229)
+    if precipitation_display == "drizzle":
+        return (105, 133, 149), (157, 178, 188), (224, 230, 229)
+    if precipitation_display != "none":
         return (80, 105, 122), (134, 154, 166), (220, 229, 233)
     if weather["fog"] or weather["mixed_visibility"]:
         return (184, 190, 190), (216, 220, 216), (240, 239, 229)
@@ -331,20 +362,21 @@ def _draw_weather_graphics(
     snow_dots: list[tuple[int, int, int, int]] = []
     lightning_line: tuple[tuple[int, int], ...] = ()
     wind_arcs: list[tuple[int, int, int, int]] = []
+    precipitation_display = str(weather["precipitation_display"])
 
-    if weather["rain"]:
+    if precipitation_display in {"rain", "rain_and_drizzle", "mixed_snow_rain"}:
         for x in range(30, width, 65):
             y = 610 + (x % 130)
             segment = (x, y, x - 24, y + 90)
             rain_lines.append(segment)
             draw.line(segment, fill=rain_color, width=3)
-    elif weather["drizzle"]:
+    elif precipitation_display in {"drizzle", "snow_and_drizzle"}:
         for x in range(70, width, 125):
             y = 625 + (x % 95)
             segment = (x, y, x - 6, y + 24)
             drizzle_lines.append(segment)
             draw.line(segment, fill=drizzle_color, width=1)
-    if weather["snow"]:
+    if precipitation_display in {"snow", "snow_and_drizzle", "mixed_snow_rain"}:
         for x in range(55, width, 115):
             y = 615 + (x % 155)
             dot = (x - 3, y - 3, x + 3, y + 3)
@@ -360,6 +392,7 @@ def _draw_weather_graphics(
             draw.arc(arc, 180, 350, fill=wind_color, width=4)
 
     return {
+        "precipitation_display": precipitation_display,
         "rain_lines": rain_lines,
         "rain_color": rain_color,
         "drizzle_lines": drizzle_lines,
@@ -433,6 +466,7 @@ def render_kld_informative_cover(
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")
     metadata["graphics"] = graphics
+    metadata["precipitation_display"] = weather["precipitation_display"]
     metadata["rain_graphics"] = bool(graphics["rain_lines"])
     metadata["drizzle_graphics"] = bool(graphics["drizzle_lines"])
     metadata["snow_graphics"] = bool(graphics["snow_dots"])
@@ -443,6 +477,7 @@ def render_kld_informative_cover(
     png_info.add_text("graphics", json.dumps(graphics, ensure_ascii=False, sort_keys=True))
     png_info.add_text("explicit_storm", str(bool(weather["explicit_storm"])).lower())
     png_info.add_text("actual_precipitation", str(bool(weather["actual_precipitation"])).lower())
+    png_info.add_text("precipitation_display", str(weather["precipitation_display"]))
     png_info.add_text("rain_graphics", str(metadata["rain_graphics"]).lower())
     png_info.add_text("drizzle_graphics", str(metadata["drizzle_graphics"]).lower())
     png_info.add_text("snow_graphics", str(metadata["snow_graphics"]).lower())
