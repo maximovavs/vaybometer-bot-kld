@@ -504,6 +504,100 @@ def storm_and_precipitation_truth_are_independent() -> None:
                 assert metadata["facts"][0] == "ДОЖДЬ МЕСТАМИ"
 
 
+def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
+    base = """<b>🌅 Калининградская область завтра (22.07.2026)</b>
+🏙 Калининград — 19/13 °C • ☁️ облачно • 💨 4 м/с
+#Калининград #погода
+"""
+    scenarios = {
+        "production_drizzle_icon": (
+            base.replace("☁️ облачно", "🌦 морось"),
+            {"actual_precipitation": True, "rain": False, "drizzle": True, "snow": False},
+        ),
+        "drizzle_word_only": (
+            base.replace("☁️ облачно", "морось"),
+            {"actual_precipitation": True, "rain": False, "drizzle": True, "snow": False},
+        ),
+        "rain_icon_and_word": (
+            base.replace("☁️ облачно", "🌧 дождь"),
+            {"actual_precipitation": True, "rain": True, "drizzle": False, "snow": False},
+        ),
+        "showers_icon_and_rain_word": (
+            base.replace("☁️ облачно", "🌦 дождь"),
+            {"actual_precipitation": True, "rain": True, "drizzle": False, "snow": False},
+        ),
+        "showers_icon_without_word": (
+            base.replace("☁️ облачно", "🌦"),
+            {"actual_precipitation": True, "rain": True, "drizzle": False, "snow": False},
+        ),
+        "uncertain_drizzle": (
+            base + "Морось возможна.\n",
+            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
+        ),
+        "negated_drizzle": (
+            base + "Морось не ожидается.\n",
+            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
+        ),
+        "editorial_drizzle": (
+            base + "⚠️ Главный нюанс: морось проверить утром.\n",
+            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
+        ),
+        "confirmed_snow": (
+            base.replace("☁️ облачно", "❄ снег"),
+            {"actual_precipitation": True, "rain": False, "drizzle": False, "snow": True},
+        ),
+        "uncertain_snow": (
+            base + "Снег возможен.\n",
+            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
+        ),
+    }
+
+    from PIL import Image
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name, (message, expected) in scenarios.items():
+            output = root / f"{name}.png"
+            metadata = render_kld_informative_cover(message, post_type="evening", output_path=output)
+            weather = metadata["weather"]
+            for flag, value in expected.items():
+                assert weather[flag] is value, (name, flag, weather)
+
+            rain_expected = expected["rain"]
+            drizzle_expected = expected["drizzle"] and not rain_expected
+            snow_expected = expected["snow"]
+            assert metadata["rain_graphics"] is rain_expected, name
+            assert metadata["drizzle_graphics"] is drizzle_expected, name
+            assert metadata["snow_graphics"] is snow_expected, name
+
+            with Image.open(output) as image:
+                embedded_weather = json.loads(image.info["weather_flags"])
+                embedded_graphics = json.loads(image.info["graphics"])
+                assert embedded_weather["rain"] is rain_expected, name
+                assert embedded_weather["drizzle"] is expected["drizzle"], name
+                assert embedded_weather["snow"] is snow_expected, name
+                assert image.info["rain_graphics"] == str(rain_expected).lower(), name
+                assert image.info["drizzle_graphics"] == str(drizzle_expected).lower(), name
+                assert image.info["snow_graphics"] == str(snow_expected).lower(), name
+
+                crop = image.crop((0, 590, 1080, 850))
+                pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
+                pixels = list(pixel_source())
+                rain_pixels = pixels.count(tuple(embedded_graphics["rain_color"]))
+                drizzle_pixels = pixels.count(tuple(embedded_graphics["drizzle_color"]))
+                snow_pixels = pixels.count(tuple(embedded_graphics["snow_color"]))
+                assert (rain_pixels > 0) is rain_expected, (name, rain_pixels)
+                assert (drizzle_pixels > 0) is drizzle_expected, (name, drizzle_pixels)
+                assert (snow_pixels > 0) is snow_expected, (name, snow_pixels)
+
+            if name == "production_drizzle_icon":
+                assert metadata["facts"][0] == "МОРОСЬ МЕСТАМИ"
+                assert metadata["graphics"]["drizzle_lines"]
+                assert not metadata["graphics"]["rain_lines"]
+            if name == "confirmed_snow":
+                assert metadata["facts"][0] == "СНЕГ МЕСТАМИ"
+
+
 TESTS = [
     pollinations_failure_uses_cover_and_text_once,
     exact_duplicates_are_nonfatal_and_text_once,
@@ -516,6 +610,7 @@ TESTS = [
     visibility_sidecar_actuals_and_safe_fallback,
     local_cover_is_png_1080_and_weather_factual,
     storm_and_precipitation_truth_are_independent,
+    drizzle_rain_and_snow_icons_keep_factual_intensity,
 ]
 
 

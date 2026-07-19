@@ -44,15 +44,22 @@ _STORM_RE = re.compile(r"(?:шторм\w*|⛈|гроз\w*)", re.IGNORECASE)
 _THUNDERSTORM_RE = re.compile(r"(?:⛈|гроз\w*)", re.IGNORECASE)
 _PRECIPITATION_NEGATION_RE = re.compile(
     r"(?:без\s+осадков|дожд\w*\s+не\s+ожида\w*|преимущественно\s+сух\w*|"
-    r"вероятност\w*\s+дожд\w*\s+низк\w*|осадк\w*\s+не\s+подтвержд\w*)",
+    r"вероятност\w*\s+дожд\w*\s+низк\w*|осадк\w*\s+не\s+подтвержд\w*|"
+    r"морос\w*\s+не\s+ожида\w*|без\s+морос\w*|"
+    r"вероятност\w*\s+морос\w*\s+низк\w*|морос\w*\s+не\s+подтвержд\w*|"
+    r"снег\w*\s+не\s+ожида\w*|без\s+снег\w*|"
+    r"вероятност\w*\s+снег\w*\s+низк\w*|снег\w*\s+не\s+подтвержд\w*)",
     re.IGNORECASE,
 )
 _PRECIPITATION_UNCERTAIN_RE = re.compile(
-    r"(?:вероятност\w*\s+(?:дожд|осад)\w*|"
-    r"(?:дожд|осад)\w*[^.!?\n]*(?:провер|уточн|возмож|вероятн|не\s+исключ))",
+    r"(?:вероятност\w*\s+(?:дожд|осад|морос|снег)\w*|"
+    r"(?:дожд|осад|морос|снег)\w*[^.!?\n]*"
+    r"(?:провер|уточн|возмож|вероятн|не\s+исключ))",
     re.IGNORECASE,
 )
-_RAIN_RE = re.compile(r"(?:🌧|🌦|дожд\w*|лив\w*)", re.IGNORECASE)
+_RAIN_WORD_RE = re.compile(r"(?:дожд\w*|лив\w*)", re.IGNORECASE)
+_RAIN_ICON_RE = re.compile(r"🌧")
+_SHOWERS_ICON_RE = re.compile(r"🌦")
 _DRIZZLE_RE = re.compile(r"морос\w*", re.IGNORECASE)
 _SNOW_RE = re.compile(r"(?:❄|снег\w*)", re.IGNORECASE)
 _PRECIPITATION_RE = re.compile(r"осад\w*", re.IGNORECASE)
@@ -114,9 +121,11 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
         if precipitation_negated or precipitation_uncertain:
             continue
 
-        line_rain = bool(_RAIN_RE.search(line))
         line_drizzle = bool(_DRIZZLE_RE.search(line))
         line_snow = bool(_SNOW_RE.search(line))
+        explicit_rain = bool(_RAIN_WORD_RE.search(line) or _RAIN_ICON_RE.search(line))
+        showers_icon = bool(_SHOWERS_ICON_RE.search(line))
+        line_rain = explicit_rain or (showers_icon and not line_drizzle and not line_snow)
         line_precipitation = bool(_PRECIPITATION_RE.search(line))
         rain = rain or line_rain
         drizzle = drizzle or line_drizzle
@@ -313,9 +322,13 @@ def _draw_weather_graphics(
 ) -> dict[str, Any]:
     """Draw visible factual motifs and return coordinates for pixel regressions."""
     rain_color = (203, 220, 228)
+    drizzle_color = (174, 211, 229)
+    snow_color = (248, 250, 252)
     lightning_color = (235, 226, 170)
     wind_color = (220, 230, 232)
     rain_lines: list[tuple[int, int, int, int]] = []
+    drizzle_lines: list[tuple[int, int, int, int]] = []
+    snow_dots: list[tuple[int, int, int, int]] = []
     lightning_line: tuple[tuple[int, int], ...] = ()
     wind_arcs: list[tuple[int, int, int, int]] = []
 
@@ -325,6 +338,18 @@ def _draw_weather_graphics(
             segment = (x, y, x - 24, y + 90)
             rain_lines.append(segment)
             draw.line(segment, fill=rain_color, width=3)
+    elif weather["drizzle"]:
+        for x in range(70, width, 125):
+            y = 625 + (x % 95)
+            segment = (x, y, x - 6, y + 24)
+            drizzle_lines.append(segment)
+            draw.line(segment, fill=drizzle_color, width=1)
+    if weather["snow"]:
+        for x in range(55, width, 115):
+            y = 615 + (x % 155)
+            dot = (x - 3, y - 3, x + 3, y + 3)
+            snow_dots.append(dot)
+            draw.ellipse(dot, fill=snow_color)
     if weather["explicit_storm"]:
         lightning_line = ((850, 615), (805, 710), (850, 700), (790, 825))
         draw.line(lightning_line, fill=lightning_color, width=8)
@@ -337,6 +362,10 @@ def _draw_weather_graphics(
     return {
         "rain_lines": rain_lines,
         "rain_color": rain_color,
+        "drizzle_lines": drizzle_lines,
+        "drizzle_color": drizzle_color,
+        "snow_dots": snow_dots,
+        "snow_color": snow_color,
         "lightning_line": lightning_line,
         "lightning_color": lightning_color,
         "wind_arcs": wind_arcs,
@@ -405,6 +434,8 @@ def render_kld_informative_cover(
     temporary = output.with_name(output.name + ".tmp")
     metadata["graphics"] = graphics
     metadata["rain_graphics"] = bool(graphics["rain_lines"])
+    metadata["drizzle_graphics"] = bool(graphics["drizzle_lines"])
+    metadata["snow_graphics"] = bool(graphics["snow_dots"])
     metadata["lightning_graphics"] = bool(graphics["lightning_line"])
     png_info = PngImagePlugin.PngInfo()
     png_info.add_text("renderer_version", RENDERER_VERSION)
@@ -413,6 +444,8 @@ def render_kld_informative_cover(
     png_info.add_text("explicit_storm", str(bool(weather["explicit_storm"])).lower())
     png_info.add_text("actual_precipitation", str(bool(weather["actual_precipitation"])).lower())
     png_info.add_text("rain_graphics", str(metadata["rain_graphics"]).lower())
+    png_info.add_text("drizzle_graphics", str(metadata["drizzle_graphics"]).lower())
+    png_info.add_text("snow_graphics", str(metadata["snow_graphics"]).lower())
     png_info.add_text("lightning_graphics", str(metadata["lightning_graphics"]).lower())
     image.save(temporary, format="PNG", optimize=True, pnginfo=png_info)
     temporary.replace(output)
