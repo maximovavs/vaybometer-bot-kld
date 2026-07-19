@@ -10,6 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DAILY = ROOT / ".github" / "workflows" / "daily_post_klg.yml"
 SAFE_TEST = ROOT / ".github" / "workflows" / "safe_test_post.yml"
+IMAGE_FIRST = ROOT / "kld_image_first.py"
+IMAGE_TOOL = ROOT / "tools" / "kld_visual_fixture_image.py"
 
 
 def _read(path: Path) -> str:
@@ -106,8 +108,39 @@ def test_image_first_visibility_sidecar_wiring() -> None:
             f"{name}_sidecar_written_before_image",
             block.index(sidecar_out) < block.index(sidecar_in),
         )
-        _assert(f"{name}_image_first_order_kept", block.index("Running") < block.index("extracted text after image"))
+        _assert(f"{name}_shared_orchestrator", "run_image_first_publication(" in block)
+        _assert(f"{name}_text_callback", "send_text=lambda text_path:" in block)
     print("PASS image_first_visibility_sidecar_wiring")
+
+
+def test_image_failure_is_nonblocking_and_diagnostics_are_always_uploaded() -> None:
+    text = _read(DAILY)
+    helper = _read(IMAGE_FIRST)
+    image_tool = _read(IMAGE_TOOL)
+    morning = _block(text, "  morning:", "  evening:")
+    evening = _block(text, "  evening:", "  noon_fx:")
+
+    _assert("no_image_check_true", "subprocess.run(img_cmd, check=True)" not in text)
+    _assert("shared_orchestrator_twice", text.count("run_image_first_publication(") == 2)
+    _assert("helper_runs_image_before_text", helper.index("run_process(list(image_cmd))") < helper.index("send_text(str(message_path))"))
+    _assert("helper_warns_and_continues", "KLD image unavailable; text publication continued" in helper)
+    _assert("text_failure_reraised", "text_error_type" in helper and "raise\n" in helper)
+    _assert("expected_duplicate_not_system_exit", "only exact duplicate candidates; refusing to send" not in image_tool)
+    _assert("structured_result", '"fallback_sent"' in image_tool and '"failed_nonfatal"' in image_tool)
+
+    for name, block in (("morning", morning), ("evening", evening)):
+        _assert(f"{name}_artifact_always", "if: always()" in block)
+        _assert(f"{name}_artifact_action", "uses: actions/upload-artifact@v4" in block)
+        for artifact in (
+            "image_result.json",
+            "image_prompt_metadata.json",
+            "safe_test_post_preview.log",
+            "format_v2_message.txt",
+            "format_v2_visibility_context.json",
+        ):
+            _assert(f"{name}_artifact_{artifact}", artifact in block)
+        _assert(f"{name}_no_secret_env_artifact", "env:" not in _block(block, "publication diagnostics"))
+    print("PASS image_failure_is_nonblocking_and_diagnostics_are_always_uploaded")
 
 
 def test_simulated_manual_morning_evening_history_chain() -> None:
@@ -156,6 +189,7 @@ TESTS = [
     test_safe_test_visual_history_cache_and_checkbox,
     test_evening_waits_for_morning_without_losing_dispatch_paths,
     test_image_first_visibility_sidecar_wiring,
+    test_image_failure_is_nonblocking_and_diagnostics_are_always_uploaded,
     test_simulated_manual_morning_evening_history_chain,
     test_pillow_is_bounded_dependency,
 ]

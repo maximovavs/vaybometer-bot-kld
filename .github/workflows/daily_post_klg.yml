@@ -179,6 +179,7 @@ jobs:
           import asyncio, os, runpy, sys, pendulum, subprocess
           from pathlib import Path
           from telegram import Bot, constants
+          from kld_image_first import run_image_first_publication
           from post_safety import split_telegram_text
 
           async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):
@@ -186,6 +187,7 @@ jobs:
               chunks = split_telegram_text(text)
               if not chunks:
                   raise SystemExit("Extracted FORMAT_V2 text is empty")
+              message_ids = []
               async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:
                   for idx, chunk in enumerate(chunks, start=1):
                       if add_test_label:
@@ -195,13 +197,15 @@ jobs:
                               else "<b>Test safe post</b>\n"
                           )
                           chunk = prefix + chunk
-                      await bot.send_message(
+                      message = await bot.send_message(
                           chat_id=int(chat_id),
                           text=chunk,
                           parse_mode=constants.ParseMode.HTML,
                           disable_web_page_preview=True,
                       )
-              print(f"KLD extracted text sent: chunks={len(chunks)}")
+                      if getattr(message, "message_id", None) is not None:
+                          message_ids.append(int(message.message_id))
+              return message_ids
 
           print("Morning post (for today)")
           wd = os.getenv("WORK_DATE")
@@ -251,19 +255,6 @@ jobs:
                   if wd:
                       preview_args += ["--date", wd]
                   preview_cmd = [sys.executable] + preview_args
-                  print("Building morning FORMAT_V2 for image-first mode:", " ".join(preview_cmd))
-                  preview = subprocess.run(preview_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                  print(preview.stdout, end="")
-                  Path("safe_test_post_preview.log").write_text(preview.stdout, encoding="utf-8")
-                  if preview.returncode != 0:
-                      raise SystemExit(preview.returncode)
-
-                  start = "===== FORMAT_V2 MESSAGE BEGIN ====="
-                  end = "===== FORMAT_V2 MESSAGE END ====="
-                  if start not in preview.stdout or end not in preview.stdout:
-                      raise SystemExit("FORMAT_V2 MESSAGE block not found; morning image generation skipped")
-                  block = preview.stdout.split(start)[-1].split(end)[0].strip()
-                  Path("format_v2_message.txt").write_text(block + "\n", encoding="utf-8")
 
                   caption = "Визуальный вайб сегодняшнего утра над Балтикой 🌊"
                   if to_test:
@@ -280,13 +271,18 @@ jobs:
                       "--chat-id", send_chat,
                       "--caption", caption,
                       "--history-namespace", history_namespace,
+                      "--result-file", "image_result.json",
+                      "--prompt-metadata-file", "image_prompt_metadata.json",
                   ]
-                  print("Running morning image send:", " ".join(img_cmd))
-                  subprocess.run(img_cmd, check=True)
-
                   add_test_label = to_test and not chat_override and not scheduled_run
-                  print("Sending morning extracted text after image...")
-                  asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))
+                  run_image_first_publication(
+                      mode="morning",
+                      preview_cmd=preview_cmd,
+                      image_cmd=img_cmd,
+                      send_text=lambda text_path: asyncio.run(
+                          send_extracted_text(send_chat, text_path, add_test_label)
+                      ),
+                  )
               else:
                   if image_enabled and not send_chat:
                       print("KLD_MORNING_IMG_ENABLED=1, но нет целевого chat_id — утренняя картинка пропущена.")
@@ -306,6 +302,20 @@ jobs:
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
+      - name: Upload KLD morning publication diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kld-morning-publication-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            image_result.json
+            image_prompt_metadata.json
+            safe_test_post_preview.log
+            format_v2_message.txt
+            format_v2_visibility_context.json
+            outputs/kld_local_informative_cover.png
 
   evening:
     name: Evening post (for tomorrow)
@@ -385,6 +395,7 @@ jobs:
           import asyncio, os, runpy, sys, pendulum, subprocess
           from pathlib import Path
           from telegram import Bot, constants
+          from kld_image_first import run_image_first_publication
           from post_safety import split_telegram_text
 
           async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):
@@ -392,6 +403,7 @@ jobs:
               chunks = split_telegram_text(text)
               if not chunks:
                   raise SystemExit("Extracted FORMAT_V2 text is empty")
+              message_ids = []
               async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:
                   for idx, chunk in enumerate(chunks, start=1):
                       if add_test_label:
@@ -401,13 +413,15 @@ jobs:
                               else "<b>Test safe post</b>\n"
                           )
                           chunk = prefix + chunk
-                      await bot.send_message(
+                      message = await bot.send_message(
                           chat_id=int(chat_id),
                           text=chunk,
                           parse_mode=constants.ParseMode.HTML,
                           disable_web_page_preview=True,
                       )
-              print(f"KLD extracted text sent: chunks={len(chunks)}")
+                      if getattr(message, "message_id", None) is not None:
+                          message_ids.append(int(message.message_id))
+              return message_ids
 
           print("Evening post (for tomorrow)")
           wd = os.getenv("WORK_DATE")
@@ -457,19 +471,6 @@ jobs:
                   if wd:
                       preview_args += ["--date", wd]
                   preview_cmd = [sys.executable] + preview_args
-                  print("Building evening FORMAT_V2 for image-first mode:", " ".join(preview_cmd))
-                  preview = subprocess.run(preview_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                  print(preview.stdout, end="")
-                  Path("safe_test_post_preview.log").write_text(preview.stdout, encoding="utf-8")
-                  if preview.returncode != 0:
-                      raise SystemExit(preview.returncode)
-
-                  start = "===== FORMAT_V2 MESSAGE BEGIN ====="
-                  end = "===== FORMAT_V2 MESSAGE END ====="
-                  if start not in preview.stdout or end not in preview.stdout:
-                      raise SystemExit("FORMAT_V2 MESSAGE block not found; image generation skipped")
-                  block = preview.stdout.split(start)[-1].split(end)[0].strip()
-                  Path("format_v2_message.txt").write_text(block + "\n", encoding="utf-8")
 
                   caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
                   if to_test:
@@ -485,13 +486,18 @@ jobs:
                       "--chat-id", send_chat,
                       "--caption", caption,
                       "--history-namespace", history_namespace,
+                      "--result-file", "image_result.json",
+                      "--prompt-metadata-file", "image_prompt_metadata.json",
                   ]
-                  print("Running image send:", " ".join(img_cmd))
-                  subprocess.run(img_cmd, check=True)
-
                   add_test_label = to_test and not chat_override and not scheduled_run
-                  print("Sending evening extracted text after image...")
-                  asyncio.run(send_extracted_text(send_chat, "format_v2_message.txt", add_test_label))
+                  run_image_first_publication(
+                      mode="evening",
+                      preview_cmd=preview_cmd,
+                      image_cmd=img_cmd,
+                      send_text=lambda text_path: asyncio.run(
+                          send_extracted_text(send_chat, text_path, add_test_label)
+                      ),
+                  )
               else:
                   if image_enabled and not send_chat:
                       print("KLD_IMG_ENABLED=1, но нет целевого chat_id — картинка пропущена.")
@@ -511,6 +517,20 @@ jobs:
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
+      - name: Upload KLD evening publication diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kld-evening-publication-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            image_result.json
+            image_prompt_metadata.json
+            safe_test_post_preview.log
+            format_v2_message.txt
+            format_v2_visibility_context.json
+            outputs/kld_local_informative_cover.png
 
   noon_fx:
     name: Noon FX only (12:00 MSK)
