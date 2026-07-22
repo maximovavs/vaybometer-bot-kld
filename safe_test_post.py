@@ -25,6 +25,11 @@ from visibility_context import (
     visibility_condition_from_text,
     visibility_reason,
 )
+from weather_text import STORM_GUST_MS
+from weather_text import clause_has_confirmed_storm as _line_has_confirmed_storm_word
+from weather_text import extract_max_gust_ms
+from weather_text import has_confirmed_storm_word as _has_confirmed_storm_word
+from weather_text import split_clauses as _split_storm_clauses
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -375,21 +380,21 @@ def _kld_evening_score_line(v2_text: str) -> str:
     text = _plain(v2_text)
     low = text.lower()
     temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
-    gusts = _numbers(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", text)
     max_t = max(temps) if temps else None
-    max_gust = max(gusts) if gusts else None
+    # storm gust via the single shared parser: only "порыв …", never avg wind.
+    max_gust = extract_max_gust_ms(text)
     visibility = visibility_condition_from_text(text)
     score = 10.0
     reasons: list[str] = []
 
-    has_warning = "шторм" in low or (isinstance(max_gust, (int, float)) and max_gust >= 15)
+    has_warning = _has_confirmed_storm_word(text) or (isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS)
     has_precip = _has_actual_precipitation(text)
     if has_warning:
         score -= 1.8
     if has_precip:
         score -= 1.1
     if isinstance(max_gust, (int, float)):
-        if max_gust >= 15:
+        if max_gust >= STORM_GUST_MS:
             score -= 1.4
         elif max_gust >= 10:
             score -= 1.0; reasons.append("порывы")
@@ -411,7 +416,7 @@ def _kld_evening_score_line(v2_text: str) -> str:
 
     score = max(1.0, min(10.0, score))
     label = _score_label(score)
-    if has_warning or (isinstance(max_gust, (int, float)) and max_gust >= 15):
+    if has_warning or (isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS):
         if has_precip:
             return f"✨ VayboMeter завтра: {score:.1f}/10 — неустойчивый день: локальные осадки и штормовые порывы."
         return f"✨ VayboMeter завтра: {score:.1f}/10 — день с повышенной осторожностью: штормовые порывы."
@@ -543,8 +548,10 @@ def _kld_reason_conclusion(score: float, reasons: str, v2_text: str) -> str:
     precip = any(x in low for x in ("осадки", "дожд", "морось"))
     cool = any(x in low for x in ("прохлад", "свеж"))
     wind = any(x in low for x in ("порыв", "ветер"))
-    gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", v2_text)
-    warning = "шторм" in low or (gusts and max(gusts) >= 15)
+    max_gust = extract_max_gust_ms(v2_text)
+    warning = _has_confirmed_storm_word(_plain(v2_text)) or (
+        isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS
+    )
     if warning:
         return "День лучше вести с запасным планом: сверить предупреждения утром, у воды не рисковать и держать короткие маршруты."
     if precip and cool and wind:
@@ -718,14 +725,26 @@ def _is_kld_nuance_line(line: str) -> bool:
     return line.strip().startswith(("⚠️ Нюанс:", "⚠️ Главный нюанс:"))
 
 
+# A bare "порыв" substring matched any wind-related nuance line (e.g. "на побережье
+# ощущение меняют порывы"), so a plain 7-9 м/с wind day got its nuance rewritten into
+# "⚠️ Штормовое предупреждение: ...". Promotion now requires either a genuine
+# (non-negated) "шторм" mention or an actual >=STORM_GUST_MS м/с gust value in the
+# line/text. Word/negation detection is shared (weather_text.py) across
+# format_v2.py, safe_test_post.py and post_kld.py so the three don't drift into
+# separate regex contracts again.
+def _line_signals_confirmed_storm(line: str) -> bool:
+    if any(_line_has_confirmed_storm_word(clause) for clause in _split_storm_clauses(line)):
+        return True
+    max_gust = extract_max_gust_ms(line)
+    return isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS
+
+
 def _storm_score_replacement(line: str, full_text: str) -> str:
     if "VayboMeter" not in line or "/10" not in line:
         return line
     plain = _plain(full_text)
-    gusts = _numbers(r"порывы\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)", plain)
-    max_gust = max(gusts) if gusts else None
-    low = plain.lower()
-    if not ("шторм" in low or (isinstance(max_gust, (int, float)) and max_gust >= 15)):
+    max_gust = extract_max_gust_ms(plain)
+    if not (_has_confirmed_storm_word(plain) or (isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS)):
         return line
     replacement = (
         "— неустойчивый день: локальные осадки и штормовые порывы."
@@ -737,9 +756,9 @@ def _storm_score_replacement(line: str, full_text: str) -> str:
 
 def _storm_warning_replacement(line: str) -> str:
     s = _plain(line)
-    gusts = _numbers(r"порыв\w*\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)\s*м/с", s)
-    if gusts:
-        return f"⚠️ Штормовое предупреждение: порывы до {_fmt_num(max(gusts))} м/с."
+    max_gust = extract_max_gust_ms(s)
+    if max_gust is not None:
+        return f"⚠️ Штормовое предупреждение: порывы до {_fmt_num(max_gust)} м/с."
     detail = re.sub(r"^⚠️?\s*", "", s).strip()
     detail = re.sub(r"^(?:Предупреждение|Штормовое(?:\s+предупреждение)?)\s*:?\s*", "", detail, flags=re.I).strip(" .")
     if not detail:
@@ -809,7 +828,7 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
         stripped = line.strip()
         if skip_next_specific_warning:
             skip_next_specific_warning = False
-            if "шторм" in stripped.lower() or "порыв" in stripped.lower():
+            if _line_signals_confirmed_storm(stripped):
                 out.append(_storm_warning_replacement(stripped))
                 continue
         if has_compact_nuance and stripped.startswith("⚠️ Главный нюанс:"):
@@ -817,7 +836,7 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
         if stripped == "⚠️ <b>Предупреждение</b>" or stripped == "⚠️ Предупреждение":
             skip_next_specific_warning = True
             continue
-        if stripped.startswith("⚠️") and ("шторм" in stripped.lower() or "порыв" in stripped.lower()):
+        if stripped.startswith("⚠️") and _line_signals_confirmed_storm(stripped):
             normalized = _storm_warning_replacement(stripped)
             if normalized not in out:
                 out.append(normalized)

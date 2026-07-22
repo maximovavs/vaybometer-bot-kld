@@ -9,6 +9,10 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
+import weather_text
+from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_storm
+from weather_text import split_clauses as _split_clauses
+
 
 RENDERER_VERSION = "kld_local_informative_cover_v1"
 _NUMBER = r"-?\d+(?:[.,]\d+)?"
@@ -28,35 +32,96 @@ _EDITORIAL_LINE_RE = re.compile(
     r"(?:\s+[^:]{1,32})?\s*:",
     re.IGNORECASE,
 )
-_STORM_NEGATION_RE = re.compile(
-    r"(?:штормов\w*\s+предупрежден\w*\s+нет|"
-    r"шторм\w*\s+не\s+ожида\w*|без\s+шторма|"
-    r"риск\s+шторма\s+низк\w*|шторм\w*\s+не\s+подтвержд\w*|"
-    r"гроз\w*\s+не\s+ожида\w*)",
+# "шторм" word/negation/uncertainty detection is shared with format_v2.py,
+# safe_test_post.py and post_kld.py via weather_text.clause_has_confirmed_storm,
+# so all four use one contract. "гроза" (thunderstorm) is a separate concept
+# only this module tracks; it is evaluated independently of "шторм" (a negated
+# storm must not cancel a confirmed thunderstorm in the same/other clause, and
+# vice versa) using the same bounded-gap, actor-vs-cancellation discipline and
+# the same two gap directions as precipitation (a cue-before-term gap must not
+# cross a comma, so "Шторм возможен, гроза ожидается." keeps the thunderstorm).
+_THUNDERSTORM_GAP_AFTER = r"(?:(?!гроз\w*)[^.!?\n]){0,40}?"
+_THUNDERSTORM_GAP_BEFORE = r"(?:(?!гроз\w*)[^.!?\n,]){0,40}?"
+_THUNDERSTORM_NEGATION_RE = re.compile(
+    rf"гроз\w*{_THUNDERSTORM_GAP_AFTER}\b(?:не\s+(?:ожида\w*|будет|прогнозир\w*|предвид\w*|подтвержд\w*)|"
+    r"маловероят\w*|исключ(?:ён\w*|ен[аоы]\w*))|"
+    r"без\s+гроз\w*|"
+    rf"(?:риск|вероятност\w*){_THUNDERSTORM_GAP_BEFORE}\bгроз\w*{_THUNDERSTORM_GAP_AFTER}"
+    rf"\b(?:низк\w*|невысок\w*|минимал\w*|отсутств\w*)",
     re.IGNORECASE,
 )
-_STORM_UNCERTAIN_RE = re.compile(
-    r"(?:риск|вероятност\w*)\s+(?:шторма|гроз\w*)|"
-    r"(?:шторм|гроз)\w*[^.!?\n]*(?:провер|уточн|возмож|вероятн|не\s+исключ)",
+_THUNDERSTORM_UNCERTAIN_RE = re.compile(
+    rf"гроз\w*{_THUNDERSTORM_GAP_AFTER}\b(?:провер\w*|уточн\w*|возмож\w*|вероятн\w*|не\s+исключ\w*|сохраня\w*)|"
+    rf"(?:возмож\w*|вероятност\w*|риск){_THUNDERSTORM_GAP_BEFORE}\bгроз\w*",
     re.IGNORECASE,
 )
-_STORM_RE = re.compile(r"(?:шторм\w*|⛈|гроз\w*)", re.IGNORECASE)
-_THUNDERSTORM_RE = re.compile(r"(?:⛈|гроз\w*)", re.IGNORECASE)
-_PRECIPITATION_NEGATION_RE = re.compile(
-    r"(?:без\s+осадков|дожд\w*\s+не\s+ожида\w*|преимущественно\s+сух\w*|"
-    r"вероятност\w*\s+дожд\w*\s+низк\w*|осадк\w*\s+не\s+подтвержд\w*|"
-    r"морос\w*\s+не\s+ожида\w*|без\s+морос\w*|"
-    r"вероятност\w*\s+морос\w*\s+низк\w*|морос\w*\s+не\s+подтвержд\w*|"
-    r"снег\w*\s+не\s+ожида\w*|без\s+снег\w*|"
-    r"вероятност\w*\s+снег\w*\s+низк\w*|снег\w*\s+не\s+подтвержд\w*)",
-    re.IGNORECASE,
-)
-_PRECIPITATION_UNCERTAIN_RE = re.compile(
-    r"(?:вероятност\w*\s+(?:дожд|осад|морос|снег)\w*|"
-    r"(?:дожд|осад|морос|снег)\w*[^.!?\n]*"
-    r"(?:провер|уточн|возмож|вероятн|не\s+исключ))",
-    re.IGNORECASE,
-)
+_THUNDERSTORM_WORD_RE = re.compile(r"гроз\w*", re.IGNORECASE)
+_THUNDERSTORM_ICON_RE = re.compile(r"⛈")
+
+# Independent per-type evidence/negation/uncertainty for precipitation: a single
+# global "any negation anywhere in the clause -> drop everything" check used to
+# make "Дождь будет, снега не будет." lose the real rain along with the negated
+# snow. Each type (rain, drizzle, snow, generic precipitation) now has its own
+# regexes, and the term<->cue gap is walled off from the *other* types' stems.
+# Two gap directions:
+#  - term-first ("снега ... не будет"): the cue follows the term, so the gap may
+#    cross commas (parenthetical modifiers: "снега, скорее всего, не будет").
+#  - cue-first ("возможна морось", "риск дождя"): the cue precedes the term, so
+#    the gap must NOT cross a comma, or the cue would bind to a following type
+#    ("Дождь возможен, снег ожидается." must keep snow confirmed).
+# Negation uses the passive participle "исключён/исключена" (fact removed), not
+# a bare "исключ\w*", so the active verb "исключил" ("Снег исключил движение.")
+# stays a confirmation.
+_NEGATION_SUFFIX = r"не\s+(?:ожида\w*|будет|прогнозир\w*|предвид\w*|подтвержд\w*)|маловероят\w*|исключ(?:ён\w*|ен[аоы]\w*)"
+_UNCERTAIN_SUFFIX_AFTER = r"провер\w*|уточн\w*|возмож\w*|вероятн\w*|не\s+исключ\w*|сохраня\w*"
+_PRECIP_GROUP_STEMS = {
+    "rain": ("дожд", "лив"),
+    "drizzle": ("морос",),
+    "snow": ("снег",),
+    "precipitation": ("осадк",),
+}
+
+
+def _precip_gap(group_key: str, *, block_comma: bool, max_len: int = 40) -> str:
+    other_stems = [
+        stem
+        for key, stems in _PRECIP_GROUP_STEMS.items()
+        if key != group_key
+        for stem in stems
+    ]
+    char_class = r"[^.!?\n,]" if block_comma else r"[^.!?\n]"
+    if other_stems:
+        forbidden = "|".join(rf"{stem}\w*" for stem in other_stems)
+        return rf"(?:(?!{forbidden}){char_class}){{0,{max_len}}}?"
+    return rf"{char_class}{{0,{max_len}}}?"
+
+
+def _build_precip_negation_uncertain() -> tuple[dict[str, re.Pattern[str]], dict[str, re.Pattern[str]]]:
+    negation_by_group: dict[str, re.Pattern[str]] = {}
+    uncertain_by_group: dict[str, re.Pattern[str]] = {}
+    for group_key, stems in _PRECIP_GROUP_STEMS.items():
+        gap_after = _precip_gap(group_key, block_comma=False)   # term ... cue
+        gap_before = _precip_gap(group_key, block_comma=True)   # cue ... term
+        negation_parts: list[str] = []
+        uncertain_parts: list[str] = []
+        for stem in stems:
+            negation_parts.append(rf"без\s+{stem}\w*")
+            negation_parts.append(rf"{stem}\w*{gap_after}\b(?:{_NEGATION_SUFFIX})")
+            negation_parts.append(
+                rf"(?:риск|вероятност\w*){gap_before}\b{stem}\w*{gap_after}"
+                rf"\b(?:низк\w*|невысок\w*|минимал\w*|отсутств\w*)"
+            )
+            uncertain_parts.append(rf"{stem}\w*{gap_after}\b(?:{_UNCERTAIN_SUFFIX_AFTER})")
+            uncertain_parts.append(rf"(?:возмож\w*|вероятност\w*){gap_before}\b{stem}\w*")
+        if group_key == "rain":
+            negation_parts.append(r"преимущественно\s+сух\w*")
+        negation_by_group[group_key] = re.compile("|".join(negation_parts), re.IGNORECASE)
+        uncertain_by_group[group_key] = re.compile("|".join(uncertain_parts), re.IGNORECASE)
+    return negation_by_group, uncertain_by_group
+
+
+_PRECIP_NEGATION_RE_BY_GROUP, _PRECIP_UNCERTAIN_RE_BY_GROUP = _build_precip_negation_uncertain()
+
 _RAIN_WORD_RE = re.compile(r"(?:дожд\w*|лив\w*)", re.IGNORECASE)
 _RAIN_ICON_RE = re.compile(r"🌧")
 _SHOWERS_ICON_RE = re.compile(r"🌦")
@@ -64,6 +129,30 @@ _DRIZZLE_RE = re.compile(r"морос\w*", re.IGNORECASE)
 _SNOW_RE = re.compile(r"(?:❄|снег\w*)", re.IGNORECASE)
 _PRECIPITATION_RE = re.compile(r"осад\w*", re.IGNORECASE)
 _STRONG_WIND_RE = re.compile(r"(?:сильн\w*\s+ветер|штормов\w*\s+ветер)", re.IGNORECASE)
+
+
+def _thunderstorm_confirmed(clause: str) -> bool:
+    """Thunderstorm evidence, evaluated independently of "шторм".
+
+    The ⛈ emoji is an unambiguous fact; the word "гроза" is confirmed only
+    when it is neither negated ("Грозы не будет.") nor hedged ("гроза
+    возможна", "риск грозы")."""
+    low = clause.lower()
+    if _THUNDERSTORM_ICON_RE.search(clause):
+        return True
+    if not _THUNDERSTORM_WORD_RE.search(low):
+        return False
+    return not _THUNDERSTORM_NEGATION_RE.search(low) and not _THUNDERSTORM_UNCERTAIN_RE.search(low)
+
+
+def _precip_group_confirmed(group_key: str, clause: str, *, has_evidence: bool) -> bool:
+    if not has_evidence:
+        return False
+    if _PRECIP_NEGATION_RE_BY_GROUP[group_key].search(clause):
+        return False
+    if _PRECIP_UNCERTAIN_RE_BY_GROUP[group_key].search(clause):
+        return False
+    return True
 
 
 def _number(value: object) -> float | None:
@@ -97,43 +186,79 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
     snow = False
     thunderstorm = False
     strong_wind = False
+    max_gust: float | None = None
 
     for raw_line in message.splitlines():
         line = _HTML_TAG_RE.sub("", raw_line).strip().lower()
         if not line or _EDITORIAL_LINE_RE.match(line):
             continue
 
-        gust_match = _GUST_RE.search(line)
-        gust = _number(gust_match.group(1)) if gust_match else None
+        # Gust value via the single shared parser (weather_text), counting only
+        # "порыв …" — never average wind — so storm_gust below matches the other
+        # layers exactly.
+        gust = weather_text.extract_max_gust_ms(line)
+        if gust is not None:
+            max_gust = gust if max_gust is None else max(max_gust, gust)
+        # strong_wind is a softer "notable wind" cue (>=12 м/с) and can begin
+        # well below the storm threshold — it must never stand in for
+        # storm_gust, which is a strict >=STORM_GUST_MS test derived below.
         if (gust is not None and gust >= 12) or _STRONG_WIND_RE.search(line):
             strong_wind = True
 
-        storm_negated = bool(_STORM_NEGATION_RE.search(line))
-        storm_uncertain = bool(_STORM_UNCERTAIN_RE.search(line))
-        if not storm_negated and not storm_uncertain:
-            if _STORM_RE.search(line):
+        # Split into clauses (sentence punctuation, or ", но"/", а" joining two
+        # independent statements) so a negation in one clause ("Шторма не будет
+        # утром.", "Снега не будет утром.") cannot cancel a genuine confirmation
+        # in a different clause on the same line ("Вечером ожидается шторм.").
+        for raw_clause in _split_clauses(line):
+            clause = raw_clause.strip()
+            if not clause:
+                continue
+
+            # Storm ("шторм") and thunderstorm ("гроза"/⛈) are strictly
+            # independent per clause: "Шторма не будет, гроза ожидается."
+            # confirms thunderstorm ONLY (explicit_storm stays False); "Грозы
+            # не будет, шторм ожидается." confirms the storm ONLY. Neither flag
+            # raises the other — the umbrella "either severe phenomenon" case
+            # is the separate derived `severe_weather` flag computed below.
+            if _clause_has_confirmed_storm(clause):
                 explicit_storm = True
-            if _THUNDERSTORM_RE.search(line):
+            if _thunderstorm_confirmed(clause):
                 thunderstorm = True
 
-        precipitation_negated = bool(_PRECIPITATION_NEGATION_RE.search(line))
-        precipitation_uncertain = bool(_PRECIPITATION_UNCERTAIN_RE.search(line))
-        if precipitation_negated or precipitation_uncertain:
-            continue
+            drizzle_evidence = bool(_DRIZZLE_RE.search(clause))
+            snow_evidence = bool(_SNOW_RE.search(clause))
+            explicit_rain_evidence = bool(_RAIN_WORD_RE.search(clause) or _RAIN_ICON_RE.search(clause))
+            showers_icon = bool(_SHOWERS_ICON_RE.search(clause))
+            rain_evidence = explicit_rain_evidence or (
+                showers_icon and not drizzle_evidence and not snow_evidence
+            )
+            precipitation_evidence = bool(_PRECIPITATION_RE.search(clause))
 
-        line_drizzle = bool(_DRIZZLE_RE.search(line))
-        line_snow = bool(_SNOW_RE.search(line))
-        explicit_rain = bool(_RAIN_WORD_RE.search(line) or _RAIN_ICON_RE.search(line))
-        showers_icon = bool(_SHOWERS_ICON_RE.search(line))
-        line_rain = explicit_rain or (showers_icon and not line_drizzle and not line_snow)
-        line_precipitation = bool(_PRECIPITATION_RE.search(line))
-        rain = rain or line_rain
-        drizzle = drizzle or line_drizzle
-        snow = snow or line_snow
-        actual_precipitation = actual_precipitation or any(
-            (line_rain, line_drizzle, line_snow, line_precipitation)
-        )
+            clause_rain = _precip_group_confirmed("rain", clause, has_evidence=rain_evidence)
+            clause_drizzle = _precip_group_confirmed("drizzle", clause, has_evidence=drizzle_evidence)
+            clause_snow = _precip_group_confirmed("snow", clause, has_evidence=snow_evidence)
+            clause_precipitation = _precip_group_confirmed(
+                "precipitation", clause, has_evidence=precipitation_evidence
+            )
+            rain = rain or clause_rain
+            drizzle = drizzle or clause_drizzle
+            snow = snow or clause_snow
+            actual_precipitation = actual_precipitation or any(
+                (clause_rain, clause_drizzle, clause_snow, clause_precipitation)
+            )
 
+    # Numeric storm scenario: gusts at/above the threshold are a storm even
+    # when the word "шторм" never appears (e.g. "порывы до 16 м/с"). The
+    # threshold is read live from weather_text so an env override + reload is
+    # picked up here exactly as it is in format_v2/safe_test_post/post_kld.
+    storm_gust = max_gust is not None and max_gust >= weather_text.STORM_GUST_MS
+    # storm_badge is what drives the "ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ" cover fact:
+    # a confirmed storm word OR a gust-threshold storm. thunderstorm alone
+    # does NOT raise it (that is a lightning motif, not a storm warning).
+    storm_badge = explicit_storm or storm_gust
+    # severe_weather is the umbrella for the dramatic palette: storm word,
+    # thunderstorm, or gust-threshold storm.
+    severe_weather = explicit_storm or thunderstorm or storm_gust
     return {
         "explicit_storm": explicit_storm,
         "actual_precipitation": actual_precipitation,
@@ -141,6 +266,9 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
         "drizzle": drizzle,
         "snow": snow,
         "thunderstorm": thunderstorm,
+        "storm_gust": storm_gust,
+        "storm_badge": storm_badge,
+        "severe_weather": severe_weather,
         "strong_wind": strong_wind,
     }
 
@@ -243,7 +371,7 @@ def extract_kld_cover_facts(
             break
 
     facts: list[str] = []
-    if flags["explicit_storm"]:
+    if flags["storm_badge"]:
         facts.append("ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ")
     elif flags["precipitation_display"] != "none":
         precipitation_facts = {
@@ -329,7 +457,10 @@ def _font(size: int, *, bold: bool = False):
 
 def _palette(metadata: Mapping[str, Any]) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
     weather = metadata["weather"]
-    if weather["explicit_storm"]:
+    # Dramatic backdrop for either severe phenomenon (storm or thunderstorm),
+    # via the derived umbrella flag — a thunderstorm-only day should still read
+    # as severe without overloading explicit_storm.
+    if weather.get("severe_weather"):
         return (32, 46, 59), (73, 91, 105), (190, 204, 211)
     precipitation_display = weather["precipitation_display"]
     if precipitation_display in {"snow", "snow_and_drizzle"}:
@@ -382,7 +513,9 @@ def _draw_weather_graphics(
             dot = (x - 3, y - 3, x + 3, y + 3)
             snow_dots.append(dot)
             draw.ellipse(dot, fill=snow_color)
-    if weather["explicit_storm"]:
+    # Lightning is a thunderstorm motif — driven by the thunderstorm flag, not
+    # by a (possibly storm-only) severe-weather day.
+    if weather.get("thunderstorm"):
         lightning_line = ((850, 615), (805, 710), (850, 700), (790, 825))
         draw.line(lightning_line, fill=lightning_color, width=8)
     if weather["strong_wind"] and not weather["rain"]:
@@ -476,6 +609,10 @@ def render_kld_informative_cover(
     png_info.add_text("weather_flags", json.dumps(weather, ensure_ascii=False, sort_keys=True))
     png_info.add_text("graphics", json.dumps(graphics, ensure_ascii=False, sort_keys=True))
     png_info.add_text("explicit_storm", str(bool(weather["explicit_storm"])).lower())
+    png_info.add_text("thunderstorm", str(bool(weather["thunderstorm"])).lower())
+    png_info.add_text("storm_gust", str(bool(weather.get("storm_gust"))).lower())
+    png_info.add_text("storm_badge", str(bool(weather.get("storm_badge"))).lower())
+    png_info.add_text("severe_weather", str(bool(weather.get("severe_weather"))).lower())
     png_info.add_text("actual_precipitation", str(bool(weather["actual_precipitation"])).lower())
     png_info.add_text("precipitation_display", str(weather["precipitation_display"]))
     png_info.add_text("rain_graphics", str(metadata["rain_graphics"]).lower())
