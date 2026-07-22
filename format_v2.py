@@ -11,6 +11,12 @@ from visibility_context import (
     visibility_condition_from_text,
     visibility_reason,
 )
+from weather_text import STORM_GUST_MS as _STORM_GUST_MS
+from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_storm
+from weather_text import extract_max_gust_ms as _max_gust_ms
+from weather_text import extract_max_wind_ms as _max_wind_ms
+from weather_text import has_confirmed_storm_word as _has_explicit_storm_text
+from weather_text import split_clauses as _split_storm_clauses
 
 
 def _is_sep(line: str) -> bool:
@@ -78,20 +84,18 @@ def _first_line_contains(lines: list[str], word: str) -> str:
         low = s.lower()
         if s.startswith("#"):
             break
-        if "без шторма" in low or "доброе утро" in low or s.startswith("🌾"):
+        if "доброе утро" in low or s.startswith("🌾"):
             continue
         if not (s.startswith("⚠️") or "предупреждение" in low):
             continue
-        if word.lower() in low and "погода на завтра" not in low:
+        if word.lower() not in low or "погода на завтра" in low:
+            continue
+        # Clause-aware: a negation/hedge in one clause of the line must not
+        # discard a genuine confirmation in another clause, e.g. "Риск шторма
+        # невысок, но штормовое предупреждение действует у моря."
+        if any(_clause_has_confirmed_storm(clause) for clause in _split_storm_clauses(s)):
             return s
     return ""
-
-
-def _has_explicit_storm_text(text: str) -> bool:
-    low = _plain(text).lower()
-    if "без шторма" in low:
-        low = low.replace("без шторма", "")
-    return "шторм" in low
 
 
 def _normalize_weather_line(line: str) -> str:
@@ -418,7 +422,13 @@ def _common_sup_water_line(lines: list[str], *, has_storm: bool = False) -> str:
     if not has_water_sport:
         return ""
     max_wind = _max_wind_ms(text)
-    stormy = has_storm or (isinstance(max_wind, (int, float)) and max_wind >= 15)
+    # The storm-tier water guidance keys on a confirmed storm or a real gust at
+    # the threshold — never on average wind alone. Strong average wind still
+    # makes the guidance strict, but via the "risky" branch below, not the
+    # storm branch (contract: water caution may be strict on wind, but is not
+    # labelled a storm just because the average wind is high).
+    max_gust = _max_gust_ms(text)
+    stormy = has_storm or (isinstance(max_gust, (int, float)) and max_gust >= _STORM_GUST_MS)
     if stormy:
         wave = _format_measure_range(wave_range, "м")
         wave_part = f"волна {wave}, но " if wave else ""
@@ -566,14 +576,11 @@ def _morning_region_context_from_pairs(values: object) -> str:
     )
 
 
-def _max_wind_ms(text: str) -> float | None:
-    values: list[float] = []
-    for m in re.finditer(r"(?:порывы\s*(?:до\s*)?)?(\d+(?:[\.,]\d+)?)\s*м/с", text, flags=re.I):
-        try:
-            values.append(float(m.group(1).replace(",", ".")))
-        except Exception:
-            continue
-    return max(values) if values else None
+# _max_wind_ms / _max_gust_ms are imported from weather_text (the single shared
+# parser). _max_wind_ms is the average/max wind for the softer windy /
+# water-caution / comfort cues; _max_gust_ms counts only "порыв …" values and
+# is the ONLY input to the storm-gust threshold — a strong average wind must
+# never be read as a storm gust.
 
 
 def _has_actual_precipitation(text: str) -> bool:
@@ -709,7 +716,10 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
     text = "\n".join(effective_lines)
     max_temp = _max_temperature_c(text)
     max_wind = _max_wind_ms(text)
-    storm_gust = isinstance(max_wind, (int, float)) and max_wind >= 15
+    # storm_gust keys on the actual gust ("порыв …"), never on average wind:
+    # "ветер 16 м/с, порывы до 14 м/с" is NOT a storm (gust 14 < threshold).
+    max_gust = _max_gust_ms(text)
+    storm_gust = isinstance(max_gust, (int, float)) and max_gust >= _STORM_GUST_MS
     visibility_condition = visibility_condition_from_text(text)
     return {
         "storm": bool(storm) or _has_explicit_storm_text(text) or storm_gust,
@@ -719,6 +729,7 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
         "heat": isinstance(max_temp, (int, float)) and max_temp >= 35,
         "max_temp": max_temp,
         "max_wind": max_wind,
+        "max_gust": max_gust,
         "storm_gust": storm_gust,
         "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
@@ -760,7 +771,8 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
 
 def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_region: bool) -> str:
     if flags["storm"]:
-        gust = flags.get("max_wind")
+        # Report the actual gust ("порывы до N м/с"), not the average wind.
+        gust = flags.get("max_gust")
         if isinstance(gust, (int, float)):
             return f"⚠️ Главный нюанс: на открытом берегу и пирсах порывы до {_fmt_num(gust)} м/с."
         return "⚠️ Главный нюанс: открытый берег, пирсы и водные активности — только после фактической проверки условий."

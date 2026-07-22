@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ if str(ROOT) not in sys.path:
 from kld_image_first import FORMAT_V2_BEGIN, FORMAT_V2_END, run_image_first_publication  # noqa: E402
 from kld_informative_cover import (  # noqa: E402
     RENDERER_VERSION,
+    _factual_weather_truth,
     extract_kld_cover_facts,
     render_kld_informative_cover,
 )
@@ -393,23 +395,30 @@ def storm_and_precipitation_truth_are_independent() -> None:
     scenarios = {
         "dry_storm": (
             base + "Штормовое предупреждение: штормовой ветер, без осадков.\n",
-            {"explicit_storm": True, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+            {"explicit_storm": True, "actual_precipitation": False, "rain": False,
+             "thunderstorm": False, "storm_gust": False, "storm_badge": True, "severe_weather": True},
         ),
         "negated_storm": (
             base + "Штормовых предупреждений нет; преимущественно сухо.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
+             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
         ),
         "negated_thunderstorm": (
             base + "Грозы не ожидаются; дождя не ожидается.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
+             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
         ),
         "thunderstorm_without_rain": (
+            # ⛈/гроза is NOT "шторм": explicit_storm and storm_badge stay False,
+            # thunderstorm is True, and the derived severe_weather umbrella is True.
             base + "⛈ Гроза, без осадков.\n",
-            {"explicit_storm": True, "actual_precipitation": False, "rain": False, "thunderstorm": True},
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
+             "thunderstorm": True, "storm_gust": False, "storm_badge": False, "severe_weather": True},
         ),
         "rain_without_storm": (
             base.replace("☁️ облачно", "🌧 дождь"),
-            {"explicit_storm": False, "actual_precipitation": True, "rain": True, "thunderstorm": False},
+            {"explicit_storm": False, "actual_precipitation": True, "rain": True,
+             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
         ),
         "drizzle_without_rain": (
             base.replace("☁️ облачно", "морось"),
@@ -419,11 +428,15 @@ def storm_and_precipitation_truth_are_independent() -> None:
                 "rain": False,
                 "drizzle": True,
                 "thunderstorm": False,
+                "storm_gust": False,
+                "storm_badge": False,
+                "severe_weather": False,
             },
         ),
         "storm_and_rain": (
             base + "Штормовое предупреждение: сильный ветер.\n🌧 Дождь подтверждён.\n",
-            {"explicit_storm": True, "actual_precipitation": True, "rain": True, "thunderstorm": False},
+            {"explicit_storm": True, "actual_precipitation": True, "rain": True,
+             "thunderstorm": False, "storm_gust": False, "storm_badge": True, "severe_weather": True},
         ),
         "editorial_storm": (
             base
@@ -431,15 +444,22 @@ def storm_and_precipitation_truth_are_independent() -> None:
             + "⚠️ Главный нюанс: шторм у воды.\n"
             + "✅ План: дождь проверить утром.\n"
             + "🎯 Уверенность: гроза возможна.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
+             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
         ),
         "uncertain_rain": (
             base + "Вероятность дождя проверить утром.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
+             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
         ),
         "dry_severe_wind": (
+            # 17.5 м/с gusts are at/above the storm threshold, so this is a
+            # gust-driven storm even without the word "шторм": storm_gust and
+            # storm_badge and severe_weather are True, but explicit_storm and
+            # thunderstorm stay False (no lightning).
             base.replace("💨 5 м/с", "💨 9 м/с • порывы до 17.5 м/с") + "Преимущественно сухо.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False, "thunderstorm": False},
+            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
+             "thunderstorm": False, "storm_gust": True, "storm_badge": True, "severe_weather": True},
         ),
     }
 
@@ -464,6 +484,9 @@ def storm_and_precipitation_truth_are_independent() -> None:
                     "drizzle",
                     "snow",
                     "thunderstorm",
+                    "storm_gust",
+                    "storm_badge",
+                    "severe_weather",
                     "strong_wind",
                 )
             )
@@ -472,27 +495,39 @@ def storm_and_precipitation_truth_are_independent() -> None:
 
             rain_expected = expected["rain"]
             storm_expected = expected["explicit_storm"]
+            # Lightning graphics follow the thunderstorm flag, not explicit_storm:
+            # a storm-only day draws no lightning; a thunderstorm-only day does.
+            thunderstorm_expected = expected["thunderstorm"]
             assert metadata["rain_graphics"] is rain_expected, name
-            assert metadata["lightning_graphics"] is storm_expected, name
+            assert metadata["lightning_graphics"] is thunderstorm_expected, name
             assert bool(metadata["graphics"]["rain_lines"]) is rain_expected, name
-            assert bool(metadata["graphics"]["lightning_line"]) is storm_expected, name
+            assert bool(metadata["graphics"]["lightning_line"]) is thunderstorm_expected, name
 
             with Image.open(output) as image:
                 assert image.size == (1080, 1080)
                 embedded_weather = json.loads(image.info["weather_flags"])
                 embedded_graphics = json.loads(image.info["graphics"])
                 assert embedded_weather["explicit_storm"] is storm_expected, name
+                assert embedded_weather["thunderstorm"] is thunderstorm_expected, name
+                assert embedded_weather["storm_gust"] is expected["storm_gust"], name
+                assert embedded_weather["storm_badge"] is expected["storm_badge"], name
+                assert embedded_weather["severe_weather"] is expected["severe_weather"], name
                 assert embedded_weather["rain"] is rain_expected, name
+                assert image.info["explicit_storm"] == str(storm_expected).lower()
+                assert image.info["thunderstorm"] == str(thunderstorm_expected).lower()
+                assert image.info["storm_gust"] == str(expected["storm_gust"]).lower()
+                assert image.info["storm_badge"] == str(expected["storm_badge"]).lower()
+                assert image.info["severe_weather"] == str(expected["severe_weather"]).lower()
                 assert image.info["actual_precipitation"] == str(expected["actual_precipitation"]).lower()
                 assert image.info["rain_graphics"] == str(rain_expected).lower()
-                assert image.info["lightning_graphics"] == str(storm_expected).lower()
+                assert image.info["lightning_graphics"] == str(thunderstorm_expected).lower()
                 crop = image.crop((0, 590, 1080, 850))
                 pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
                 pixels = list(pixel_source())
                 rain_pixels = pixels.count(tuple(embedded_graphics["rain_color"]))
                 lightning_pixels = pixels.count(tuple(embedded_graphics["lightning_color"]))
                 assert (rain_pixels > 0) is rain_expected, (name, rain_pixels)
-                assert (lightning_pixels > 0) is storm_expected, (name, lightning_pixels)
+                assert (lightning_pixels > 0) is thunderstorm_expected, (name, lightning_pixels)
 
             if name == "dry_storm":
                 assert weather["strong_wind"] is True
@@ -548,6 +583,13 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
         ),
         "uncertain_snow": (
             base + "Снег возможен.\n",
+            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
+        ),
+        "negated_snow_will_not_be": (
+            # Regression: "снега не будет" was not covered by the old negation
+            # list (only "снег не ожидается" / "без снега" / etc.), so a July
+            # rain-only day picked up a phantom "снег" fact from this phrasing.
+            base + "Снега не будет.\n",
             {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
         ),
     }
@@ -608,6 +650,338 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
                 assert not metadata["graphics"]["rain_lines"]
             if name == "confirmed_snow":
                 assert metadata["facts"][0] == "СНЕГ МЕСТАМИ"
+
+
+def july_rain_day_with_hedged_snow_mention_has_no_snow_fact() -> None:
+    # Regression for the reported 21.07 (+17/+13 °C) cover: the text post said
+    # only "🌧 дождь" for the day, but an editorial line hedging that snow was
+    # not expected ("снега точно не будет") slipped past the old negation list
+    # and got rendered as "СНЕГ И ДОЖДЬ МЕСТАМИ" on the cover.
+    message = """<b>🌅 Калининградская область завтра (21.07.2026)</b>
+✨ VayboMeter завтра: 7.4/10 — тёплый летний день; днём дождь местами.
+🏙 Калининград — 17/13 °C • 🌧 дождь • 💨 5 м/с
+⚠️ Нюанс: несмотря на похолодание к ночи, снега точно не будет.
+#Калининград #погода
+"""
+    metadata = extract_kld_cover_facts(message, post_type="evening")
+    weather = metadata["weather"]
+    assert weather["snow"] is False, weather
+    assert weather["rain"] is True, weather
+    assert weather["precipitation_display"] == "rain", weather
+    assert metadata["facts"][0] == "ДОЖДЬ МЕСТАМИ", metadata["facts"]
+    assert not any("СНЕГ" in fact for fact in metadata["facts"]), metadata["facts"]
+
+
+def precipitation_negation_handles_modifiers_between_term_and_negation() -> None:
+    # Regression: the negation regex required the negation suffix to sit
+    # immediately after the term (single whitespace, no filler words), so
+    # hedged phrasings like "снега точно не будет" or "снега, скорее всего,
+    # не будет" slipped through as positive mentions. These lines are plain
+    # factual sentences (not "Нюанс:"-prefixed), so they exercise the negation
+    # regex itself rather than the editorial-line skip.
+    cases = {
+        "snow_certainly_not": ("Снега точно не будет.", {"snow": False, "actual_precipitation": False}),
+        "snow_probably_not": (
+            "Снега, скорее всего, не будет.",
+            {"snow": False, "actual_precipitation": False},
+        ),
+        "snow_probability_low": (
+            "Вероятность снега невысока.",
+            {"snow": False, "actual_precipitation": False},
+        ),
+        "rain_risk_minimal": ("Риск дождя минимален.", {"rain": False, "actual_precipitation": False}),
+        "snow_confirmed_evening": ("Снег будет вечером.", {"snow": True, "actual_precipitation": True}),
+    }
+    for name, (message, expected) in cases.items():
+        facts = _factual_weather_truth(message)
+        for flag, value in expected.items():
+            assert facts[flag] is value, (name, flag, facts)
+
+    # A negation in one clause must not cancel a genuine confirmation in a
+    # different clause on the same line.
+    two_clause = _factual_weather_truth("Снега не будет утром. Вечером ожидается снег.")
+    assert two_clause["snow"] is True, two_clause
+    assert two_clause["actual_precipitation"] is True, two_clause
+
+
+def mixed_precipitation_statements_keep_types_independent() -> None:
+    # Regression: _factual_weather_truth used a single global
+    # "precipitation_negated or precipitation_uncertain -> drop the whole
+    # clause" gate, so "Дождь будет, снега не будет." lost the real rain
+    # along with the negated snow. Each type (rain, drizzle, snow, generic
+    # precipitation) must now be evaluated independently: a negation of one
+    # type must not cancel evidence of a different type in the same clause.
+    cases = {
+        "rain_confirmed_snow_negated": (
+            "Дождь будет, снега не будет.",
+            {"rain": True, "snow": False, "actual_precipitation": True},
+        ),
+        "snow_confirmed_rain_negated": (
+            "Снег будет, дождя не ожидается.",
+            {"snow": True, "rain": False, "actual_precipitation": True},
+        ),
+        "drizzle_confirmed_rain_negated": (
+            "Морось будет, дождя не будет.",
+            {"drizzle": True, "rain": False, "actual_precipitation": True},
+        ),
+        "rain_negated_drizzle_uncertain": (
+            "Дождя не будет, возможна морось.",
+            {"rain": False, "drizzle": False, "actual_precipitation": False},
+        ),
+        "rain_negated_drizzle_confirmed": (
+            "Дождя не будет, морось ожидается.",
+            {"rain": False, "drizzle": True, "actual_precipitation": True},
+        ),
+        "snow_negated_morning_confirmed_evening": (
+            "Снега не будет утром; вечером ожидается снег.",
+            {"snow": True, "actual_precipitation": True},
+        ),
+    }
+    for name, (message, expected) in cases.items():
+        facts = _factual_weather_truth(message)
+        for flag, value in expected.items():
+            assert facts[flag] is value, (name, flag, facts)
+
+
+def precipitation_uncertainty_binds_to_nearest_type() -> None:
+    # Regression: an uncertainty cue preceding a type ("возможна морось",
+    # "Дождь возможен") used to reach across a comma to a *following* type,
+    # so "Дождь возможен, снег ожидается." wrongly marked snow uncertain too.
+    # The cue must bind to the nearest type only.
+    cases = {
+        "rain_uncertain_snow_confirmed": (
+            "Дождь возможен, снег ожидается.",
+            {"rain": False, "snow": True, "actual_precipitation": True},
+        ),
+        "snow_uncertain_rain_confirmed": (
+            "Снег возможен, дождь ожидается.",
+            {"snow": False, "rain": True, "actual_precipitation": True},
+        ),
+        "drizzle_uncertain_rain_confirmed": (
+            "Морось возможна, дождь ожидается.",
+            {"drizzle": False, "rain": True, "actual_precipitation": True},
+        ),
+        "rain_uncertain_drizzle_confirmed": (
+            "Дождь возможен, морось ожидается.",
+            {"rain": False, "drizzle": True, "actual_precipitation": True},
+        ),
+    }
+    for name, (message, expected) in cases.items():
+        facts = _factual_weather_truth(message)
+        for flag, value in expected.items():
+            assert facts[flag] is value, (name, flag, facts)
+
+
+def precipitation_active_exclusion_verb_is_not_negation() -> None:
+    # Regression: a bare "исключ\w*" treated "Снег исключил движение." (snow
+    # is the actor) as a negation. Only the passive participle "исключён/
+    # исключена" (the fact was removed from the forecast) denies precipitation.
+    cases = {
+        "rain_actor_excluded_walk": ("Дождь исключил прогулку.", {"rain": True, "actual_precipitation": True}),
+        "snow_actor_excluded_traffic": ("Снег исключил движение.", {"snow": True, "actual_precipitation": True}),
+        "snow_fact_excluded_from_forecast": (
+            "Снег исключён из прогноза.",
+            {"snow": False, "actual_precipitation": False},
+        ),
+    }
+    for name, (message, expected) in cases.items():
+        facts = _factual_weather_truth(message)
+        for flag, value in expected.items():
+            assert facts[flag] is value, (name, flag, facts)
+
+
+def storm_and_thunderstorm_are_independent_per_clause() -> None:
+    # explicit_storm means a confirmed "шторм" word ONLY; thunderstorm means a
+    # confirmed "гроза"/⛈ ONLY. Neither flag raises the other — a confirmed
+    # thunderstorm no longer sets explicit_storm, and a confirmed storm no
+    # longer sets thunderstorm. The umbrella "either severe phenomenon" case
+    # is the separate derived severe_weather flag.
+    cases = {
+        # 1
+        "storm_negated_thunderstorm_confirmed": (
+            "Шторма не будет, гроза ожидается.",
+            {"explicit_storm": False, "thunderstorm": True, "severe_weather": True},
+        ),
+        # 2
+        "thunderstorm_negated_storm_confirmed": (
+            "Грозы не будет, шторм ожидается.",
+            {"explicit_storm": True, "thunderstorm": False, "severe_weather": True},
+        ),
+        # 3
+        "storm_uncertain_thunderstorm_confirmed": (
+            "Шторм возможен, гроза ожидается.",
+            {"explicit_storm": False, "thunderstorm": True, "severe_weather": True},
+        ),
+        # 4
+        "storm_confirmed_thunderstorm_uncertain": (
+            "Шторм ожидается, гроза возможна.",
+            {"explicit_storm": True, "thunderstorm": False, "severe_weather": True},
+        ),
+        # 5
+        "storm_and_thunderstorm_both_confirmed": (
+            "Шторм и гроза ожидаются.",
+            {"explicit_storm": True, "thunderstorm": True, "severe_weather": True},
+        ),
+    }
+    for name, (message, expected) in cases.items():
+        facts = _factual_weather_truth(message)
+        for flag, value in expected.items():
+            assert facts[flag] is value, (name, flag, facts)
+
+
+def storm_and_thunderstorm_flags_drive_graphics_independently() -> None:
+    # End-to-end: metadata stores explicit_storm and thunderstorm as separate
+    # booleans, and neither raises the other's graphic — a storm-only day draws
+    # no lightning, a thunderstorm-only day does.
+    from PIL import Image
+
+    base = """<b>🌅 Калининградская область завтра (21.07.2026)</b>
+🏙 Калининград — 20/14 °C • ☁️ облачно • 💨 5 м/с
+#Калининград #погода
+"""
+    scenarios = {
+        "storm_only": (
+            base + "Штормовое предупреждение: штормовой ветер, без осадков.\n",
+            {"explicit_storm": True, "thunderstorm": False, "severe_weather": True},
+        ),
+        "thunderstorm_only": (
+            base + "⛈ Гроза, без осадков.\n",
+            {"explicit_storm": False, "thunderstorm": True, "severe_weather": True},
+        ),
+    }
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name, (message, expected) in scenarios.items():
+            output = root / f"{name}.png"
+            metadata = render_kld_informative_cover(message, post_type="evening", output_path=output)
+            weather = metadata["weather"]
+            assert weather["explicit_storm"] is expected["explicit_storm"], name
+            assert weather["thunderstorm"] is expected["thunderstorm"], name
+            assert weather["severe_weather"] is expected["severe_weather"], name
+            # Lightning is present iff thunderstorm, regardless of explicit_storm.
+            assert metadata["lightning_graphics"] is expected["thunderstorm"], name
+            with Image.open(output) as image:
+                embedded = json.loads(image.info["weather_flags"])
+                assert embedded["explicit_storm"] is expected["explicit_storm"], name
+                assert embedded["thunderstorm"] is expected["thunderstorm"], name
+                assert embedded["severe_weather"] is expected["severe_weather"], name
+                lightning_pixels = image.crop((0, 590, 1080, 850)).getdata()
+                lc = tuple(json.loads(image.info["graphics"])["lightning_color"])
+                assert (list(lightning_pixels).count(lc) > 0) is expected["thunderstorm"], name
+
+
+def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
+    # The "ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ" cover badge must fire on a confirmed storm
+    # word OR a gust at/above STORM_GUST_MS, matching format_v2 /
+    # safe_test_post / post_kld. It must NOT rely on strong_wind, which starts
+    # at 12 м/с — below the storm threshold. thunderstorm drives lightning
+    # only, never the storm badge.
+    import importlib
+
+    import weather_text
+    import kld_informative_cover
+
+    def _wind_message(gust_ms: float) -> str:
+        return (
+            "<b>🌅 Калининградская область завтра (21.07.2026)</b>\n"
+            f"🏙 Калининград — 20/14 °C • ☁️ облачно • 💨 8 м/с • порывы до {gust_ms} м/с\n"
+            "#Калининград #погода\n"
+        )
+
+    def _facts(message: str) -> dict:
+        return kld_informative_cover.extract_kld_cover_facts(message, post_type="evening")
+
+    def _has_storm_badge(message: str) -> bool:
+        return "ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ" in _facts(message)["facts"]
+
+    def _lightning(message: str) -> bool:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            meta = render_kld_informative_cover(
+                message, post_type="evening", output_path=Path(tmp) / "c.png"
+            )
+            return bool(meta["lightning_graphics"])
+
+    # A. 14 м/с, no storm word: not a storm at all, but strong_wind may be True.
+    a = _facts(_wind_message(14))["weather"]
+    assert a["explicit_storm"] is False
+    assert a["thunderstorm"] is False
+    assert a["storm_gust"] is False
+    assert a["storm_badge"] is False
+    assert a["severe_weather"] is False
+    assert a["strong_wind"] is True  # 14 >= 12, but below the storm threshold
+    assert _has_storm_badge(_wind_message(14)) is False
+    assert _lightning(_wind_message(14)) is False
+
+    # B. 15 м/с at the default threshold of 15: gust-driven storm, no lightning.
+    b = _facts(_wind_message(15))["weather"]
+    assert b["explicit_storm"] is False
+    assert b["thunderstorm"] is False
+    assert b["storm_gust"] is True
+    assert b["storm_badge"] is True
+    assert b["severe_weather"] is True
+    assert _has_storm_badge(_wind_message(15)) is True
+    assert _lightning(_wind_message(15)) is False
+
+    # C/D. Raise the threshold to 16 and reload the shared module: 15 м/с is no
+    # longer a storm, 16 м/с is. The cover reads the threshold live from
+    # weather_text, so no reload of kld_informative_cover is required.
+    old_value = os.environ.get("STORM_GUST_MS")
+    try:
+        os.environ["STORM_GUST_MS"] = "16"
+        importlib.reload(weather_text)
+        assert weather_text.STORM_GUST_MS == 16.0
+
+        c = _facts(_wind_message(15))["weather"]
+        assert c["storm_gust"] is False
+        assert c["storm_badge"] is False
+        assert _has_storm_badge(_wind_message(15)) is False
+
+        d = _facts(_wind_message(16))["weather"]
+        assert d["storm_gust"] is True
+        assert d["storm_badge"] is True
+        assert _has_storm_badge(_wind_message(16)) is True
+    finally:
+        if old_value is None:
+            os.environ.pop("STORM_GUST_MS", None)
+        else:
+            os.environ["STORM_GUST_MS"] = old_value
+        importlib.reload(weather_text)
+        assert weather_text.STORM_GUST_MS == (float(old_value) if old_value is not None else 15.0)
+
+    # E. Thunderstorm, weak wind: thunderstorm + severe_weather + lightning, but
+    # no storm word and no storm badge.
+    thunder_msg = (
+        "<b>🌅 Калининградская область завтра (21.07.2026)</b>\n"
+        "🏙 Калининград — 20/14 °C • 💨 4 м/с\n"
+        "Гроза ожидается.\n"
+        "#Калининград #погода\n"
+    )
+    e = _facts(thunder_msg)["weather"]
+    assert e["explicit_storm"] is False
+    assert e["thunderstorm"] is True
+    assert e["storm_gust"] is False
+    assert e["storm_badge"] is False
+    assert e["severe_weather"] is True
+    assert _has_storm_badge(thunder_msg) is False
+    assert _lightning(thunder_msg) is True
+
+    # F. Storm word, weak wind, no thunderstorm: storm badge, no lightning.
+    storm_msg = (
+        "<b>🌅 Калининградская область завтра (21.07.2026)</b>\n"
+        "🏙 Калининград — 20/14 °C • 💨 4 м/с\n"
+        "Шторм ожидается.\n"
+        "#Калининград #погода\n"
+    )
+    f = _facts(storm_msg)["weather"]
+    assert f["explicit_storm"] is True
+    assert f["thunderstorm"] is False
+    assert f["storm_gust"] is False
+    assert f["storm_badge"] is True
+    assert f["severe_weather"] is True
+    assert _has_storm_badge(storm_msg) is True
+    assert _lightning(storm_msg) is False
 
 
 def mixed_regional_precipitation_keeps_text_and_graphics_aligned() -> None:
@@ -712,6 +1086,14 @@ TESTS = [
     local_cover_is_png_1080_and_weather_factual,
     storm_and_precipitation_truth_are_independent,
     drizzle_rain_and_snow_icons_keep_factual_intensity,
+    july_rain_day_with_hedged_snow_mention_has_no_snow_fact,
+    precipitation_negation_handles_modifiers_between_term_and_negation,
+    mixed_precipitation_statements_keep_types_independent,
+    precipitation_uncertainty_binds_to_nearest_type,
+    precipitation_active_exclusion_verb_is_not_negation,
+    storm_and_thunderstorm_are_independent_per_clause,
+    storm_and_thunderstorm_flags_drive_graphics_independently,
+    storm_badge_uses_word_or_gust_threshold_not_strong_wind,
     mixed_regional_precipitation_keeps_text_and_graphics_aligned,
 ]
 

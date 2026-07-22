@@ -22,6 +22,10 @@ import pendulum
 from telegram import Bot, constants
 
 from post_common import build_message, fx_morning_line  # type: ignore
+from weather_text import STORM_GUST_MS
+from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_storm
+from weather_text import extract_max_gust_ms
+from weather_text import split_clauses as _split_storm_clauses
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -251,13 +255,9 @@ ZODIAC_GLYPH = {
 }
 
 def _gust_from_line(line: str) -> Optional[float]:
-    values: list[float] = []
-    for raw in re.findall(r"порыв\w*\s*(?:до\s*)?(\d+(?:[\.,]\d+)?)\s*м\s*/?\s*с", str(line or ""), flags=re.I):
-        try:
-            values.append(float(raw.replace(",", ".")))
-        except Exception:
-            pass
-    return max(values) if values else None
+    # Single shared gust parser (weather_text): only "порыв …" values, never
+    # average wind, so the overlay threshold matches the other layers exactly.
+    return extract_max_gust_ms(line)
 
 
 def _is_warning_line(line: str) -> bool:
@@ -288,7 +288,7 @@ def _skip_overlay_storm_line(line: str) -> bool:
 def _storm_overlay_subtitle(line: str) -> str:
     s = re.sub(r"</?b>", "", str(line or "")).strip()
     gust = _gust_from_line(s)
-    if isinstance(gust, (int, float)) and gust >= 15:
+    if isinstance(gust, (int, float)) and gust >= STORM_GUST_MS:
         value = int(gust) if float(gust).is_integer() else gust
         return f"Порывы до {value} м/с"
     s = re.sub(r"^⚠️?\s*", "", s).strip()
@@ -309,21 +309,28 @@ def _extract_storm_warning(msg: str) -> Optional[str]:
     for line in str(msg or "").splitlines():
         stripped = line.strip()
         low = stripped.lower()
-        if not stripped or "без шторма" in low:
+        if not stripped:
             continue
+        # A bare "шторм" substring matched phrasings like "риск шторма невысок" at
+        # any wind speed, badging weak-wind days while genuine strong-gust days
+        # phrased without the word "шторм" got no badge at all. Word/negation
+        # detection is shared (weather_text.py) with format_v2.py and
+        # safe_test_post.py, checked per clause so a negation in one clause of
+        # the line can't cancel a genuine confirmation in another.
+        has_storm_word = any(_clause_has_confirmed_storm(c) for c in _split_storm_clauses(stripped))
         gust = _gust_from_line(stripped)
         if _skip_overlay_storm_line(stripped):
             continue
-        if stripped.startswith("⚠️ Штормовое предупреждение:") or ("шторм" in low and "предупреждение" in low):
+        if has_storm_word and (stripped.startswith("⚠️ Штормовое предупреждение:") or "предупреждение" in low):
             explicit_warning.append(stripped)
             continue
-        if isinstance(gust, (int, float)) and gust >= 15 and _is_warning_line(stripped):
+        if isinstance(gust, (int, float)) and gust >= STORM_GUST_MS and _is_warning_line(stripped):
             warning_gust.append(stripped)
             continue
-        if isinstance(gust, (int, float)) and gust >= 15 and _is_weather_line(stripped):
+        if isinstance(gust, (int, float)) and gust >= STORM_GUST_MS and _is_weather_line(stripped):
             weather_gust.append(stripped)
             continue
-        if "шторм" in low:
+        if has_storm_word:
             fallback.append(stripped)
     for bucket in (explicit_warning, warning_gust, weather_gust, fallback):
         if bucket:
