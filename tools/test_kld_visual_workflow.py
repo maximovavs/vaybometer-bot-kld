@@ -127,6 +127,20 @@ def test_image_failure_is_nonblocking_and_diagnostics_are_always_uploaded() -> N
     _assert("text_failure_reraised", "text_error_type" in helper and "raise\n" in helper)
     _assert("expected_duplicate_not_system_exit", "only exact duplicate candidates; refusing to send" not in image_tool)
     _assert("structured_result", '"fallback_sent"' in image_tool and '"failed_nonfatal"' in image_tool)
+    for field in (
+        '"http_attempt_count"',
+        '"selected_scene_family"',
+        '"selected_composition"',
+        '"selected_cache_key"',
+        '"dedup_reason"',
+        '"dedup_distance"',
+        '"local_cover_published"',
+        '"cover_validation"',
+    ):
+        _assert(f"structured_diagnostics_{field}", field in image_tool)
+    _assert("stable_horde_second_backend", "generate_kld_stable_horde_image" in image_tool)
+    _assert("semantic_cover_gate", "validate_kld_cover_semantics" in image_tool)
+    _assert("near_duplicate_not_promoted", "least_similar" not in image_tool)
 
     for name, block in (("morning", morning), ("evening", evening)):
         _assert(f"{name}_artifact_always", "if: always()" in block)

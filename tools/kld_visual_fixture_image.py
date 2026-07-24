@@ -42,10 +42,12 @@ from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
 from kld_informative_cover import (  # noqa: E402
     RENDERER_VERSION as LOCAL_COVER_RENDERER_VERSION,
     render_kld_informative_cover,
+    validate_kld_cover_semantics,
 )
 from kld_visual_dedup import (  # noqa: E402
     evaluate_kld_visual_candidate,
     kld_visual_history_path,
+    load_kld_visual_history,
     record_kld_visual_publication,
 )
 from visual_context_kld import build_visual_context  # noqa: E402
@@ -259,14 +261,35 @@ def _base_outcome(*, post_type: str) -> dict[str, Any]:
         "telegram_image_message_id": None,
         "history_recorded": False,
         "cover_attempted": False,
+        "cover_validation": None,
+        "local_cover_published": False,
         "post_type": post_type,
         "provider_error": None,
+        "provider_errors": [],
+        "provider_attempts": [],
+        "http_attempt_count": 0,
+        "fallback_reason": "",
+        "selected_scene_family": "",
+        "selected_composition": "",
+        "selected_cache_key": "",
+        "dedup_reason": "",
+        "dedup_distance": None,
+        "scene_cooldown": [],
+        "composition_cooldown": [],
         "dedup_results": [],
     }
 
 
-def _error_payload(exc: Exception) -> dict[str, str]:
-    return {"type": type(exc).__name__, "message": str(exc)}
+def _error_payload(exc: Exception) -> dict[str, Any]:
+    attempts = list(getattr(exc, "attempts", []) or [])
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "backend": str(getattr(exc, "backend", "") or ""),
+        "reason": str(getattr(exc, "reason", "") or ""),
+        "http_attempt_count": len(attempts),
+        "attempts": attempts,
+    }
 
 
 def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[str, Any]:
@@ -305,6 +328,9 @@ def _send_and_record(
 ) -> dict[str, Any]:
     outcome["backend"] = backend
     outcome["image_path"] = image_path
+    outcome["selected_scene_family"] = str(metadata.get("scene_family") or "")
+    outcome["selected_composition"] = str(metadata.get("composition") or "")
+    outcome["selected_cache_key"] = cache_key
     if not args.send_to_test:
         outcome["result"] = "generated"
         return outcome
@@ -325,7 +351,8 @@ def _send_and_record(
 
     outcome["telegram_image_sent"] = True
     outcome["telegram_image_message_id"] = message_id
-    outcome["result"] = "fallback_sent" if backend == "local_informative_cover" else "sent"
+    outcome["local_cover_published"] = backend == "local_informative_cover"
+    outcome["result"] = "sent" if backend == "pollinations" else "fallback_sent"
     try:
         entry = record_publication(
             date_value=str(metadata["forecast_date"]),
@@ -354,6 +381,124 @@ def _send_and_record(
     return outcome
 
 
+def _recent_visual_cooldown(history_path: Path) -> tuple[list[str], list[str]]:
+    scenes: list[str] = []
+    compositions: list[str] = []
+    for entry in reversed(load_kld_visual_history(history_path)):
+        scene = str(entry.get("scene_family") or "")
+        composition = str(entry.get("composition") or "")
+        if scene and scene != "local_informative_cover" and scene not in scenes and len(scenes) < 3:
+            scenes.append(scene)
+        if composition and composition != "branded_weather_card" and composition not in compositions and len(compositions) < 4:
+            compositions.append(composition)
+        if len(scenes) >= 3 and len(compositions) >= 4:
+            break
+    return scenes, compositions
+
+
+def _candidate_payloads(
+    *,
+    args: argparse.Namespace,
+    message: str,
+    visibility_context: Mapping[str, Any] | None,
+    history_path: Path,
+    count: int = 3,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    blocked_scenes, blocked_compositions = _recent_visual_cooldown(history_path)
+
+    def payload_for(variation_attempt: int) -> dict[str, Any]:
+        if args.message_file:
+            return build_payload(
+                message,
+                "message_file",
+                post_type=args.post_type,
+                variation_attempt=variation_attempt,
+                visibility_context=visibility_context,
+            )
+        return build_fixture_payload(
+            args.scenario,
+            post_type=args.post_type,
+            variation_attempt=variation_attempt,
+        )
+
+    context = build_visual_context(
+        message,
+        post_type=args.post_type,
+        visibility_context=visibility_context,
+    )
+    date_key = _extract_prompt_date(message, dt.date(2026, 6, 19))
+    candidate_metadata = [
+        (
+            index,
+            kld_scene_metadata(
+                context,
+                date_key=date_key,
+                post_type=args.post_type,
+                source_text=message,
+                variation_attempt=index,
+            ),
+        )
+        for index in range(48)
+    ]
+    selected_attempts: list[int] = []
+    used_scenes: set[str] = set()
+    used_compositions: set[str] = set()
+    for cooldown_mode in ("strict", "scene_only", "relaxed"):
+        for variation_attempt, metadata in candidate_metadata:
+            scene = str(metadata["scene_family"])
+            composition = str(metadata["composition"])
+            if scene in used_scenes or composition in used_compositions:
+                continue
+            if cooldown_mode in {"strict", "scene_only"} and scene in blocked_scenes:
+                continue
+            if cooldown_mode == "strict" and composition in blocked_compositions:
+                continue
+            selected_attempts.append(variation_attempt)
+            used_scenes.add(scene)
+            used_compositions.add(composition)
+            if len(selected_attempts) >= count:
+                return (
+                    [payload_for(attempt) for attempt in selected_attempts],
+                    blocked_scenes,
+                    blocked_compositions,
+                )
+    return (
+        [payload_for(attempt) for attempt in selected_attempts[:count]],
+        blocked_scenes,
+        blocked_compositions,
+    )
+
+
+def _provider_attempt_payload(
+    *,
+    backend: str,
+    candidate: Mapping[str, Any],
+    result: str,
+    diagnostics: Mapping[str, Any] | None = None,
+    error: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = candidate["metadata"]
+    diagnostics = dict(diagnostics or {})
+    error = dict(error or {})
+    http_attempts = list(diagnostics.get("attempts") or error.get("attempts") or [])
+    return {
+        "backend": backend,
+        "variation_attempt": int(candidate.get("variation_attempt") or 0),
+        "scene_family": str(metadata.get("scene_family") or ""),
+        "composition": str(metadata.get("composition") or ""),
+        "cache_key": str(candidate.get("cache_key") or ""),
+        "result": result,
+        "exception_type": str(error.get("type") or diagnostics.get("exception_type") or ""),
+        "error_message": str(error.get("message") or ""),
+        "http_attempt_count": int(
+            diagnostics.get("http_attempt_count")
+            or error.get("http_attempt_count")
+            or len(http_attempts)
+        ),
+        "http_attempts": http_attempts,
+    }
+
+
 def execute_image_delivery(
     *,
     args: argparse.Namespace,
@@ -362,111 +507,176 @@ def execute_image_delivery(
     visibility_context: Mapping[str, Any] | None,
     history_path: Path,
     generate_image: Callable[..., str] | None = None,
+    secondary_generate_image: Callable[..., str] | None = None,
+    provider_diagnostics: Callable[[str], Mapping[str, Any]] | None = None,
     evaluate_candidate: Callable[..., Any] = evaluate_kld_visual_candidate,
     cover_renderer: Callable[..., Mapping[str, Any]] = render_kld_informative_cover,
+    validate_cover: Callable[..., Mapping[str, Any]] = validate_kld_cover_semantics,
     send_photo: Callable[..., int | None] | None = None,
     record_publication: Callable[..., Mapping[str, Any]] = record_kld_visual_publication,
 ) -> dict[str, Any]:
-    """Attempt AI image, then a local factual cover, without fatal image-only exits."""
+    """Try two providers, then a validated factual cover, without fatal image-only exits."""
     if generate_image is None:
         import imagegen
 
         generate_image = imagegen.generate_kld_evening_image
+        if imagegen.stable_horde_enabled():
+            secondary_generate_image = imagegen.generate_kld_stable_horde_image
+        provider_diagnostics = imagegen.get_generation_diagnostics
     if send_photo is None:
         send_photo = lambda path, caption, chat_id_override="": asyncio.run(  # noqa: E731
             _send_photo(path, caption, chat_id_override=chat_id_override)
         )
 
     outcome = _base_outcome(post_type=args.post_type)
-    selected: tuple[dict[str, Any], str, Any] | None = None
-    least_similar: tuple[dict[str, Any], str, Any] | None = None
-    fallback_reason = ""
-
-    for attempt in range(3):
-        candidate = (
-            build_payload(
-                message,
-                "message_file",
-                post_type=args.post_type,
-                variation_attempt=attempt,
-                visibility_context=visibility_context,
-            )
-            if args.message_file
-            else build_fixture_payload(args.scenario, post_type=args.post_type, variation_attempt=attempt)
-        )
-        try:
-            img_path = generate_image(
-                prompt=candidate["image_prompt"],
-                style_name=candidate["style_name"],
-                seed=_seed_from_cache_key(candidate["cache_key"]),
-            )
-            print(f"Generated KLD image attempt={attempt}: {img_path}")
+    providers = [("pollinations", generate_image)]
+    if secondary_generate_image is not None:
+        providers.append(("stable_horde", secondary_generate_image))
+    candidates, scene_cooldown, composition_cooldown = _candidate_payloads(
+        args=args,
+        message=message,
+        visibility_context=visibility_context,
+        history_path=history_path,
+        count=3 * len(providers),
+    )
+    outcome["scene_cooldown"] = scene_cooldown
+    outcome["composition_cooldown"] = composition_cooldown
+    duplicate_reasons: list[str] = []
+    provider_failed = False
+    provider_failure_kinds: list[str] = []
+    for provider_index, (backend, generator) in enumerate(providers):
+        start = provider_index * 3
+        provider_candidates = candidates[start : start + 3]
+        for candidate in provider_candidates:
             metadata = candidate["metadata"]
-            duplicate = evaluate_candidate(
-                img_path,
-                date_value=metadata["forecast_date"],
-                target_date=metadata["target_date"],
-                post_type=args.post_type,
-                scene_family=metadata["scene_family"],
-                composition=metadata["composition"],
-                prompt_version=metadata["prompt_version"],
-                history_path=history_path,
+            try:
+                img_path = generator(
+                    prompt=candidate["image_prompt"],
+                    style_name=candidate["style_name"],
+                    seed=_seed_from_cache_key(candidate["cache_key"]),
+                )
+            except Exception as exc:
+                provider_failed = True
+                error = _error_payload(exc)
+                if not error["backend"]:
+                    error["backend"] = backend
+                outcome["provider_error"] = error
+                outcome["provider_errors"].append(error)
+                outcome["error_type"] = error["type"]
+                outcome["error_message"] = error["message"]
+                provider_failure_kinds.append(str(error.get("reason") or "provider_failure"))
+                if backend == "pollinations":
+                    outcome["fallback_reason"] = str(error.get("reason") or "provider_failure")
+                attempt_payload = _provider_attempt_payload(
+                    backend=backend,
+                    candidate=candidate,
+                    result="failed",
+                    error=error,
+                )
+                outcome["provider_attempts"].append(attempt_payload)
+                outcome["http_attempt_count"] += attempt_payload["http_attempt_count"]
+                print(
+                    "WARNING: KLD image provider unavailable: "
+                    f"backend={backend} {error['type']}: {error['message']}"
+                )
+                break
+
+            diagnostics = provider_diagnostics(backend) if provider_diagnostics else {}
+            attempt_payload = _provider_attempt_payload(
+                backend=backend,
+                candidate=candidate,
+                result="generated",
+                diagnostics=diagnostics,
             )
-        except Exception as exc:
-            error = _error_payload(exc)
-            outcome["provider_error"] = error
-            outcome["error_type"] = error["type"]
-            outcome["error_message"] = error["message"]
-            fallback_reason = "provider_failure"
-            print(f"WARNING: KLD AI image unavailable: {error['type']}: {error['message']}")
-            print("::warning::KLD AI image failed; local informative cover will be attempted.")
-            break
+            outcome["provider_attempts"].append(attempt_payload)
+            outcome["http_attempt_count"] += attempt_payload["http_attempt_count"]
+            print(
+                "Generated KLD image: "
+                f"backend={backend} variation={candidate['variation_attempt']} "
+                f"scene={metadata['scene_family']} composition={metadata['composition']} path={img_path}"
+            )
+            try:
+                duplicate = evaluate_candidate(
+                    img_path,
+                    date_value=metadata["forecast_date"],
+                    target_date=metadata["target_date"],
+                    post_type=args.post_type,
+                    scene_family=metadata["scene_family"],
+                    composition=metadata["composition"],
+                    prompt_version=metadata["prompt_version"],
+                    history_path=history_path,
+                )
+            except Exception as exc:
+                provider_failed = True
+                error = _error_payload(exc)
+                error["backend"] = backend
+                error["reason"] = "invalid_image"
+                provider_failure_kinds.append("invalid_image")
+                outcome["provider_error"] = error
+                outcome["provider_errors"].append(error)
+                outcome["error_type"] = error["type"]
+                outcome["error_message"] = error["message"]
+                outcome["provider_attempts"][-1]["result"] = "invalid_image"
+                outcome["provider_attempts"][-1]["exception_type"] = error["type"]
+                outcome["provider_attempts"][-1]["error_message"] = error["message"]
+                print(f"WARNING: KLD generated image validation failed: {error['type']}: {error['message']}")
+                break
 
-        dedup = _duplicate_payload(duplicate, attempt=attempt, backend="pollinations")
-        outcome["dedup_results"].append(dedup)
-        print(
-            "KLD image duplicate check: "
-            f"attempt={attempt} accepted={duplicate.accepted} reason={duplicate.reason} "
-            f"scene={metadata['scene_family']} composition={metadata['composition']} "
-            f"min_distance={duplicate.min_distance}"
+            dedup = _duplicate_payload(
+                duplicate,
+                attempt=int(candidate["variation_attempt"]),
+                backend=backend,
+            )
+            outcome["dedup_results"].append(dedup)
+            outcome["dedup_reason"] = dedup["reason"]
+            outcome["dedup_distance"] = dedup["min_distance"]
+            outcome["provider_attempts"][-1]["dedup_reason"] = dedup["reason"]
+            outcome["provider_attempts"][-1]["dedup_distance"] = dedup["min_distance"]
+            print(
+                "KLD image duplicate check: "
+                f"backend={backend} variation={candidate['variation_attempt']} "
+                f"accepted={duplicate.accepted} reason={duplicate.reason} "
+                f"scene={metadata['scene_family']} composition={metadata['composition']} "
+                f"min_distance={duplicate.min_distance}"
+            )
+            if duplicate.accepted:
+                print(f"Selected KLD image: backend={backend} path={img_path}")
+                return _send_and_record(
+                    args=args,
+                    outcome=outcome,
+                    backend=backend,
+                    image_path=img_path,
+                    metadata=metadata,
+                    cache_key=candidate["cache_key"],
+                    style_name=candidate["style_name"],
+                    history_path=history_path,
+                    send_photo=send_photo,
+                    record_publication=record_publication,
+                )
+            duplicate_reasons.append(str(duplicate.reason))
+            # Hard rejection: a near duplicate is never promoted merely because
+            # it is the least similar of the rejected candidates.
+
+    if provider_failed and duplicate_reasons:
+        fallback_reason = "provider_failure_after_duplicate"
+    elif provider_failed:
+        fallback_reason = (
+            "invalid_image"
+            if provider_failure_kinds and all(kind == "invalid_image" for kind in provider_failure_kinds)
+            else "provider_failure"
         )
-        if duplicate.accepted:
-            selected = (candidate, img_path, duplicate)
-            break
-        if duplicate.reason != "exact_duplicate":
-            if least_similar is None:
-                least_similar = (candidate, img_path, duplicate)
-            else:
-                previous_distance = least_similar[2].min_distance
-                current_distance = duplicate.min_distance
-                if current_distance is not None and (previous_distance is None or current_distance > previous_distance):
-                    least_similar = (candidate, img_path, duplicate)
-
-    if selected is None and least_similar is not None:
-        selected = least_similar
-        print("WARNING: all KLD AI candidates were near-duplicates; using least similar candidate.")
-    if selected is not None:
-        payload, img_path, _duplicate = selected
-        print(f"Selected KLD image: {img_path}")
-        return _send_and_record(
-            args=args,
-            outcome=outcome,
-            backend="pollinations",
-            image_path=img_path,
-            metadata=payload["metadata"],
-            cache_key=payload["cache_key"],
-            style_name=payload["style_name"],
-            history_path=history_path,
-            send_photo=send_photo,
-            record_publication=record_publication,
-        )
-
-    if not fallback_reason:
+    elif "near_duplicate" in duplicate_reasons:
+        fallback_reason = "near_duplicate"
+    else:
         fallback_reason = "exact_duplicate"
-        outcome["error_type"] = "ExactDuplicateOnly"
-        outcome["error_message"] = "all AI candidates matched exact visual history entries"
-        print("WARNING: all KLD AI candidates were exact duplicates; trying local informative cover.")
-        print("::warning::KLD AI image duplicate; local informative cover will be attempted.")
+    outcome["fallback_reason"] = fallback_reason
+    if duplicate_reasons and not provider_failed:
+        outcome["error_type"] = "DuplicateOnly"
+        outcome["error_message"] = "all generated candidates matched visual history"
+    print(
+        "::warning::KLD AI image unavailable after provider/dedup ladder; "
+        "validated local informative cover will be attempted."
+    )
 
     outcome["cover_attempted"] = True
     cover_path = str(Path(args.cover_path))
@@ -479,6 +689,29 @@ def execute_image_delivery(
                 output_path=cover_path,
             )
         )
+        outcome["cover_metadata"] = cover_metadata
+        cover_validation = dict(
+            validate_cover(
+                message,
+                cover_metadata,
+                post_type=args.post_type,
+                visibility_context=visibility_context,
+            )
+        )
+        outcome["cover_validation"] = cover_validation
+        if not cover_validation.get("valid"):
+            outcome.update(
+                result="failed_nonfatal",
+                backend="none",
+                error_type="InvalidLocalCover",
+                error_message="; ".join(str(item) for item in cover_validation.get("errors") or []),
+            )
+            print(
+                "WARNING: KLD local informative cover failed semantic validation; "
+                "continuing without image: "
+                + outcome["error_message"]
+            )
+            return outcome
         metadata = initial_payload["metadata"]
         cover_duplicate = evaluate_candidate(
             cover_path,
@@ -502,17 +735,25 @@ def execute_image_delivery(
         print(f"WARNING: KLD local informative cover failed: {error['type']}: {error['message']}")
         return outcome
 
-    outcome["cover_metadata"] = cover_metadata
-    outcome["fallback_reason"] = fallback_reason
-    outcome["dedup_results"].append(_duplicate_payload(cover_duplicate, attempt=0, backend="local_informative_cover"))
-    if str(getattr(cover_duplicate, "reason", "")) == "exact_duplicate":
+    cover_dedup = _duplicate_payload(cover_duplicate, attempt=0, backend="local_informative_cover")
+    outcome["dedup_results"].append(cover_dedup)
+    outcome["dedup_reason"] = cover_dedup["reason"]
+    outcome["dedup_distance"] = cover_dedup["min_distance"]
+    outcome["selected_scene_family"] = "local_informative_cover"
+    outcome["selected_composition"] = "branded_weather_card"
+    outcome["selected_cache_key"] = f"{initial_payload['cache_key']};renderer={LOCAL_COVER_RENDERER_VERSION}"
+    if str(getattr(cover_duplicate, "reason", "")) in {"exact_duplicate", "near_duplicate"}:
         outcome.update(
             result="skipped_duplicate",
             backend="local_informative_cover",
             telegram_image_sent=False,
             history_recorded=False,
         )
-        print("WARNING: KLD local informative cover is an exact duplicate; continuing without image.")
+        print(
+            "WARNING: KLD local informative cover is a duplicate "
+            f"({cover_dedup['reason']}, distance={cover_dedup['min_distance']}); "
+            "continuing without image."
+        )
         return outcome
 
     cover_history_metadata = {

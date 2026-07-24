@@ -342,6 +342,8 @@ KLD_SCENE_FAMILIES: tuple[str, ...] = (
     "quiet_lagoon_coast",
     "wet_seaside_promenade",
     "elevated_baltic_overlook",
+    "kaliningrad_urban_coastal_view",
+    "rainy_coastal_road",
 )
 
 _KLD_SCENE_TEXT = {
@@ -355,6 +357,8 @@ _KLD_SCENE_TEXT = {
     "quiet_lagoon_coast": "quiet lagoon-like Baltic coast with reeds, low shore and subdued northern atmosphere",
     "wet_seaside_promenade": "wet seaside promenade after rain with dry-to-damp stone texture and realistic reflections",
     "elevated_baltic_overlook": "elevated Baltic overlook from a dune or cliff path, wide sea and coastline below",
+    "kaliningrad_urban_coastal_view": "urban Baltic coastal edge with modest Kaliningrad-region architecture, promenade and sea horizon",
+    "rainy_coastal_road": "rain-darkened coastal road near dunes and pines, with the Baltic shoreline visible beyond",
 }
 
 KLD_COMPOSITIONS: tuple[str, ...] = (
@@ -768,15 +772,49 @@ def _rain_cloud_fog_category(ctx: Any) -> str:
     return "clear_or_mixed"
 
 
-def _scene_index(date_key: str, post_type: str, weather_main: str, variation_attempt: int) -> int:
+def _scene_catalog(weather_main: str) -> tuple[str, ...]:
+    if weather_main == "storm":
+        return (
+            "stormy_open_baltic",
+            "baltiysk_breakwater",
+            "svetlogorsk_cliff_coast",
+            "wet_seaside_promenade",
+            "rainy_coastal_road",
+            "elevated_baltic_overlook",
+        )
+    if weather_main in {"rain", "drizzle"}:
+        return (
+            "wet_seaside_promenade",
+            "rainy_coastal_road",
+            "zelenogradsk_promenade",
+            "baltiysk_breakwater",
+            "svetlogorsk_cliff_coast",
+            "pine_forest_sea_path",
+            "kaliningrad_urban_coastal_view",
+            "curonian_spit_dunes",
+            "quiet_lagoon_coast",
+            "elevated_baltic_overlook",
+        )
+    return tuple(
+        scene
+        for scene in KLD_SCENE_FAMILIES
+        if scene not in {"stormy_open_baltic", "wet_seaside_promenade", "rainy_coastal_road"}
+    )
+
+
+def _scene_index(
+    date_key: str,
+    post_type: str,
+    weather_main: str,
+    variation_attempt: int,
+    *,
+    count: int,
+) -> int:
     base_date = _date_from_key(date_key)
     ordinal = base_date.toordinal() if base_date else _stable_index(date_key, "scene_ordinal", 10_000)
     offset = 5 if (post_type or "").strip().lower() == "evening" else 0
-    if weather_main == "storm":
-        offset += KLD_SCENE_FAMILIES.index("stormy_open_baltic")
-    elif weather_main in {"rain", "drizzle"}:
-        offset += KLD_SCENE_FAMILIES.index("wet_seaside_promenade")
-    return (ordinal * 3 + offset + int(variation_attempt or 0)) % len(KLD_SCENE_FAMILIES)
+    step = 5 if count % 5 else 3
+    return (ordinal * step + offset + int(variation_attempt or 0)) % count
 
 
 def kld_scene_metadata(
@@ -788,7 +826,16 @@ def kld_scene_metadata(
     variation_attempt: int = 0,
 ) -> dict[str, str]:
     weather = _weather_scenario(ctx)
-    scene_family = KLD_SCENE_FAMILIES[_scene_index(date_key, post_type, weather, variation_attempt)]
+    scene_catalog = _scene_catalog(weather)
+    scene_family = scene_catalog[
+        _scene_index(
+            date_key,
+            post_type,
+            weather,
+            variation_attempt,
+            count=len(scene_catalog),
+        )
+    ]
     composition_idx = (
         (_date_from_key(date_key).toordinal() if _date_from_key(date_key) else 0)
         + _stable_index(weather, "kld_composition_offset", len(KLD_COMPOSITIONS))
