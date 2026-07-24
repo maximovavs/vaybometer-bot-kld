@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import os
 import subprocess
@@ -18,11 +20,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from kld_image_first import FORMAT_V2_BEGIN, FORMAT_V2_END, run_image_first_publication  # noqa: E402
+import imagegen  # noqa: E402
 from kld_informative_cover import (  # noqa: E402
     RENDERER_VERSION,
     _factual_weather_truth,
     extract_kld_cover_facts,
     render_kld_informative_cover,
+    validate_kld_cover_semantics,
 )
 from kld_visual_dedup import KldVisualDuplicateResult  # noqa: E402
 from tools.kld_visual_fixture_image import (  # noqa: E402
@@ -66,13 +70,13 @@ def _image(path: Path, color: tuple[int, int, int] = (70, 110, 140)) -> str:
     return str(path)
 
 
-def _duplicate(*, accepted: bool, reason: str) -> KldVisualDuplicateResult:
+def _duplicate(*, accepted: bool, reason: str, distance: int | None = 12) -> KldVisualDuplicateResult:
     return KldVisualDuplicateResult(
         accepted=accepted,
         reason=reason,
         sha256="a" * 64,
         perceptual_hash="0" * 16,
-        min_distance=12,
+        min_distance=distance,
     )
 
 
@@ -104,6 +108,9 @@ def _run_delivery(
     send_photo,
     record,
     post_type: str = "evening",
+    secondary_generate=None,
+    validate_cover=None,
+    provider_diagnostics=None,
 ):
     args = _args(root, post_type=post_type)
     visibility = {
@@ -119,8 +126,11 @@ def _run_delivery(
         visibility_context=visibility,
         history_path=root / "history.json",
         generate_image=generate,
+        secondary_generate_image=secondary_generate,
+        provider_diagnostics=provider_diagnostics,
         evaluate_candidate=evaluate,
         cover_renderer=cover_renderer,
+        validate_cover=validate_cover or (lambda *args, **kwargs: {"valid": True, "errors": []}),
         send_photo=send_photo,
         record_publication=record,
     )
@@ -1073,6 +1083,391 @@ def mixed_regional_precipitation_keeps_text_and_graphics_aligned() -> None:
                 assert (snow_pixels > 0) is snow_graphics, (name, snow_pixels)
 
 
+def production_decorative_snow_headers_are_not_weather_evidence() -> None:
+    cases = {
+        "21_july_rain": (
+            """<b>🌅 Калининградская область завтра (21.07.2026)</b>
+🏙 Калининград: 17/13 °C • 🌧 дождь • 💨 3.5 м/с • порывы до 14 м/с
+❄️ Самые прохладные ночи
+Светлогорск: 16/12 °C • 🌧 дождь
+#Калининград #погода
+""",
+            "rain",
+            "ДОЖДЬ МЕСТАМИ",
+        ),
+        "24_july_drizzle": (
+            """<b>🌅 Калининградская область завтра (24.07.2026)</b>
+🏙 Калининград: 21/14 °C • 🌦 морось • 💨 2.1 м/с • порывы до 7 м/с
+❄️ Самые прохладные ночи
+Пионерский: 19/13 °C • 🌦 морось
+#Калининград #погода
+""",
+            "drizzle",
+            "МОРОСЬ МЕСТАМИ",
+        ),
+        "25_july_cloudy": (
+            """<b>🌅 Калининградская область завтра (25.07.2026)</b>
+🏙 Калининград: 23/15 °C • ☁️ облачно • 💨 3.3 м/с • порывы до 8 м/с
+❄️ Самые прохладные ночи
+Черняховск: 21/12 °C • ☁️ облачно
+#Калининград #погода
+""",
+            "none",
+            "",
+        ),
+    }
+    for name, (message, display, first_fact) in cases.items():
+        metadata = extract_kld_cover_facts(message, post_type="evening")
+        weather = metadata["weather"]
+        assert weather["snow"] is False, (name, weather)
+        assert weather["precipitation_display"] == display, (name, weather)
+        assert not any("СНЕГ" in fact for fact in metadata["facts"]), (name, metadata["facts"])
+        if first_fact:
+            assert metadata["facts"][0] == first_fact, (name, metadata["facts"])
+
+    decorative_only = _factual_weather_truth("❄️ Самые прохладные ночи")
+    assert decorative_only["snow"] is False
+    assert decorative_only["actual_precipitation"] is False
+    editorial_only = _factual_weather_truth(
+        "💬 Настрой на завтра: лучше оставить расписанию немного места для дождевого окна."
+    )
+    assert editorial_only["rain"] is False
+    assert editorial_only["actual_precipitation"] is False
+
+    positive_structured_icon = _factual_weather_truth(
+        "Калининград: 23/15 °C • ❄ • облачно"
+    )
+    assert positive_structured_icon["snow"] is False
+    explicit_word = _factual_weather_truth(
+        "Калининград: 1/-2 °C • снег"
+    )
+    assert explicit_word["snow"] is True
+
+
+def local_cover_semantic_validation_blocks_tampering() -> None:
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "cover.png"
+        metadata = render_kld_informative_cover(
+            MESSAGE,
+            post_type="evening",
+            visibility_context={
+                "visibility_condition": "reduced_visibility",
+                "morning_min_visibility_m": 5500,
+                "reported_visibility_threshold_m": 6000,
+            },
+            output_path=path,
+        )
+        valid = validate_kld_cover_semantics(
+            MESSAGE,
+            metadata,
+            post_type="evening",
+            visibility_context={
+                "visibility_condition": "reduced_visibility",
+                "morning_min_visibility_m": 5500,
+                "reported_visibility_threshold_m": 6000,
+            },
+        )
+        assert valid["valid"] is True, valid
+        tampered = json.loads(json.dumps(metadata, ensure_ascii=False))
+        tampered["facts"][0] = "СНЕГ МЕСТАМИ"
+        tampered["weather"]["snow"] = True
+        invalid = validate_kld_cover_semantics(
+            MESSAGE,
+            tampered,
+            post_type="evening",
+            visibility_context={
+                "visibility_condition": "reduced_visibility",
+                "morning_min_visibility_m": 5500,
+                "reported_visibility_threshold_m": 6000,
+            },
+        )
+        assert invalid["valid"] is False
+        assert any("display facts" in error or "snow" in error for error in invalid["errors"])
+
+
+def invalid_local_cover_is_not_sent_and_text_remains_nonblocking() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("dedup must not run")),
+            cover_renderer=_cover_renderer(events),
+            validate_cover=lambda *args, **kwargs: {
+                "valid": False,
+                "errors": ["display facts differ from source"],
+            },
+            send_photo=lambda *args, **kwargs: events.append("photo") or 999,
+            record=_record(events),
+        )
+        assert outcome["result"] == "failed_nonfatal"
+        assert outcome["error_type"] == "InvalidLocalCover"
+        assert outcome["telegram_image_sent"] is False
+        assert outcome["local_cover_published"] is False
+        assert events == ["cover"]
+        final, order = _orchestrate(root, outcome)
+        assert final["text_sent"] is True
+        assert order == ["preview", "image", "text"]
+
+
+def second_backend_runs_after_pollinations_exhaustion_with_diagnostics() -> None:
+    class ProviderFailure(RuntimeError):
+        backend = "pollinations"
+        reason = "provider_failure"
+        attempts = [
+            {"attempt": 1, "http_status": 500, "exception_type": "HTTPError"},
+            {"attempt": 2, "http_status": None, "exception_type": "TimeoutError"},
+            {"attempt": 3, "http_status": 502, "exception_type": "HTTPError"},
+        ]
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(ProviderFailure("Pollinations exhausted")),
+            secondary_generate=lambda **kwargs: _image(root / "horde.png", (55, 95, 145)),
+            provider_diagnostics=lambda backend: {
+                "backend": backend,
+                "http_attempt_count": 4,
+                "attempts": [
+                    {"attempt": 1, "stage": "submit", "http_status": 202},
+                    {"attempt": 2, "stage": "check", "http_status": 200},
+                    {"attempt": 3, "stage": "status", "http_status": 200},
+                    {"attempt": 4, "stage": "image_download", "http_status": 200},
+                ],
+            },
+            evaluate=lambda *args, **kwargs: _duplicate(accepted=True, reason="accepted", distance=22),
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 105,
+            record=_record(events),
+        )
+        assert outcome["backend"] == "stable_horde"
+        assert outcome["telegram_image_sent"] is True
+        assert outcome["cover_attempted"] is False
+        assert [item["backend"] for item in outcome["provider_attempts"]] == [
+            "pollinations",
+            "stable_horde",
+        ]
+        assert outcome["provider_attempts"][0]["http_attempt_count"] == 3
+        assert outcome["provider_attempts"][1]["http_attempt_count"] == 4
+        assert (
+            outcome["provider_attempts"][0]["scene_family"]
+            != outcome["provider_attempts"][1]["scene_family"]
+        )
+        assert (
+            outcome["provider_attempts"][0]["composition"]
+            != outcome["provider_attempts"][1]["composition"]
+        )
+        assert outcome["fallback_reason"] == "provider_failure"
+        assert outcome["http_attempt_count"] == 7
+        assert outcome["selected_scene_family"]
+        assert outcome["selected_composition"]
+        assert outcome["selected_cache_key"]
+        assert events == ["photo", "history"]
+
+
+def near_duplicate_candidates_are_hard_rejected_and_rotate_scene() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        generated = 0
+
+        def generate(**kwargs):
+            nonlocal generated
+            generated += 1
+            return _image(root / f"ai-{generated}.png", (70 + generated, 110, 140))
+
+        def evaluate(path, **kwargs):
+            if str(path).endswith("cover.png"):
+                return _duplicate(accepted=True, reason="accepted", distance=18)
+            return _duplicate(accepted=False, reason="near_duplicate", distance=3)
+
+        outcome = _run_delivery(
+            root,
+            generate=generate,
+            evaluate=evaluate,
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 106,
+            record=_record(events),
+        )
+        ai_attempts = [item for item in outcome["provider_attempts"] if item["backend"] == "pollinations"]
+        assert len(ai_attempts) == 3
+        assert len({item["scene_family"] for item in ai_attempts}) == 3
+        assert len({item["composition"] for item in ai_attempts}) == 3
+        assert all(item.get("dedup_reason") == "near_duplicate" for item in ai_attempts)
+        assert outcome["backend"] == "local_informative_cover"
+        assert outcome["fallback_reason"] == "near_duplicate"
+        assert outcome["local_cover_published"] is True
+        assert events == ["cover", "photo", "history"]
+
+
+def near_duplicate_local_cover_is_not_published() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=lambda *args, **kwargs: _duplicate(
+                accepted=False,
+                reason="near_duplicate",
+                distance=2,
+            ),
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 107,
+            record=_record(events),
+        )
+        assert outcome["result"] == "skipped_duplicate"
+        assert outcome["telegram_image_sent"] is False
+        assert outcome["local_cover_published"] is False
+        assert outcome["dedup_reason"] == "near_duplicate"
+        assert outcome["dedup_distance"] == 2
+        assert events == ["cover"]
+
+
+def recent_scene_and_composition_cooldown_is_applied() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        history = [
+            {"scene_family": "wet_seaside_promenade", "composition": "wide diagonal shoreline composition"},
+            {"scene_family": "elevated_baltic_overlook", "composition": "pine-framed side composition"},
+            {"scene_family": "kaliningrad_urban_coastal_view", "composition": "open horizon with large sky"},
+        ]
+        (root / "history.json").write_text(json.dumps(history), encoding="utf-8")
+        events: list[str] = []
+        outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: _image(root / "ai.png"),
+            evaluate=lambda *args, **kwargs: _duplicate(accepted=True, reason="accepted", distance=20),
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 108,
+            record=_record(events),
+        )
+        selected = outcome["provider_attempts"][0]
+        assert selected["scene_family"] not in outcome["scene_cooldown"]
+        assert selected["composition"] not in outcome["composition_cooldown"]
+        assert len(outcome["scene_cooldown"]) == 3
+        assert len(outcome["composition_cooldown"]) == 3
+
+
+def pollinations_exception_retains_all_http_attempts() -> None:
+    original_http_get = imagegen._http_get
+    original_sleep = imagegen.time.sleep
+    calls = 0
+
+    def fail_http(url: str, *, timeout: float):
+        nonlocal calls
+        calls += 1
+        raise TimeoutError(f"offline timeout {calls}")
+
+    try:
+        imagegen._http_get = fail_http
+        imagegen.time.sleep = lambda seconds: None
+        with TemporaryDirectory() as tmp:
+            try:
+                imagegen.download_image_to_file(
+                    "https://example.invalid/image",
+                    Path(tmp) / "image.jpg",
+                    retries=3,
+                    backend="pollinations",
+                )
+            except imagegen.ImageGenerationError as exc:
+                assert exc.backend == "pollinations"
+                assert exc.reason == "provider_failure"
+                assert len(exc.attempts) == 3
+                assert all(item["exception_type"] == "TimeoutError" for item in exc.attempts)
+            else:
+                raise AssertionError("provider failure must retain structured attempts")
+        diagnostics = imagegen.get_generation_diagnostics("pollinations")
+        assert diagnostics["http_attempt_count"] == 3
+        assert diagnostics["result"] == "failed"
+    finally:
+        imagegen._http_get = original_http_get
+        imagegen.time.sleep = original_sleep
+
+
+def invalid_provider_payload_is_classified_and_never_saved() -> None:
+    original_http_get = imagegen._http_get
+    original_sleep = imagegen.time.sleep
+    try:
+        imagegen._http_get = lambda url, timeout: (b"<html>not an image</html>" * 20, "text/html")
+        imagegen.time.sleep = lambda seconds: None
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "bad.jpg"
+            try:
+                imagegen.download_image_to_file(
+                    "https://example.invalid/image",
+                    output,
+                    retries=2,
+                    backend="pollinations",
+                )
+            except imagegen.ImageGenerationError as exc:
+                assert exc.reason == "invalid_image"
+                assert len(exc.attempts) == 2
+                assert all(item["exception_type"] == "ValueError" for item in exc.attempts)
+            else:
+                raise AssertionError("non-image provider payload must be rejected")
+            assert not output.exists()
+        diagnostics = imagegen.get_generation_diagnostics("pollinations")
+        assert diagnostics["reason"] == "invalid_image"
+    finally:
+        imagegen._http_get = original_http_get
+        imagegen.time.sleep = original_sleep
+
+
+def stable_horde_backend_has_offline_success_and_url_safety() -> None:
+    from PIL import Image
+
+    payload_buffer = io.BytesIO()
+    Image.new("RGB", (256, 256), (70, 100, 150)).save(payload_buffer, format="PNG")
+    encoded = base64.b64encode(payload_buffer.getvalue()).decode("ascii")
+    original_json_request = imagegen._horde_json_request
+    original_enabled = os.environ.get("KLD_STABLE_HORDE_ENABLED")
+
+    def fake_json_request(url: str, *, attempts, stage: str, **kwargs):
+        attempts.append(
+            {
+                "attempt": len(attempts) + 1,
+                "stage": stage,
+                "http_status": 200 if stage != "submit" else 202,
+                "exception_type": "",
+                "message": "",
+            }
+        )
+        if stage == "submit":
+            return {"id": "offline-job"}
+        if stage == "check":
+            return {"done": True}
+        return {"generations": [{"img": encoded}]}
+
+    try:
+        os.environ["KLD_STABLE_HORDE_ENABLED"] = "1"
+        imagegen._horde_json_request = fake_json_request
+        with TemporaryDirectory() as tmp:
+            output = imagegen.generate_kld_stable_horde_image(
+                prompt="offline Baltic coast",
+                style_name="test",
+                seed=123,
+                out_path=str(Path(tmp) / "horde.jpg"),
+            )
+            with Image.open(output) as rendered:
+                assert rendered.size == (256, 256)
+                assert rendered.format == "JPEG"
+        diagnostics = imagegen.get_generation_diagnostics("stable_horde")
+        assert diagnostics["result"] == "success"
+        assert diagnostics["http_attempt_count"] == 3
+        assert imagegen._public_horde_image_url("http://127.0.0.1/image.png") is False
+        assert imagegen._public_horde_image_url("http://localhost/image.png") is False
+    finally:
+        imagegen._horde_json_request = original_json_request
+        if original_enabled is None:
+            os.environ.pop("KLD_STABLE_HORDE_ENABLED", None)
+        else:
+            os.environ["KLD_STABLE_HORDE_ENABLED"] = original_enabled
+
+
 TESTS = [
     pollinations_failure_uses_cover_and_text_once,
     exact_duplicates_are_nonfatal_and_text_once,
@@ -1095,6 +1490,16 @@ TESTS = [
     storm_and_thunderstorm_flags_drive_graphics_independently,
     storm_badge_uses_word_or_gust_threshold_not_strong_wind,
     mixed_regional_precipitation_keeps_text_and_graphics_aligned,
+    production_decorative_snow_headers_are_not_weather_evidence,
+    local_cover_semantic_validation_blocks_tampering,
+    invalid_local_cover_is_not_sent_and_text_remains_nonblocking,
+    second_backend_runs_after_pollinations_exhaustion_with_diagnostics,
+    near_duplicate_candidates_are_hard_rejected_and_rotate_scene,
+    near_duplicate_local_cover_is_not_published,
+    recent_scene_and_composition_cooldown_is_applied,
+    pollinations_exception_retains_all_http_attempts,
+    invalid_provider_payload_is_classified_and_never_saved,
+    stable_horde_backend_has_offline_success_and_url_safety,
 ]
 
 

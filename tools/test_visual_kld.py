@@ -1117,6 +1117,21 @@ def run_controlled_variety_cases() -> None:
 
 def run_scene_family_rotation_cases() -> None:
     name = "scene_family_rotation"
+    required_categories = {
+        "zelenogradsk_promenade",
+        "baltiysk_breakwater",
+        "svetlogorsk_cliff_coast",
+        "pine_forest_sea_path",
+        "quiet_lagoon_coast",
+        "kaliningrad_urban_coastal_view",
+        "curonian_spit_dunes",
+        "rainy_coastal_road",
+    }
+    if not required_categories.issubset(set(KLD_SCENE_FAMILIES)):
+        raise AssertionError(
+            f"{name}: scene catalogue is missing categories "
+            f"{sorted(required_categories - set(KLD_SCENE_FAMILIES))}"
+        )
     message = CASES[0]["message"]
     scene_families: list[str] = []
     for day in range(7):
@@ -1139,6 +1154,9 @@ def run_scene_family_rotation_cases() -> None:
         )
         morning_scene = morning_meta["scene_family"]
         evening_scene = evening_meta["scene_family"]
+        for scene in (morning_scene, evening_scene):
+            if scene in {"stormy_open_baltic", "wet_seaside_promenade", "rainy_coastal_road"}:
+                raise AssertionError(f"{name}: cloudy fixture selected contradictory scene {scene}")
         if morning_scene == evening_scene:
             raise AssertionError(f"{name}: morning/evening scene repeated for {date_value}: {morning_scene}")
         if scene_families and morning_scene == scene_families[-1]:

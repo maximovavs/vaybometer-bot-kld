@@ -14,7 +14,7 @@ from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_sto
 from weather_text import split_clauses as _split_clauses
 
 
-RENDERER_VERSION = "kld_local_informative_cover_v1"
+RENDERER_VERSION = "kld_local_informative_cover_v2"
 _NUMBER = r"-?\d+(?:[.,]\d+)?"
 _CITY_TEMPERATURE_RE = re.compile(
     rf"Калининград[^\n]*?({_NUMBER})\s*/\s*({_NUMBER})\s*°?C?",
@@ -28,10 +28,21 @@ _WAVE_RE = re.compile(rf"волна\s*({_NUMBER})\s*м", re.IGNORECASE)
 _DATE_RE = re.compile(r"\b(\d{2}\.\d{2}\.\d{4})\b")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _EDITORIAL_LINE_RE = re.compile(
-    r"^\W*(?:главный\s+нюанс|нюанс|vaybometer|план|рекомендации|уверенность)"
+    r"^\W*(?:главный\s+нюанс|нюанс|главное|настрой|vaybometer|план|рекомендации|уверенность)"
     r"(?:\s+[^:]{1,32})?\s*:",
     re.IGNORECASE,
 )
+_DECORATIVE_SECTION_RE = re.compile(
+    r"^(?:❄️?\s*)?(?:самые\s+прохладные\s+ночи|самые\s+тёплые\s+дни|"
+    r"морские\s+города|внутри\s+области|тёплые\s+города|прохладные\s+города|"
+    r"солнце(?:,\s*луна)?\s+и\s+ритм|астроритм)\s*:?\s*$",
+    re.IGNORECASE,
+)
+_STRUCTURED_WEATHER_LINE_RE = re.compile(
+    rf"^[^:\n—–]{{2,48}}(?::|—|–)\s*[^\n]*?{_NUMBER}\s*/\s*{_NUMBER}\s*°?\s*C?(?:\s*•|\s*$)",
+    re.IGNORECASE,
+)
+_LINE_TEMPERATURE_RE = re.compile(rf"({_NUMBER})\s*/\s*({_NUMBER})\s*°?\s*C?", re.IGNORECASE)
 # "шторм" word/negation/uncertainty detection is shared with format_v2.py,
 # safe_test_post.py and post_kld.py via weather_text.clause_has_confirmed_storm,
 # so all four use one contract. "гроза" (thunderstorm) is a separate concept
@@ -77,7 +88,7 @@ _UNCERTAIN_SUFFIX_AFTER = r"провер\w*|уточн\w*|возмож\w*|вер
 _PRECIP_GROUP_STEMS = {
     "rain": ("дожд", "лив"),
     "drizzle": ("морос",),
-    "snow": ("снег",),
+    "snow": ("снег", "снеж"),
     "precipitation": ("осадк",),
 }
 
@@ -126,7 +137,8 @@ _RAIN_WORD_RE = re.compile(r"(?:дожд\w*|лив\w*)", re.IGNORECASE)
 _RAIN_ICON_RE = re.compile(r"🌧")
 _SHOWERS_ICON_RE = re.compile(r"🌦")
 _DRIZZLE_RE = re.compile(r"морос\w*", re.IGNORECASE)
-_SNOW_RE = re.compile(r"(?:❄|снег\w*)", re.IGNORECASE)
+_SNOW_WORD_RE = re.compile(r"(?:снег\w*|снеж\w*)", re.IGNORECASE)
+_SNOW_ICON_RE = re.compile(r"❄")
 _PRECIPITATION_RE = re.compile(r"осад\w*", re.IGNORECASE)
 _STRONG_WIND_RE = re.compile(r"(?:сильн\w*\s+ветер|штормов\w*\s+ветер)", re.IGNORECASE)
 
@@ -155,6 +167,27 @@ def _precip_group_confirmed(group_key: str, clause: str, *, has_evidence: bool) 
     return True
 
 
+def _is_decorative_section_line(line: str) -> bool:
+    """Return True for editorial/ranking headers that are not weather observations."""
+    cleaned = _HTML_TAG_RE.sub("", str(line or "")).strip()
+    cleaned = re.sub(r"^[\s•·—–-]+", "", cleaned)
+    return bool(_DECORATIVE_SECTION_RE.match(cleaned))
+
+
+def _structured_snow_icon_is_factual(line: str, clause: str) -> bool:
+    """Accept a bare snow icon only as a plausible structured city condition."""
+    if not _SNOW_ICON_RE.search(clause) or not _STRUCTURED_WEATHER_LINE_RE.search(line):
+        return False
+    match = _LINE_TEMPERATURE_RE.search(line)
+    if not match:
+        return False
+    temperatures = tuple(_number(value) for value in match.groups())
+    valid_temperatures = tuple(value for value in temperatures if value is not None)
+    # A decorative icon in a positive-temperature summer row is not enough to
+    # publish a snow badge. An explicit snow/snowy word remains valid evidence.
+    return bool(valid_temperatures) and max(valid_temperatures) <= 2.0
+
+
 def _number(value: object) -> float | None:
     try:
         return float(str(value).replace(",", "."))
@@ -177,8 +210,8 @@ def _first_match(pattern: re.Pattern[str], text: str) -> tuple[float, ...]:
     return tuple(value for value in values if value is not None)
 
 
-def _factual_weather_truth(message: str) -> dict[str, bool]:
-    """Parse explicit weather facts without promoting editorial advice to observations."""
+def _factual_weather_analysis(message: str) -> tuple[dict[str, bool], dict[str, list[str]]]:
+    """Parse explicit facts and retain the source lines that proved each flag."""
     explicit_storm = False
     actual_precipitation = False
     rain = False
@@ -187,10 +220,25 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
     thunderstorm = False
     strong_wind = False
     max_gust: float | None = None
+    evidence: dict[str, list[str]] = {
+        "explicit_storm": [],
+        "rain": [],
+        "drizzle": [],
+        "snow": [],
+        "thunderstorm": [],
+        "strong_wind": [],
+        "precipitation": [],
+    }
+
+    def remember(kind: str, source_line: str) -> None:
+        rendered = source_line.strip()
+        if rendered and rendered not in evidence[kind]:
+            evidence[kind].append(rendered)
 
     for raw_line in message.splitlines():
-        line = _HTML_TAG_RE.sub("", raw_line).strip().lower()
-        if not line or _EDITORIAL_LINE_RE.match(line):
+        clean_line = _HTML_TAG_RE.sub("", raw_line).strip()
+        line = clean_line.lower()
+        if not line or _EDITORIAL_LINE_RE.match(line) or _is_decorative_section_line(clean_line):
             continue
 
         # Gust value via the single shared parser (weather_text), counting only
@@ -204,6 +252,7 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
         # storm_gust, which is a strict >=STORM_GUST_MS test derived below.
         if (gust is not None and gust >= 12) or _STRONG_WIND_RE.search(line):
             strong_wind = True
+            remember("strong_wind", clean_line)
 
         # Split into clauses (sentence punctuation, or ", но"/", а" joining two
         # independent statements) so a negation in one clause ("Шторма не будет
@@ -222,11 +271,14 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
             # is the separate derived `severe_weather` flag computed below.
             if _clause_has_confirmed_storm(clause):
                 explicit_storm = True
+                remember("explicit_storm", clean_line)
             if _thunderstorm_confirmed(clause):
                 thunderstorm = True
+                remember("thunderstorm", clean_line)
 
             drizzle_evidence = bool(_DRIZZLE_RE.search(clause))
-            snow_evidence = bool(_SNOW_RE.search(clause))
+            explicit_snow_word = bool(_SNOW_WORD_RE.search(clause))
+            snow_evidence = explicit_snow_word or _structured_snow_icon_is_factual(line, clause)
             explicit_rain_evidence = bool(_RAIN_WORD_RE.search(clause) or _RAIN_ICON_RE.search(clause))
             showers_icon = bool(_SHOWERS_ICON_RE.search(clause))
             rain_evidence = explicit_rain_evidence or (
@@ -243,6 +295,14 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
             rain = rain or clause_rain
             drizzle = drizzle or clause_drizzle
             snow = snow or clause_snow
+            if clause_rain:
+                remember("rain", clean_line)
+            if clause_drizzle:
+                remember("drizzle", clean_line)
+            if clause_snow:
+                remember("snow", clean_line)
+            if clause_precipitation:
+                remember("precipitation", clean_line)
             actual_precipitation = actual_precipitation or any(
                 (clause_rain, clause_drizzle, clause_snow, clause_precipitation)
             )
@@ -259,7 +319,7 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
     # severe_weather is the umbrella for the dramatic palette: storm word,
     # thunderstorm, or gust-threshold storm.
     severe_weather = explicit_storm or thunderstorm or storm_gust
-    return {
+    flags = {
         "explicit_storm": explicit_storm,
         "actual_precipitation": actual_precipitation,
         "rain": rain,
@@ -271,6 +331,13 @@ def _factual_weather_truth(message: str) -> dict[str, bool]:
         "severe_weather": severe_weather,
         "strong_wind": strong_wind,
     }
+    return flags, evidence
+
+
+def _factual_weather_truth(message: str) -> dict[str, bool]:
+    """Parse explicit weather facts without promoting editorial advice to observations."""
+    flags, _evidence = _factual_weather_analysis(message)
+    return flags
 
 
 def _precipitation_display(factual: Mapping[str, bool]) -> str:
@@ -300,10 +367,10 @@ def _weather_flags(
     visibility_context: Mapping[str, Any] | None,
     *,
     post_type: str,
-) -> dict[str, bool | str]:
+) -> dict[str, Any]:
     lowered = message.lower()
     condition = str((visibility_context or {}).get("visibility_condition") or "").strip().lower()
-    factual = _factual_weather_truth(message)
+    factual, evidence = _factual_weather_analysis(message)
     weather_main = "unknown"
     try:
         from visual_context_kld import build_visual_context
@@ -337,6 +404,7 @@ def _weather_flags(
         "weather_main": weather_main,
         "storm": factual["explicit_storm"],
         **factual,
+        "evidence": evidence,
         "precipitation_display": _precipitation_display(factual),
         "fog": fog,
         "dust_haze": dust,
@@ -434,6 +502,89 @@ def extract_kld_cover_facts(
             "wave_m": wave[0] if wave else None,
             "visibility_m": visibility_actual,
         },
+    }
+
+
+def validate_kld_cover_semantics(
+    message: str,
+    cover_metadata: Mapping[str, Any],
+    *,
+    post_type: str,
+    visibility_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Verify that a rendered cover is a faithful projection of its source facts."""
+    expected = extract_kld_cover_facts(
+        message,
+        post_type=post_type,
+        visibility_context=visibility_context,
+    )
+    errors: list[str] = []
+    actual_facts = list(cover_metadata.get("facts") or [])
+    expected_facts = list(expected.get("facts") or [])
+    if actual_facts != expected_facts:
+        errors.append("display facts differ from deterministic source extraction")
+
+    actual_weather = cover_metadata.get("weather")
+    expected_weather = expected["weather"]
+    if not isinstance(actual_weather, Mapping):
+        errors.append("weather metadata is missing")
+        actual_weather = {}
+    truth_keys = (
+        "explicit_storm",
+        "actual_precipitation",
+        "rain",
+        "drizzle",
+        "snow",
+        "thunderstorm",
+        "storm_gust",
+        "storm_badge",
+        "severe_weather",
+        "strong_wind",
+        "fog",
+        "dust_haze",
+        "mixed_visibility",
+        "reduced_visibility",
+        "precipitation_display",
+    )
+    for key in truth_keys:
+        if actual_weather.get(key) != expected_weather.get(key):
+            errors.append(f"weather flag mismatch: {key}")
+
+    actual_values = cover_metadata.get("actual_values")
+    expected_values = expected["actual_values"]
+    if not isinstance(actual_values, Mapping):
+        errors.append("actual value metadata is missing")
+        actual_values = {}
+    for key, expected_value in expected_values.items():
+        actual_value = actual_values.get(key)
+        if isinstance(expected_value, (int, float)) or isinstance(actual_value, (int, float)):
+            if expected_value is None or actual_value is None or abs(float(expected_value) - float(actual_value)) > 0.01:
+                errors.append(f"actual value mismatch: {key}")
+        elif actual_value != expected_value:
+            errors.append(f"actual value mismatch: {key}")
+
+    evidence = expected_weather.get("evidence")
+    evidence = dict(evidence) if isinstance(evidence, Mapping) else {}
+    for flag in ("explicit_storm", "rain", "drizzle", "snow", "thunderstorm"):
+        if expected_weather.get(flag) and not evidence.get(flag):
+            errors.append(f"missing source evidence: {flag}")
+
+    snow_evidence = [str(line) for line in evidence.get("snow") or []]
+    if expected_weather.get("snow") and snow_evidence:
+        explicit_snow = any(_SNOW_WORD_RE.search(line) for line in snow_evidence)
+        plausible_structured_icon = any(
+            _structured_snow_icon_is_factual(line.lower(), line.lower()) for line in snow_evidence
+        )
+        if not explicit_snow and not plausible_structured_icon:
+            errors.append("snow is not supported by an explicit or structured weather fact")
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "checked_facts": actual_facts,
+        "expected_facts": expected_facts,
+        "source_evidence": evidence,
+        "precipitation_display": expected_weather.get("precipitation_display"),
     }
 
 
@@ -631,4 +782,5 @@ __all__ = [
     "RENDERER_VERSION",
     "extract_kld_cover_facts",
     "render_kld_informative_cover",
+    "validate_kld_cover_semantics",
 ]
