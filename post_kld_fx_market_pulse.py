@@ -66,19 +66,8 @@ def _fmt_pct(value: float | None) -> str:
     return " →0.0%"
 
 
-def _fmt_ruble_change_amount(delta: float) -> str:
-    """Format a CBR day-to-day move for ordinary readers."""
-    value = abs(float(delta))
-    if value < 1:
-        kopecks = int(round(value * 100))
-        if kopecks <= 0:
-            return "меньше 1 коп."
-        return f"{kopecks} коп."
-    return f"{value:.2f}".replace(".", ",") + " ₽"
-
-
 def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
-    """Explain each available RUB move without trading jargon."""
+    """Explain each available RUB move without repeating the numbers above."""
     parts: list[str] = []
     for code in _CURRENCY_ORDER:
         delta = _to_float((rates.get(code) or {}).get("delta"))
@@ -86,11 +75,11 @@ def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
             continue
         name = _CURRENCY_NAMES_RU[code]
         if abs(delta) < 0.005:
-            parts.append(f"{name} почти не изменился")
+            parts.append(f"курс {name} почти не изменился")
         elif delta > 0:
-            parts.append(f"{name} подорожал на {_fmt_ruble_change_amount(delta)}")
+            parts.append(f"{name} подорожал")
         else:
-            parts.append(f"{name} подешевел на {_fmt_ruble_change_amount(delta)}")
+            parts.append(f"{name} подешевел")
     if not parts:
         return ""
     return "🧭 К рублю: " + ", ".join(parts) + "."
