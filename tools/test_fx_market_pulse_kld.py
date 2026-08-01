@@ -67,7 +67,7 @@ def kld_plain_summary_large_moves_still_avoids_duplicate_numbers() -> None:
 def kld_plain_summary_handles_zero_and_missing() -> None:
     rates = _rates(0.0, None, 0.004)
     summary = pulse.build_plain_ruble_summary(rates)
-    assert summary == "🧭 К рублю: курс доллар почти не изменился, курс юань почти не изменился."
+    assert summary == "🧭 К рублю: доллар почти не изменился, юань почти не изменился."
 
 
 def kld_plain_summary_is_appended_when_old_line_missing() -> None:
