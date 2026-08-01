@@ -75,7 +75,7 @@ def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
             continue
         name = _CURRENCY_NAMES_RU[code]
         if abs(delta) < 0.005:
-            parts.append(f"курс {name} почти не изменился")
+            parts.append(f"{name} почти не изменился")
         elif delta > 0:
             parts.append(f"{name} подорожал")
         else:
