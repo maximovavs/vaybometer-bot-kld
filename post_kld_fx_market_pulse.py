@@ -31,6 +31,12 @@ from post_kld import (
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+_CURRENCY_RU = {
+    "USD": "доллар",
+    "EUR": "евро",
+    "CNY": "юань",
+}
+
 
 def _to_float(x: Any) -> float | None:
     try:
@@ -57,6 +63,66 @@ def _fmt_pct(value: float | None) -> str:
     if value < 0:
         return f" ↓{abs(value):.1f}%"
     return " →0.0%"
+
+
+def _join_ru(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} и {items[1]}"
+    return ", ".join(items[:-1]) + f" и {items[-1]}"
+
+
+def build_plain_ruble_summary(rates: dict[str, Any]) -> str | None:
+    """Explain CBR deltas in everyday Russian instead of market jargon.
+
+    Positive delta means one unit of the foreign currency costs more rubles than
+    in the previous CBR rate; negative delta means it costs fewer rubles.
+    """
+    cheaper: list[str] = []
+    dearer: list[str] = []
+    unchanged: list[str] = []
+
+    for code in ("USD", "EUR", "CNY"):
+        delta = _to_float((rates.get(code) or {}).get("delta"))
+        if delta is None:
+            continue
+        label = _CURRENCY_RU[code]
+        if delta < 0:
+            cheaper.append(label)
+        elif delta > 0:
+            dearer.append(label)
+        else:
+            unchanged.append(label)
+
+    parts: list[str] = []
+    if cheaper:
+        parts.append(f"{_join_ru(cheaper)} — дешевле")
+    if dearer:
+        parts.append(f"{_join_ru(dearer)} — дороже")
+    if unchanged:
+        parts.append(f"{_join_ru(unchanged)} — без изменений")
+    if not parts:
+        return None
+
+    return "🧭 Проще: по сравнению с прошлым курсом ЦБ " + ", ".join(parts) + "."
+
+
+def apply_plain_ruble_summary(fx_text: str, rates: dict[str, Any]) -> str:
+    summary = build_plain_ruble_summary(rates)
+    if not summary:
+        return fx_text
+
+    lines = str(fx_text or "").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith("🧭"):
+            lines[index] = summary
+            return "\n".join(lines)
+    if not lines:
+        return summary
+    return str(fx_text).rstrip() + "\n" + summary
 
 
 def _fetch_crypto() -> list[str]:
@@ -212,6 +278,7 @@ async def main() -> None:
     tz = pendulum.timezone(TZ_STR)
     date_local = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
     fx_text, rates = _build_fx_message(date_local, tz)
+    fx_text = apply_plain_ruble_summary(fx_text, rates)
     text = inject_market_pulse(fx_text, build_market_pulse_block())
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
