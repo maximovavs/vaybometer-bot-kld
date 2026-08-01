@@ -59,6 +59,13 @@ _CLOUDY_DRIZZLE_SAFE_BLOCK = (
     "quiet dunes and pines; fresh practical morning weather mood."
 )
 
+_SUMMER_VEGETATION_MONTHS = frozenset({6, 7, 8})
+_SUMMER_VEGETATION_CUE = (
+    "Summer vegetation adherence: humid Baltic summer vegetation is lush and fresh; "
+    "coastal grass and dune vegetation are visibly natural green across the foreground and midground; "
+    "shrubs and pines are healthy green; pale beige tones belong to sand, not to living vegetation."
+)
+
 _VISIBILITY_MORNING_CUES = {
     "dense_fog": (
         "Morning visibility adherence: dense humid fog; heavily reduced distant visibility; "
@@ -166,6 +173,24 @@ def _sanitize_morning_prompt(
     return final_prompt + "\n" + _SCENIC_ONLY_GUARD
 
 
+def _apply_summer_vegetation_guard(prompt: str, date_key: str) -> str:
+    """Keep June-August KLD vegetation green and moisture-rich.
+
+    The Baltic/Kaliningrad summer scene should not drift toward a dry steppe or
+    Mediterranean dune palette.  Keep this as a positive cue because image
+    generators can turn negative prompt words into visible objects.
+    """
+    try:
+        target_date = dt.date.fromisoformat(str(date_key)[:10])
+    except Exception:
+        return prompt
+    if target_date.month not in _SUMMER_VEGETATION_MONTHS:
+        return prompt
+    if _SUMMER_VEGETATION_CUE in str(prompt or ""):
+        return prompt
+    return str(prompt or "").rstrip() + "\n" + _SUMMER_VEGETATION_CUE
+
+
 def build_kld_morning_prompt(
     final_format_v2_message: str,
     *,
@@ -204,6 +229,7 @@ def build_kld_morning_prompt(
             source_text=final_format_v2_message,
             variation_attempt=variation_attempt,
         )
+        prompt = _apply_summer_vegetation_guard(prompt, date_key)
         style_name = _format_v2_style_name(
             ctx,
             date_key=date_key,
@@ -214,7 +240,9 @@ def build_kld_morning_prompt(
         return prompt, "format_v2_scene_cues_morning_" + style_name.rsplit("_", 1)[-1]
     except Exception:
         logger.exception("KLD morning visual pipeline failed; using simple coastal fallback")
-        return _sanitize_morning_prompt(_fallback_morning_prompt()), "format_v2_scene_cues_morning"
+        fallback = _sanitize_morning_prompt(_fallback_morning_prompt())
+        fallback = _apply_summer_vegetation_guard(fallback, dt.date.today().isoformat())
+        return fallback, "format_v2_scene_cues_morning"
 
 
 __all__ = ["build_kld_morning_prompt"]
