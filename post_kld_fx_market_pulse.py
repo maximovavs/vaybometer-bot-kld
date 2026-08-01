@@ -31,6 +31,13 @@ from post_kld import (
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+_CURRENCY_NAMES_RU = {
+    "USD": "доллар",
+    "EUR": "евро",
+    "CNY": "юань",
+}
+_CURRENCY_ORDER = ("USD", "EUR", "CNY")
+
 
 def _to_float(x: Any) -> float | None:
     try:
@@ -57,6 +64,53 @@ def _fmt_pct(value: float | None) -> str:
     if value < 0:
         return f" ↓{abs(value):.1f}%"
     return " →0.0%"
+
+
+def _fmt_ruble_change_amount(delta: float) -> str:
+    """Format a CBR day-to-day move for ordinary readers."""
+    value = abs(float(delta))
+    if value < 1:
+        kopecks = int(round(value * 100))
+        if kopecks <= 0:
+            return "меньше 1 коп."
+        return f"{kopecks} коп."
+    return f"{value:.2f}".replace(".", ",") + " ₽"
+
+
+def build_plain_ruble_summary(rates: dict[str, Any]) -> str:
+    """Explain each available RUB move without trading jargon."""
+    parts: list[str] = []
+    for code in _CURRENCY_ORDER:
+        delta = _to_float((rates.get(code) or {}).get("delta"))
+        if delta is None:
+            continue
+        name = _CURRENCY_NAMES_RU[code]
+        if abs(delta) < 0.005:
+            parts.append(f"{name} почти не изменился")
+        elif delta > 0:
+            parts.append(f"{name} подорожал на {_fmt_ruble_change_amount(delta)}")
+        else:
+            parts.append(f"{name} подешевел на {_fmt_ruble_change_amount(delta)}")
+    if not parts:
+        return ""
+    return "🧭 К рублю: " + ", ".join(parts) + "."
+
+
+def replace_ruble_summary(fx_text: str, rates: dict[str, Any]) -> str:
+    """Replace the old aggregate summary with a concrete plain-language line."""
+    summary = build_plain_ruble_summary(rates)
+    if not summary:
+        return fx_text
+    lines = str(fx_text or "").splitlines()
+    replaced = False
+    for index, line in enumerate(lines):
+        if line.strip().startswith("🧭"):
+            lines[index] = summary
+            replaced = True
+            break
+    if not replaced:
+        lines.append(summary)
+    return "\n".join(lines)
 
 
 def _fetch_crypto() -> list[str]:
@@ -212,6 +266,7 @@ async def main() -> None:
     tz = pendulum.timezone(TZ_STR)
     date_local = pendulum.parse(args.date).in_tz(tz) if args.date else pendulum.now(tz)
     fx_text, rates = _build_fx_message(date_local, tz)
+    fx_text = replace_ruble_summary(fx_text, rates)
     text = inject_market_pulse(fx_text, build_market_pulse_block())
     raw_date = rates.get("as_of") or rates.get("date") or rates.get("cbr_date")
     cbr_date = _normalize_cbr_date(raw_date)
