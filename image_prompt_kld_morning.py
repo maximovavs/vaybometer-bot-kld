@@ -173,6 +173,18 @@ def _sanitize_morning_prompt(
     return final_prompt + "\n" + _SCENIC_ONLY_GUARD
 
 
+def _extract_message_date_key(text: str, fallback: dt.date | None = None) -> str:
+    """Extract the forecast date without depending on the main visual pipeline."""
+    value = str(text or "")
+    match = re.search(r"\b(\d{2})[./-](\d{2})[./-](\d{4})\b", value)
+    if match:
+        return f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
+    match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", value)
+    if match:
+        return match.group(0)
+    return fallback.isoformat() if fallback else "undated"
+
+
 def _apply_summer_vegetation_guard(prompt: str, date_key: str) -> str:
     """Keep June-August KLD vegetation green and moisture-rich.
 
@@ -199,6 +211,7 @@ def build_kld_morning_prompt(
     visibility_context: object | None = None,
 ) -> Tuple[str, str]:
     """Build a deterministic morning prompt from the final FORMAT_V2 message."""
+    date_key = _extract_message_date_key(final_format_v2_message, dt.date.today())
     try:
         from visual_context_kld import build_visual_context
         from visual_rules import apply_visual_rules, build_prompt_from_cues
@@ -218,9 +231,8 @@ def build_kld_morning_prompt(
             weather_main=getattr(ctx, "weather_main", ""),
             visibility_condition=getattr(ctx, "visibility_condition", "clear"),
         )
-        from image_prompt_kld import _extract_prompt_date, _format_v2_style_name, apply_kld_controlled_variety
+        from image_prompt_kld import _format_v2_style_name, apply_kld_controlled_variety
 
-        date_key = _extract_prompt_date(final_format_v2_message, dt.date.today())
         prompt = apply_kld_controlled_variety(
             prompt,
             ctx,
@@ -241,7 +253,7 @@ def build_kld_morning_prompt(
     except Exception:
         logger.exception("KLD morning visual pipeline failed; using simple coastal fallback")
         fallback = _sanitize_morning_prompt(_fallback_morning_prompt())
-        fallback = _apply_summer_vegetation_guard(fallback, dt.date.today().isoformat())
+        fallback = _apply_summer_vegetation_guard(fallback, date_key)
         return fallback, "format_v2_scene_cues_morning"
 
 
