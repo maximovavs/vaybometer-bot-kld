@@ -70,6 +70,14 @@ def kld_plain_summary_handles_zero_and_missing() -> None:
     assert summary == "🧭 К рублю: доллар почти не изменился, юань почти не изменился."
 
 
+def kld_missing_deltas_never_restore_old_jargon() -> None:
+    rates = _rates(None, None, None)
+    raw = "💱 Курсы\nUSD/EUR/CNY\n🧭 Валюты к ₽ движутся смешанно."
+    text = pulse.replace_ruble_summary(raw, rates)
+    assert text.endswith("🧭 К рублю: динамика за день пока недоступна.")
+    assert "движутся смешанно" not in text
+
+
 def kld_plain_summary_is_appended_when_old_line_missing() -> None:
     rates = _rates(-0.39, 0.31, -0.05)
     text = pulse.replace_ruble_summary("💱 Курсы\nUSD/EUR/CNY", rates)
@@ -96,6 +104,7 @@ def main() -> None:
         kld_plain_summary_explains_mixed_moves_without_repeating_numbers,
         kld_plain_summary_large_moves_still_avoids_duplicate_numbers,
         kld_plain_summary_handles_zero_and_missing,
+        kld_missing_deltas_never_restore_old_jargon,
         kld_plain_summary_is_appended_when_old_line_missing,
         kld_market_pulse_is_compact,
     )
