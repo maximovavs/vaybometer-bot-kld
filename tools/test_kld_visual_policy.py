@@ -97,6 +97,8 @@ def kld_policy_august_morning_prompt_has_no_legacy_beach_lock() -> None:
     )
     prompt, _ = build_kld_morning_prompt(message, post_type="morning")
     assert "beach, dunes, pines and sea filling the whole image" not in prompt
+    assert "Baltic coast near Kaliningrad in daylight, dunes, pines, promenade, sea horizon" not in prompt
+    assert "dunes, pines, promenade, or Baltic sea horizon" not in prompt
     assert SUMMER_VEGETATION_CUE in prompt
     assert PROVIDER_NEGATIVE_GUARD in prompt
     assert "Controlled scene:" in prompt
