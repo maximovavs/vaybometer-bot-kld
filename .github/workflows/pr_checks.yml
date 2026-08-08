@@ -46,7 +46,8 @@ jobs:
             kld_visual_dedup.py \
             kld_image_first.py \
             tools/kld_visual_fixture_image.py \
-            tools/test_kld_morning_prompt_contract.py
+            tools/test_kld_morning_prompt_contract.py \
+            tools/test_kld_evening_controlled_variety.py
           python - <<'PY'
           import runpy
 
@@ -68,14 +69,14 @@ jobs:
               "run_nonstorm_warning_does_not_get_storm_visual_case",
               "run_gust19_without_storm_word_gets_storm_visual_case",
               "run_storm_overlay_warning_priority_cases",
-              "run_controlled_variety_cases",
               "run_scene_family_rotation_cases",
               "run_scene_retry_and_cache_key_cases",
           ):
               suite[check]()
-          print("OK: current legacy KLD synthetic checks passed (superseded morning block excluded)")
+          print("OK: current legacy KLD synthetic checks passed (superseded morning/mixed-variety blocks excluded)")
           PY
           python tools/test_kld_morning_prompt_contract.py
+          python tools/test_kld_evening_controlled_variety.py
           python tools/test_kld_visual_policy.py
           python tools/test_kld_image_content_guard.py
           python tools/test_kld_summer_vegetation_prompt.py
