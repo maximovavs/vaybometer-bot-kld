@@ -35,3 +35,25 @@ jobs:
           TZ: Europe/Kaliningrad
         run: |
           python post_kld.py --date 2025-09-05 --fx-only --dry-run
+      - name: KLD visual regressions (offline)
+        run: |
+          set -euo pipefail
+          python -m compileall -q \
+            image_prompt_kld.py \
+            image_prompt_kld_morning.py \
+            kld_visual_policy.py \
+            kld_image_content_guard.py \
+            kld_visual_dedup.py \
+            kld_image_first.py \
+            tools/kld_visual_fixture_image.py
+          python tools/test_visual_kld.py
+          python tools/test_kld_visual_policy.py
+          python tools/test_kld_image_content_guard.py
+          python tools/test_kld_summer_vegetation_prompt.py
+          python tools/test_kld_visual_dedup.py
+          python tools/test_kld_evening_allocator_policy.py
+          python tools/test_kld_visual_season_boundary.py
+          python tools/test_kld_visual_decision_policy.py
+          python tools/test_kld_august_2026_visual_regression.py
+          python tools/test_kld_image_first.py
+          python tools/test_kld_visual_workflow.py
