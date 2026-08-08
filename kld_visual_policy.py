@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Mapping, Sequence
 
-KLD_VISUAL_POLICY_VERSION = "kld_visual_policy_v1"
+KLD_VISUAL_POLICY_VERSION = "kld_visual_policy_v2"
 SUMMER_MONTHS = frozenset({6, 7, 8})
 
 SUMMER_VEGETATION_CUE = (
@@ -22,8 +22,8 @@ SUMMER_VEGETATION_CUE = (
 )
 
 SCENE_NEUTRAL_PHOTO_CONTRACT = (
-    "Scene identity adherence: render one coherent real Kaliningrad-region scene chosen by the "
-    "selected scene family; preserve that scene family as the dominant geography; include only "
+    "Scene identity adherence: the selected scene family is authoritative; render one coherent real "
+    "Kaliningrad-region scene chosen by that family; preserve it as the dominant geography; include only "
     "landforms and objects naturally belonging to that scene; use realistic northern vegetation, "
     "weather and atmospheric perspective; ground-level or natural elevated photographic viewpoint."
 )
@@ -40,6 +40,11 @@ _OPEN_BEACH_MACRO = frozenset(
         "yantarny_wide_beach",
         "stormy_open_baltic",
     }
+)
+
+_LEGACY_GENERIC_GEOGRAPHY = (
+    "dunes, pines, promenade, or baltic sea horizon",
+    "dunes, pines, promenade, sea horizon",
 )
 
 
@@ -101,28 +106,21 @@ def scene_policy_rejection(
     history: Sequence[Mapping[str, Any]],
     *,
     scene_family: str,
-    scene_cooldown: int = 0,
+    scene_cooldown: int = 3,
     macro_window: int = 5,
     max_open_beach: int = 2,
 ) -> tuple[str, Mapping[str, Any] | None]:
-    """Return a diversity rejection reason or ("", None).
+    """Return a hard diversity rejection reason or ("", None).
 
-    The production candidate selector owns the exact last-3 scene and last-4
-    composition cooldown and relaxes it only when a weather-specific catalog
-    cannot supply enough provider candidates. Keeping that relaxation out of
-    this final gate preserves secondary-backend availability. The always-on
-    hard rule here is the cross-scene macro quota: open beach/dunes may occupy
-    at most 2 of the last 5 real visual posts.
-
-    ``scene_cooldown`` remains available for deterministic tools/tests and for
-    the allocator-hardening phase where both providers can share the same fresh
-    candidate pool safely.
+    The allocator now keeps both providers on the same fresh candidate pool, so
+    the last-three scene-family cooldown can safely be enforced here as a final
+    invariant. The broader open-beach/dunes macro remains capped at 2 of the
+    last 5 real visual posts.
     """
     recent = recent_real_scene_entries(history, limit=max(scene_cooldown, macro_window))
-    if scene_cooldown > 0:
-        for entry in recent[:scene_cooldown]:
-            if str(entry.get("scene_family") or "") == str(scene_family or ""):
-                return "scene_cooldown", entry
+    for entry in recent[: max(0, int(scene_cooldown))]:
+        if str(entry.get("scene_family") or "") == str(scene_family or ""):
+            return "scene_cooldown", entry
 
     macro = scene_macro_family(scene_family)
     if macro == "open_beach_dunes":
@@ -149,6 +147,79 @@ def build_scene_contract(metadata: Mapping[str, Any]) -> str:
     )
 
 
+def _clean_must_show(line: str) -> str:
+    prefix, raw = line.split(":", 1)
+    items = [item.strip().rstrip(".") for item in raw.split(";") if item.strip()]
+    kept = [
+        item
+        for item in items
+        if not any(token in item.lower() for token in _LEGACY_GENERIC_GEOGRAPHY)
+    ]
+    return f"{prefix}: " + "; ".join(kept) + ("." if kept else "")
+
+
+def finalize_kld_provider_prompt(
+    prompt: str,
+    *,
+    metadata: Mapping[str, Any],
+    date_key: str | dt.date | None = None,
+) -> str:
+    """Apply the final shared provider contract to morning/evening prompts.
+
+    The upstream VisualRules layer still carries a legacy generic coast base
+    scene. This finalizer removes that geography lock and any older controlled
+    composition line, then inserts exactly one scene-authoritative contract.
+    Provider/UI safety and summer vegetation are applied at the same final point
+    for both morning and evening delivery paths. Seasonal appearance follows
+    the visual target date (important for evening forecasts crossing a month).
+    """
+    target = parse_date_key(
+        metadata.get("target_date") or date_key or metadata.get("forecast_date")
+    )
+    summer = bool(target and target.month in SUMMER_MONTHS)
+    out: list[str] = []
+    for line in str(prompt or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(
+            (
+                "Base scene:",
+                "Regional setting:",
+                "Controlled composition:",
+                "Controlled scene:",
+                "Provider safety:",
+                "Summer vegetation adherence:",
+            )
+        ):
+            continue
+        if stripped.startswith("Must show:"):
+            cleaned = _clean_must_show(line)
+            if cleaned.split(":", 1)[1].strip(" ."):
+                out.append(cleaned)
+            continue
+        if summer and stripped.startswith("Palette:"):
+            out.append(
+                "Palette: humid northern Baltic grey-blue, fresh natural summer greens, "
+                "restrained pale sand and stone tones."
+            )
+            continue
+        out.append(line)
+
+    policy_lines = [
+        "Regional setting: one real Kaliningrad-region location; selected scene family controls the geography.",
+        build_scene_contract(metadata),
+        PROVIDER_NEGATIVE_GUARD,
+    ]
+    if summer:
+        policy_lines.append(SUMMER_VEGETATION_CUE)
+
+    insert_at = next(
+        (index for index, line in enumerate(out) if line.startswith("Text restrictions:")),
+        len(out),
+    )
+    out[insert_at:insert_at] = policy_lines
+    return "\n".join(out)
+
+
 __all__ = [
     "KLD_VISUAL_POLICY_VERSION",
     "PROVIDER_NEGATIVE_GUARD",
@@ -157,6 +228,7 @@ __all__ = [
     "SUMMER_VEGETATION_CUE",
     "apply_summer_vegetation_guard",
     "build_scene_contract",
+    "finalize_kld_provider_prompt",
     "parse_date_key",
     "recent_real_scene_entries",
     "scene_macro_family",

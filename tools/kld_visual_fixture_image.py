@@ -50,6 +50,10 @@ from kld_visual_dedup import (  # noqa: E402
     load_kld_visual_history,
     record_kld_visual_publication,
 )
+from kld_visual_policy import (  # noqa: E402
+    KLD_VISUAL_POLICY_VERSION,
+    finalize_kld_provider_prompt,
+)
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues, to_json  # noqa: E402
 
@@ -204,12 +208,22 @@ def build_payload(
             visibility_context=visibility_context,
         )
     date_key = _extract_prompt_date(message, dt.date(2026, 6, 19))
-    metadata = kld_scene_metadata(
-        ctx,
+    metadata = dict(
+        kld_scene_metadata(
+            ctx,
+            date_key=date_key,
+            post_type=post_type,
+            source_text=message,
+            variation_attempt=variation_attempt,
+        )
+    )
+    metadata["prompt_version"] = (
+        f"{metadata.get('prompt_version', 'unknown')}+{KLD_VISUAL_POLICY_VERSION}"
+    )
+    image_prompt = finalize_kld_provider_prompt(
+        image_prompt,
+        metadata=metadata,
         date_key=date_key,
-        post_type=post_type,
-        source_text=message,
-        variation_attempt=variation_attempt,
     )
     cache_key = kld_visual_cache_key(metadata)
     return {
@@ -264,6 +278,7 @@ def _base_outcome(*, post_type: str) -> dict[str, Any]:
         "cover_validation": None,
         "local_cover_published": False,
         "post_type": post_type,
+        "visual_policy_version": KLD_VISUAL_POLICY_VERSION,
         "provider_error": None,
         "provider_errors": [],
         "provider_attempts": [],
@@ -276,6 +291,7 @@ def _base_outcome(*, post_type: str) -> dict[str, Any]:
         "dedup_distance": None,
         "scene_cooldown": [],
         "composition_cooldown": [],
+        "candidate_pool": [],
         "dedup_results": [],
     }
 
@@ -443,13 +459,16 @@ def _candidate_payloads(
     selected_attempts: list[int] = []
     used_scenes: set[str] = set()
     used_compositions: set[str] = set()
-    for cooldown_mode in ("strict", "scene_only", "relaxed"):
+    # Exact scene cooldown is never relaxed. The weather-specific catalogs have
+    # at least six scenes, so blocking the last three still leaves three fresh
+    # scenes. Composition cooldown may relax only after fresh scenes are kept.
+    for cooldown_mode in ("strict", "scene_only"):
         for variation_attempt, metadata in candidate_metadata:
             scene = str(metadata["scene_family"])
             composition = str(metadata["composition"])
             if scene in used_scenes or composition in used_compositions:
                 continue
-            if cooldown_mode in {"strict", "scene_only"} and scene in blocked_scenes:
+            if scene in blocked_scenes:
                 continue
             if cooldown_mode == "strict" and composition in blocked_compositions:
                 continue
@@ -499,6 +518,18 @@ def _provider_attempt_payload(
     }
 
 
+def _rejection_fallback_reason(reasons: list[str]) -> str:
+    if any(str(reason).startswith("content_guard:") for reason in reasons):
+        return "semantic_mismatch"
+    if any(reason in {"scene_cooldown", "scene_macro_cooldown"} for reason in reasons):
+        return "scene_policy_rejected"
+    if "near_duplicate" in reasons:
+        return "near_duplicate"
+    if "exact_duplicate" in reasons:
+        return "exact_duplicate"
+    return "candidate_rejected"
+
+
 def execute_image_delivery(
     *,
     args: argparse.Namespace,
@@ -537,16 +568,28 @@ def execute_image_delivery(
         message=message,
         visibility_context=visibility_context,
         history_path=history_path,
-        count=3 * len(providers),
+        count=3,
     )
     outcome["scene_cooldown"] = scene_cooldown
     outcome["composition_cooldown"] = composition_cooldown
+    outcome["candidate_pool"] = [
+        {
+            "variation_attempt": int(candidate.get("variation_attempt") or 0),
+            "scene_family": str(candidate["metadata"].get("scene_family") or ""),
+            "composition": str(candidate["metadata"].get("composition") or ""),
+            "cache_key": str(candidate.get("cache_key") or ""),
+        }
+        for candidate in candidates
+    ]
     duplicate_reasons: list[str] = []
     provider_failed = False
     provider_failure_kinds: list[str] = []
     for provider_index, (backend, generator) in enumerate(providers):
-        start = provider_index * 3
-        provider_candidates = candidates[start : start + 3]
+        if candidates:
+            offset = provider_index % len(candidates)
+            provider_candidates = candidates[offset:] + candidates[:offset]
+        else:
+            provider_candidates = []
         for candidate in provider_candidates:
             metadata = candidate["metadata"]
             try:
@@ -654,25 +697,26 @@ def execute_image_delivery(
                     record_publication=record_publication,
                 )
             duplicate_reasons.append(str(duplicate.reason))
-            # Hard rejection: a near duplicate is never promoted merely because
-            # it is the least similar of the rejected candidates.
+            # Hard rejection: a near duplicate, semantic mismatch, or scene
+            # policy violation is never promoted merely because it is the least
+            # similar of the rejected candidates.
 
     if provider_failed and duplicate_reasons:
-        fallback_reason = "provider_failure_after_duplicate"
+        fallback_reason = "provider_failure_after_rejection"
     elif provider_failed:
         fallback_reason = (
             "invalid_image"
             if provider_failure_kinds and all(kind == "invalid_image" for kind in provider_failure_kinds)
             else "provider_failure"
         )
-    elif "near_duplicate" in duplicate_reasons:
-        fallback_reason = "near_duplicate"
     else:
-        fallback_reason = "exact_duplicate"
+        fallback_reason = _rejection_fallback_reason(duplicate_reasons)
     outcome["fallback_reason"] = fallback_reason
     if duplicate_reasons and not provider_failed:
-        outcome["error_type"] = "DuplicateOnly"
-        outcome["error_message"] = "all generated candidates matched visual history"
+        outcome["error_type"] = "CandidateRejected"
+        outcome["error_message"] = (
+            "all generated candidates were rejected: " + ", ".join(sorted(set(duplicate_reasons)))
+        )
     print(
         "::warning::KLD AI image unavailable after provider/dedup ladder; "
         "validated local informative cover will be attempted."
@@ -855,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
         "cache_key": payload["cache_key"],
         "metadata": payload["metadata"],
         "prompt_sha256": hashlib.sha256(payload["image_prompt"].encode("utf-8")).hexdigest(),
+        "visual_policy_version": KLD_VISUAL_POLICY_VERSION,
         "visibility_context": dict(visibility_context or {}),
         "local_cover_renderer": LOCAL_COVER_RENDERER_VERSION,
     }
