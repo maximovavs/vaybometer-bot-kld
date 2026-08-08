@@ -167,12 +167,15 @@ def finalize_kld_provider_prompt(
     """Apply the final shared provider contract to morning/evening prompts.
 
     The upstream VisualRules layer still carries a legacy generic coast base
-    scene.  This finalizer removes that geography lock and any older controlled
+    scene. This finalizer removes that geography lock and any older controlled
     composition line, then inserts exactly one scene-authoritative contract.
     Provider/UI safety and summer vegetation are applied at the same final point
-    for both morning and evening delivery paths.
+    for both morning and evening delivery paths. Seasonal appearance follows
+    the visual target date (important for evening forecasts crossing a month).
     """
-    target = parse_date_key(date_key or metadata.get("target_date") or metadata.get("forecast_date"))
+    target = parse_date_key(
+        metadata.get("target_date") or date_key or metadata.get("forecast_date")
+    )
     summer = bool(target and target.month in SUMMER_MONTHS)
     out: list[str] = []
     for line in str(prompt or "").splitlines():
