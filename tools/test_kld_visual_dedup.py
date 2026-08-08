@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Offline checks for KLD visual duplicate detection."""
+"""Offline checks for KLD visual duplicate and final diversity detection."""
 
 from __future__ import annotations
 
@@ -55,29 +55,44 @@ def _tmpdir() -> Path:
     return Path(tempfile.mkdtemp(prefix="kld_visual_dedup_"))
 
 
-def _evaluate(path: Path, history: Path, date_value: str = "2026-07-05"):
+def _evaluate(
+    path: Path,
+    history: Path,
+    date_value: str = "2026-07-05",
+    *,
+    scene_family: str = "baltiysk_breakwater",
+    composition: str = "breakwater perspective line",
+):
     return evaluate_kld_visual_candidate(
         path,
         date_value=date_value,
         target_date=date_value,
         post_type="morning",
-        scene_family="curonian_spit_dunes",
-        composition="wide diagonal shoreline composition",
+        scene_family=scene_family,
+        composition=composition,
         prompt_version="kld_visual_v_test",
         history_path=history,
     )
 
 
-def _record(history: Path, image: Path, *, date_value: str = "2026-07-01", post_type: str = "morning"):
+def _record(
+    history: Path,
+    image: Path,
+    *,
+    date_value: str = "2026-07-01",
+    post_type: str = "morning",
+    scene_family: str = "curonian_spit_dunes",
+    composition: str = "wide diagonal shoreline composition",
+):
     return record_kld_visual_publication(
         date_value=date_value,
         target_date=date_value,
         post_type=post_type,
         image_path=image,
-        scene_family="curonian_spit_dunes",
-        composition="wide diagonal shoreline composition",
+        scene_family=scene_family,
+        composition=composition,
         prompt_version="kld_visual_v_test",
-        cache_key="region=kld;forecast_date=2026-07-01",
+        cache_key=f"region=kld;forecast_date={date_value};scene={scene_family}",
         style_name="style_test",
         history_path=history,
     )
@@ -115,7 +130,7 @@ def kld_dedup_near_duplicate_recolor_crop_is_rejected() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def kld_dedup_genuinely_different_image_is_accepted() -> None:
+def kld_dedup_genuinely_different_image_is_accepted_with_fresh_scene() -> None:
     root = _tmpdir()
     try:
         history = root / "history.json"
@@ -127,6 +142,27 @@ def kld_dedup_genuinely_different_image_is_accepted() -> None:
         result = _evaluate(different, history)
         assert result.accepted is True
         assert result.reason == "accepted"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_dedup_recent_scene_family_is_rejected_even_for_different_pixels() -> None:
+    root = _tmpdir()
+    try:
+        history = root / "history.json"
+        original = root / "original.ppm"
+        different = root / "different.ppm"
+        _write_ppm(original, mode="coast_a")
+        _write_ppm(different, mode="coast_b")
+        _record(history, original, scene_family="curonian_spit_dunes")
+        result = _evaluate(
+            different,
+            history,
+            scene_family="curonian_spit_dunes",
+            composition="elevated overlook panorama",
+        )
+        assert result.accepted is False
+        assert result.reason == "scene_cooldown"
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -151,7 +187,16 @@ def kld_dedup_record_is_atomic_and_dedupes_same_publication() -> None:
         loaded = load_kld_visual_history(history)
         assert len(loaded) == 2
         assert {entry["post_type"] for entry in loaded} == {"morning", "evening"}
-        assert {"date", "target_date", "sha256", "perceptual_hash", "scene_family", "composition"} <= set(loaded[0])
+        assert {
+            "date",
+            "target_date",
+            "sha256",
+            "perceptual_hash",
+            "scene_family",
+            "scene_macro_family",
+            "composition",
+        } <= set(loaded[0])
+        assert loaded[0]["scene_macro_family"] == "open_beach_dunes"
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -207,7 +252,13 @@ def kld_dedup_fresh_run_restore_simulation() -> None:
         _write_ppm(image_b, mode="coast_b")
         different = _evaluate(image_b, history4, date_value="2026-07-04")
         assert different.accepted is True
-        _record(history4, image_b, date_value="2026-07-04")
+        _record(
+            history4,
+            image_b,
+            date_value="2026-07-04",
+            scene_family="baltiysk_breakwater",
+            composition="breakwater perspective line",
+        )
         assert len(load_kld_visual_history(history4)) == 2
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -253,7 +304,8 @@ def kld_dedup_png_jpg_hashes_when_pillow_available() -> None:
 TESTS = [
     kld_dedup_exact_sha_is_rejected,
     kld_dedup_near_duplicate_recolor_crop_is_rejected,
-    kld_dedup_genuinely_different_image_is_accepted,
+    kld_dedup_genuinely_different_image_is_accepted_with_fresh_scene,
+    kld_dedup_recent_scene_family_is_rejected_even_for_different_pixels,
     kld_dedup_history_namespaces_are_separate,
     kld_dedup_record_is_atomic_and_dedupes_same_publication,
     kld_dedup_malformed_history_keeps_backup,
