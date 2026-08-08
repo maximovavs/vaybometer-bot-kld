@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Shared visual policy for Kaliningrad image prompts and history gates.
 
-The policy is intentionally deterministic and side-effect free.  It keeps
+The policy is intentionally deterministic and side-effect free. It keeps
 seasonal appearance and scene diversity rules in one place so morning and
 evening builders can use the same contract.
 """
@@ -101,22 +101,28 @@ def scene_policy_rejection(
     history: Sequence[Mapping[str, Any]],
     *,
     scene_family: str,
-    scene_cooldown: int = 3,
+    scene_cooldown: int = 0,
     macro_window: int = 5,
     max_open_beach: int = 2,
 ) -> tuple[str, Mapping[str, Any] | None]:
-    """Return a hard diversity rejection reason or ("", None).
+    """Return a diversity rejection reason or ("", None).
 
-    The candidate selector already tries to avoid the last three scene families
-    and last four compositions.  This final gate makes the scene rule hard even
-    when the selector has to relax its candidate pool for a short weather-specific
-    catalog.  It also caps the broad open-beach/dunes macro at 2 of the last 5
-    real visual posts.
+    The production candidate selector owns the exact last-3 scene and last-4
+    composition cooldown and relaxes it only when a weather-specific catalog
+    cannot supply enough provider candidates. Keeping that relaxation out of
+    this final gate preserves secondary-backend availability. The always-on
+    hard rule here is the cross-scene macro quota: open beach/dunes may occupy
+    at most 2 of the last 5 real visual posts.
+
+    ``scene_cooldown`` remains available for deterministic tools/tests and for
+    the allocator-hardening phase where both providers can share the same fresh
+    candidate pool safely.
     """
     recent = recent_real_scene_entries(history, limit=max(scene_cooldown, macro_window))
-    for entry in recent[:scene_cooldown]:
-        if str(entry.get("scene_family") or "") == str(scene_family or ""):
-            return "scene_cooldown", entry
+    if scene_cooldown > 0:
+        for entry in recent[:scene_cooldown]:
+            if str(entry.get("scene_family") or "") == str(scene_family or ""):
+                return "scene_cooldown", entry
 
     macro = scene_macro_family(scene_family)
     if macro == "open_beach_dunes":
