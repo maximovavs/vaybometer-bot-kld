@@ -10,10 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from image_prompt_kld_morning import (  # noqa: E402
-    _SUMMER_VEGETATION_CUE,
-    _apply_summer_vegetation_guard,
-    build_kld_morning_prompt,
+from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
+from kld_visual_policy import (  # noqa: E402
+    SUMMER_VEGETATION_CUE,
+    apply_summer_vegetation_guard,
 )
 
 
@@ -30,26 +30,27 @@ def august_production_like_prompt_requires_green_vegetation() -> None:
     )
     prompt, style_name = build_kld_morning_prompt(message)
     assert style_name.startswith("format_v2_scene_cues_morning_")
-    assert _SUMMER_VEGETATION_CUE in prompt
+    assert SUMMER_VEGETATION_CUE in prompt
     assert "coastal grass and dune vegetation are visibly natural green" in prompt
-    assert "pale beige tones belong to sand, not to living vegetation" in prompt
+    assert "pale beige and warm straw tones belong to sand" in prompt
+    assert "not to living summer vegetation" in prompt
 
 
 def summer_guard_is_idempotent() -> None:
-    once = _apply_summer_vegetation_guard("base", "2026-08-01")
-    twice = _apply_summer_vegetation_guard(once, "2026-08-01")
+    once = apply_summer_vegetation_guard("base", "2026-08-01")
+    twice = apply_summer_vegetation_guard(once, "2026-08-01")
     assert once == twice
-    assert twice.count(_SUMMER_VEGETATION_CUE) == 1
+    assert twice.count(SUMMER_VEGETATION_CUE) == 1
 
 
 def non_summer_date_is_unchanged() -> None:
     original = "base prompt"
-    assert _apply_summer_vegetation_guard(original, "2026-11-01") == original
+    assert apply_summer_vegetation_guard(original, "2026-11-01") == original
 
 
 def malformed_date_is_unchanged() -> None:
     original = "base prompt"
-    assert _apply_summer_vegetation_guard(original, "undated") == original
+    assert apply_summer_vegetation_guard(original, "undated") == original
 
 
 def main() -> None:
