@@ -22,8 +22,8 @@ SUMMER_VEGETATION_CUE = (
 )
 
 SCENE_NEUTRAL_PHOTO_CONTRACT = (
-    "Scene identity adherence: render one coherent real Kaliningrad-region scene chosen by the "
-    "selected scene family; preserve that scene family as the dominant geography; include only "
+    "Scene identity adherence: the selected scene family is authoritative; render one coherent real "
+    "Kaliningrad-region scene chosen by that family; preserve it as the dominant geography; include only "
     "landforms and objects naturally belonging to that scene; use realistic northern vegetation, "
     "weather and atmospheric perspective; ground-level or natural elevated photographic viewpoint."
 )
