@@ -255,7 +255,7 @@ def evaluate_kld_visual_candidate(
     perceptual = dhash_file(image_path)
 
     # Local covers are deterministic cards and are validated semantically by
-    # kld_informative_cover.py.  The provider content guard is for AI images.
+    # kld_informative_cover.py. The provider content guard is for AI images.
     if str(scene_family or "") != "local_informative_cover":
         verdict = inspect_kld_provider_image(image_path)
         verdict_payload = verdict.to_dict()
@@ -309,7 +309,11 @@ def evaluate_kld_visual_candidate(
             )
 
     if str(scene_family or "") != "local_informative_cover":
-        policy_reason, policy_match = scene_policy_rejection(history, scene_family=scene_family)
+        policy_reason, policy_match = scene_policy_rejection(
+            history,
+            scene_family=scene_family,
+            composition=composition,
+        )
         if policy_reason:
             return KldVisualDuplicateResult(
                 accepted=False,

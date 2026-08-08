@@ -3,15 +3,15 @@
 """Shared visual policy for Kaliningrad image prompts and history gates.
 
 The policy is intentionally deterministic and side-effect free. It keeps
-seasonal appearance and scene diversity rules in one place so morning and
-evening builders can use the same contract.
+seasonal appearance, weather-aware scene routing and visual diversity rules in
+one place so morning and evening delivery use the same contract.
 """
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, MutableMapping, Sequence
 
-KLD_VISUAL_POLICY_VERSION = "kld_visual_policy_v2"
+KLD_VISUAL_POLICY_VERSION = "kld_visual_policy_v3"
 SUMMER_MONTHS = frozenset({6, 7, 8})
 
 SUMMER_VEGETATION_CUE = (
@@ -47,6 +47,73 @@ _LEGACY_GENERIC_GEOGRAPHY = (
     "dunes, pines, promenade, sea horizon",
 )
 
+_SCENE_TEXT = {
+    "curonian_spit_dunes": "Curonian Spit dunes with marram grass, pine forest edge and open Baltic water",
+    "svetlogorsk_cliff_coast": "Svetlogorsk cliff coast with steep green slope, sea below and northern sky",
+    "zelenogradsk_promenade": "Zelenogradsk seaside promenade with Baltic horizon and realistic coastal railings",
+    "baltiysk_breakwater": "Baltiysk breakwater stones, working-harbour edge in the distance and open sea",
+    "yantarny_wide_beach": "Yantarny wide pale sand beach with low dune grasses and spacious Baltic horizon",
+    "pine_forest_sea_path": "pine forest sea path opening toward the Baltic shore, realistic northern vegetation",
+    "stormy_open_baltic": "open Baltic sea view with restless water, whitecaps when windy and layered cloud bands",
+    "quiet_lagoon_coast": "quiet lagoon-like Baltic coast with reeds, low shore and subdued northern atmosphere",
+    "wet_seaside_promenade": "wet seaside promenade after rain with dry-to-damp stone texture and realistic reflections",
+    "elevated_baltic_overlook": "elevated Baltic overlook from a dune or cliff path, wide sea and coastline below",
+    "kaliningrad_urban_coastal_view": "urban Baltic coastal edge with modest Kaliningrad-region architecture, promenade and sea horizon",
+    "rainy_coastal_road": "rain-darkened coastal road near dunes and pines, with the Baltic shoreline visible beyond",
+}
+
+WEATHER_SCENE_ROUTES: dict[str, tuple[str, ...]] = {
+    "fog_visibility": (
+        "quiet_lagoon_coast",
+        "pine_forest_sea_path",
+        "curonian_spit_dunes",
+        "elevated_baltic_overlook",
+        "zelenogradsk_promenade",
+    ),
+    "rain": (
+        "wet_seaside_promenade",
+        "rainy_coastal_road",
+        "zelenogradsk_promenade",
+        "kaliningrad_urban_coastal_view",
+        "baltiysk_breakwater",
+        "pine_forest_sea_path",
+    ),
+    "storm": (
+        "baltiysk_breakwater",
+        "svetlogorsk_cliff_coast",
+        "stormy_open_baltic",
+        "wet_seaside_promenade",
+        "rainy_coastal_road",
+        "elevated_baltic_overlook",
+    ),
+    "strong_wind": (
+        "baltiysk_breakwater",
+        "svetlogorsk_cliff_coast",
+        "elevated_baltic_overlook",
+        "zelenogradsk_promenade",
+        "yantarny_wide_beach",
+    ),
+    "calm": (
+        "kaliningrad_urban_coastal_view",
+        "pine_forest_sea_path",
+        "quiet_lagoon_coast",
+        "zelenogradsk_promenade",
+        "curonian_spit_dunes",
+        "yantarny_wide_beach",
+    ),
+}
+
+_FOG_VISIBILITY = frozenset(
+    {
+        "dense_fog",
+        "fog",
+        "mist",
+        "reduced_visibility",
+        "dust_haze",
+        "mixed_visibility",
+    }
+)
+
 
 def parse_date_key(value: str | dt.date | None) -> dt.date | None:
     if isinstance(value, dt.date):
@@ -58,6 +125,13 @@ def parse_date_key(value: str | dt.date | None) -> dt.date | None:
         return dt.date.fromisoformat(raw[:10])
     except ValueError:
         return None
+
+
+def seasonal_guard_label(value: str | dt.date | None) -> str:
+    target = parse_date_key(value)
+    if target and target.month in SUMMER_MONTHS:
+        return "summer_green"
+    return "seasonal_default"
 
 
 def apply_summer_vegetation_guard(prompt: str, date_key: str | dt.date | None) -> str:
@@ -90,6 +164,53 @@ def scene_macro_family(scene_family: str) -> str:
     return scene or "unknown"
 
 
+def weather_route_key(metadata: Mapping[str, Any]) -> str:
+    visibility = str(metadata.get("visibility_condition") or "clear").strip().lower()
+    weather = str(metadata.get("weather_scenario") or "unknown").strip().lower()
+    gust = str(metadata.get("wind_gust_category") or "wind_unknown").strip().lower()
+    if visibility in _FOG_VISIBILITY or weather == "fog":
+        return "fog_visibility"
+    if weather == "storm":
+        return "storm"
+    if weather in {"rain", "drizzle"}:
+        return "rain"
+    if gust in {"gust_10_14", "gust_15_plus"}:
+        return "strong_wind"
+    return "calm"
+
+
+def weather_route_scenes(metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    return WEATHER_SCENE_ROUTES[weather_route_key(metadata)]
+
+
+def apply_weather_scene_route(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Bias the final provider scene toward weather-relevant KLD geography.
+
+    Existing date-based selection is preserved when it is already compatible
+    with the active weather route. Otherwise a deterministic route scene is
+    chosen from variation_attempt. Mutable metadata is updated in-place so the
+    cache key, final dedup gate and history all describe the scene actually sent
+    to the provider.
+    """
+    routed = dict(metadata)
+    route_key = weather_route_key(routed)
+    route = WEATHER_SCENE_ROUTES[route_key]
+    current = str(routed.get("scene_family") or "")
+    if current not in route:
+        try:
+            attempt = int(routed.get("variation_attempt") or 0)
+        except (TypeError, ValueError):
+            attempt = 0
+        stable_offset = sum(ord(char) for char in current) % len(route) if current else 0
+        current = route[(attempt + stable_offset) % len(route)]
+        routed["scene_family"] = current
+        routed["scene_text"] = _SCENE_TEXT[current]
+    routed["scene_route"] = route_key
+    if isinstance(metadata, MutableMapping):
+        metadata.update(routed)
+    return routed
+
+
 def recent_real_scene_entries(history: Sequence[Mapping[str, Any]], *, limit: int = 5) -> list[Mapping[str, Any]]:
     out: list[Mapping[str, Any]] = []
     for entry in reversed(list(history)):
@@ -106,21 +227,30 @@ def scene_policy_rejection(
     history: Sequence[Mapping[str, Any]],
     *,
     scene_family: str,
+    composition: str = "",
     scene_cooldown: int = 3,
+    composition_cooldown: int = 4,
     macro_window: int = 5,
     max_open_beach: int = 2,
 ) -> tuple[str, Mapping[str, Any] | None]:
     """Return a hard diversity rejection reason or ("", None).
 
-    The allocator now keeps both providers on the same fresh candidate pool, so
-    the last-three scene-family cooldown can safely be enforced here as a final
-    invariant. The broader open-beach/dunes macro remains capped at 2 of the
-    last 5 real visual posts.
+    Both exact scene-family and composition cooldowns are final invariants. The
+    broader open-beach/dunes macro remains capped at 2 of the last 5 real visual
+    posts.
     """
-    recent = recent_real_scene_entries(history, limit=max(scene_cooldown, macro_window))
+    recent = recent_real_scene_entries(
+        history,
+        limit=max(scene_cooldown, composition_cooldown, macro_window),
+    )
     for entry in recent[: max(0, int(scene_cooldown))]:
         if str(entry.get("scene_family") or "") == str(scene_family or ""):
             return "scene_cooldown", entry
+
+    if composition:
+        for entry in recent[: max(0, int(composition_cooldown))]:
+            if str(entry.get("composition") or "") == str(composition):
+                return "composition_cooldown", entry
 
     macro = scene_macro_family(scene_family)
     if macro == "open_beach_dunes":
@@ -168,13 +298,14 @@ def finalize_kld_provider_prompt(
 
     The upstream VisualRules layer still carries a legacy generic coast base
     scene. This finalizer removes that geography lock and any older controlled
-    composition line, then inserts exactly one scene-authoritative contract.
-    Provider/UI safety and summer vegetation are applied at the same final point
-    for both morning and evening delivery paths. Seasonal appearance follows
-    the visual target date (important for evening forecasts crossing a month).
+    composition line, applies weather-aware scene routing, then inserts exactly
+    one scene-authoritative contract. Provider/UI safety and summer vegetation
+    are applied at the same final point for both morning and evening delivery.
+    Seasonal appearance follows the visual target date.
     """
+    routed_metadata = apply_weather_scene_route(metadata)
     target = parse_date_key(
-        metadata.get("target_date") or date_key or metadata.get("forecast_date")
+        routed_metadata.get("target_date") or date_key or routed_metadata.get("forecast_date")
     )
     summer = bool(target and target.month in SUMMER_MONTHS)
     out: list[str] = []
@@ -188,6 +319,7 @@ def finalize_kld_provider_prompt(
                 "Controlled scene:",
                 "Provider safety:",
                 "Summer vegetation adherence:",
+                "Weather scene route:",
             )
         ):
             continue
@@ -206,7 +338,8 @@ def finalize_kld_provider_prompt(
 
     policy_lines = [
         "Regional setting: one real Kaliningrad-region location; selected scene family controls the geography.",
-        build_scene_contract(metadata),
+        f"Weather scene route: {routed_metadata.get('scene_route', 'calm')}.",
+        build_scene_contract(routed_metadata),
         PROVIDER_NEGATIVE_GUARD,
     ]
     if summer:
@@ -226,11 +359,16 @@ __all__ = [
     "SCENE_NEUTRAL_PHOTO_CONTRACT",
     "SUMMER_MONTHS",
     "SUMMER_VEGETATION_CUE",
+    "WEATHER_SCENE_ROUTES",
     "apply_summer_vegetation_guard",
+    "apply_weather_scene_route",
     "build_scene_contract",
     "finalize_kld_provider_prompt",
     "parse_date_key",
     "recent_real_scene_entries",
     "scene_macro_family",
     "scene_policy_rejection",
+    "seasonal_guard_label",
+    "weather_route_key",
+    "weather_route_scenes",
 ]
