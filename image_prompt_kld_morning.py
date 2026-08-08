@@ -111,10 +111,26 @@ def _remove_trigger_lines(prompt: str) -> str:
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith("Base scene:"):
+            cleaned.append(
+                "Base scene: one coherent real Kaliningrad-region outdoor scene; "
+                "geography follows the selected scene family."
+            )
+            continue
+        if line.startswith("Palette:"):
+            cleaned.append(
+                "Palette: realistic northern Baltic colors appropriate to the selected scene and stated weather."
+            )
+            continue
         if line.startswith(("Must show:", "Must avoid:")):
             prefix, raw_items = line.split(":", 1)
             items = [item.strip().rstrip(".") for item in raw_items.split(";") if item.strip()]
-            safe_items = [item for item in items if not _TRIGGER_RE.search(item)]
+            safe_items = [
+                item
+                for item in items
+                if not _TRIGGER_RE.search(item)
+                and "dunes, pines, promenade, or baltic sea horizon" not in item.lower()
+            ]
             if safe_items:
                 cleaned.append(prefix + ": " + "; ".join(safe_items) + ".")
             continue
