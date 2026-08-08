@@ -101,20 +101,23 @@ def scene_policy_rejection(
     history: Sequence[Mapping[str, Any]],
     *,
     scene_family: str,
-    scene_cooldown: int = 3,
+    scene_cooldown: int = 0,
     macro_window: int = 5,
     max_open_beach: int = 2,
 ) -> tuple[str, Mapping[str, Any] | None]:
-    """Return a hard diversity rejection reason or ("", None).
+    """Return a diversity rejection reason or ("", None).
 
-    Rules:
-    - exact scene family must not repeat within the last 3 real visual posts;
-    - open beach/dunes macro may occupy at most 2 of the last 5 real visual posts.
+    The production candidate selector already owns the exact last-3-scene and
+    last-4-composition cooldown.  ``scene_cooldown`` is therefore opt-in here
+    for focused tests/tools; the always-on dedup gate adds the cross-scene
+    macro quota: open beach/dunes may occupy at most 2 of the last 5 real
+    visual posts.
     """
     recent = recent_real_scene_entries(history, limit=max(scene_cooldown, macro_window))
-    for entry in recent[:scene_cooldown]:
-        if str(entry.get("scene_family") or "") == str(scene_family or ""):
-            return "scene_cooldown", entry
+    if scene_cooldown > 0:
+        for entry in recent[:scene_cooldown]:
+            if str(entry.get("scene_family") or "") == str(scene_family or ""):
+                return "scene_cooldown", entry
 
     macro = scene_macro_family(scene_family)
     if macro == "open_beach_dunes":
