@@ -36,9 +36,10 @@ def _write_screen_like(path: Path) -> bool:
     image = Image.new("RGB", (512, 512), color=(180, 198, 207))
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, 0, 511, 65), fill=(18, 25, 31))
-    for y in (8, 18, 28, 38, 48):
-        for x in range(12, 492, 28):
-            draw.rectangle((x, y, x + 10, y + 5), fill=(235, 238, 240))
+    # Dense high-frequency toolbar stripes create a deterministic UI-chrome
+    # edge band without relying on fonts or platform rendering.
+    for x in range(0, 512, 6):
+        draw.rectangle((x, 5, min(511, x + 2), 58), fill=(238, 241, 243))
     draw.rectangle((30, 110, 480, 450), fill=(166, 186, 196))
     image.save(path)
     return True
