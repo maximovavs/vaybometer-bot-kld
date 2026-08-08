@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""KLD visual history and duplicate detection."""
+"""KLD visual history and duplicate/content-policy detection."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+
+from kld_image_content_guard import inspect_kld_provider_image
+from kld_visual_policy import scene_macro_family, scene_policy_rejection
 
 
 KLD_VISUAL_HISTORY_PATH = Path(os.getenv("KLD_VISUAL_HISTORY_PATH", ".cache/kld_visual_history_prod.json"))
@@ -34,6 +37,7 @@ class KldVisualDuplicateResult:
     perceptual_hash: str | None
     min_distance: int | None = None
     matched_entry: dict[str, Any] | None = None
+    content_guard: dict[str, Any] | None = None
 
 
 def sha256_file(path: str | Path) -> str:
@@ -250,6 +254,23 @@ def evaluate_kld_visual_candidate(
     digest = sha256_file(image_path)
     perceptual = dhash_file(image_path)
 
+    # Local covers are deterministic cards and are validated semantically by
+    # kld_informative_cover.py.  The provider content guard is for AI images.
+    if str(scene_family or "") != "local_informative_cover":
+        verdict = inspect_kld_provider_image(image_path)
+        verdict_payload = verdict.to_dict()
+        if not verdict.valid:
+            return KldVisualDuplicateResult(
+                accepted=False,
+                reason=f"content_guard:{verdict.reason}",
+                sha256=digest,
+                perceptual_hash=perceptual,
+                matched_entry={"content_guard": verdict_payload},
+                content_guard=verdict_payload,
+            )
+    else:
+        verdict_payload = None
+
     for entry in history:
         if not _within_days(entry, current, KLD_VISUAL_EXACT_DAYS):
             continue
@@ -260,6 +281,7 @@ def evaluate_kld_visual_candidate(
                 sha256=digest,
                 perceptual_hash=perceptual,
                 matched_entry=entry,
+                content_guard=verdict_payload,
             )
 
     min_distance: int | None = None
@@ -283,6 +305,20 @@ def evaluate_kld_visual_candidate(
                 perceptual_hash=perceptual,
                 min_distance=min_distance,
                 matched_entry=nearest_entry,
+                content_guard=verdict_payload,
+            )
+
+    if str(scene_family or "") != "local_informative_cover":
+        policy_reason, policy_match = scene_policy_rejection(history, scene_family=scene_family)
+        if policy_reason:
+            return KldVisualDuplicateResult(
+                accepted=False,
+                reason=policy_reason,
+                sha256=digest,
+                perceptual_hash=perceptual,
+                min_distance=min_distance,
+                matched_entry=dict(policy_match or {}),
+                content_guard=verdict_payload,
             )
 
     return KldVisualDuplicateResult(
@@ -292,6 +328,7 @@ def evaluate_kld_visual_candidate(
         perceptual_hash=perceptual,
         min_distance=min_distance,
         matched_entry=nearest_entry,
+        content_guard=verdict_payload,
     )
 
 
@@ -321,6 +358,7 @@ def record_kld_visual_publication(
         "sha256": sha256_file(image_path),
         "perceptual_hash": dhash_file(image_path),
         "scene_family": scene_family,
+        "scene_macro_family": scene_macro_family(scene_family),
         "composition": composition,
         "prompt_version": prompt_version,
         "cache_key": cache_key,

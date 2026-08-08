@@ -8,19 +8,25 @@ import logging
 import re
 from typing import Tuple
 
+from kld_visual_policy import (
+    PROVIDER_NEGATIVE_GUARD,
+    SCENE_NEUTRAL_PHOTO_CONTRACT,
+    apply_summer_vegetation_guard,
+    build_scene_contract,
+)
+
 logger = logging.getLogger(__name__)
 
 _SCENIC_ONLY_GUARD = (
-    "Final image: clean unmarked natural Baltic landscape only; open sky, sea, "
-    "dunes, pines, clouds and daylight; pure photorealistic scenic photography without graphic "
-    "overlay elements."
+    "Final image: one clean unmarked photorealistic Kaliningrad-region scene in natural Baltic daylight; "
+    "the selected scene family is authoritative and fills the frame; realistic weather, geography, vegetation "
+    "and atmospheric perspective."
 )
 
 _PURE_SCENE_CUES = (
-    "Pure full-frame photorealistic Baltic coastal photography; uninterrupted Baltic scenery; "
-    "visible sky, beach, dunes, pines and sea filling the whole image; "
-    "editorial-free scenic composition; realistic northern vegetation; realistic sea state; "
-    "natural atmospheric perspective; no illustration; no digital painting; no poster."
+    "Pure full-frame photorealistic Kaliningrad-region photography; one coherent real place and one dominant "
+    "scene family; realistic northern vegetation; realistic weather state; natural atmospheric perspective; "
+    "editorial-free scenic composition."
 )
 
 _TRIGGER_RE = re.compile(
@@ -40,14 +46,13 @@ _TRIGGER_RE = re.compile(
 _SAFE_MORNING_CUES = (
     "Morning safety cues: neutral Baltic morning daylight; fresh Baltic morning light; "
     "left-side morning light, sun from the left side of frame; "
-    "empty Baltic shoreline; open sea horizon; natural wave texture only; "
-    "quiet beach, dunes, pines, pale cloud layers; practical weather-for-the-day mood."
+    "practical weather-for-the-day mood; scene geography follows the selected scene family."
 )
 
 _RAIN_MORNING_CUES = (
     "Morning rain adherence: overcast or mostly overcast Baltic morning sky; "
     "fresh Baltic morning light muted by clouds; diffuse left-side morning light through overcast cloud; "
-    "wet or damp sand and promenade surfaces; muted northern grey-blue palette; "
+    "wet or damp surfaces appropriate to the selected scene; muted northern grey-blue palette; "
     "cool natural color temperature; realistic rain-dark cloud cover; "
     "subdued practical wet-weather mood."
 )
@@ -55,32 +60,25 @@ _RAIN_MORNING_CUES = (
 _CLOUDY_DRIZZLE_SAFE_BLOCK = (
     "Morning overcast scene: broad daylight overcast morning sky; soft pale cloud cover; "
     "left-side morning light through overcast cloud layers; "
-    "empty Baltic shoreline; open water with natural wave texture only; "
-    "quiet dunes and pines; fresh practical morning weather mood."
-)
-
-_SUMMER_VEGETATION_MONTHS = frozenset({6, 7, 8})
-_SUMMER_VEGETATION_CUE = (
-    "Summer vegetation adherence: humid Baltic summer vegetation is lush and fresh; "
-    "coastal grass and dune vegetation are visibly natural green across the foreground and midground; "
-    "shrubs and pines are healthy green; pale beige tones belong to sand, not to living vegetation."
+    "natural surfaces and vegetation appropriate to the selected scene family; "
+    "fresh practical morning weather mood."
 )
 
 _VISIBILITY_MORNING_CUES = {
     "dense_fog": (
         "Morning visibility adherence: dense humid fog; heavily reduced distant visibility; "
-        "partially obscured Baltic horizon; soft diffused daylight; muted contrast; moist atmospheric depth."
+        "partially obscured distant landmarks; soft diffused daylight; muted contrast; moist atmospheric depth."
     ),
     "fog": (
-        "Morning visibility adherence: humid coastal fog; reduced distant visibility; "
-        "softened Baltic horizon; diffused neutral daylight; soft Baltic morning haze."
+        "Morning visibility adherence: humid regional fog; reduced distant visibility; "
+        "softened distant landmarks; diffused neutral daylight; soft Baltic morning haze."
     ),
     "mist": (
         "Morning visibility adherence: humid morning mist; gentle atmospheric depth; "
         "softened distant clarity; fresh neutral Baltic daylight."
     ),
     "reduced_visibility": (
-        "Morning visibility adherence: reduced distant clarity; softened horizon; restrained contrast; "
+        "Morning visibility adherence: reduced distant clarity; softened distance; restrained contrast; "
         "neutral Baltic daylight without invented dense fog."
     ),
     "dust_haze": (
@@ -97,8 +95,8 @@ _VISIBILITY_MORNING_CUES = {
 def _fallback_morning_prompt() -> str:
     return "\n".join(
         [
-            "Create a practical morning weather illustration for the Kaliningrad region.",
-            "Base scene: Baltic coast near Kaliningrad in daylight, dunes, pines, promenade, sea horizon.",
+            "Create a practical morning weather photograph for the Kaliningrad region.",
+            "Base scene: one coherent real Kaliningrad-region outdoor scene chosen for the stated weather.",
             "Light: soft low-angle morning light from the left side of frame and pale cloud layers.",
             "Mood: fresh Baltic morning air and practical weather-for-the-day mood.",
             _SAFE_MORNING_CUES,
@@ -113,15 +111,31 @@ def _remove_trigger_lines(prompt: str) -> str:
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith("Base scene:"):
+            cleaned.append(
+                "Base scene: one coherent real Kaliningrad-region outdoor scene; "
+                "geography follows the selected scene family."
+            )
+            continue
+        if line.startswith("Palette:"):
+            cleaned.append(
+                "Palette: realistic northern Baltic colors appropriate to the selected scene and stated weather."
+            )
+            continue
         if line.startswith(("Must show:", "Must avoid:")):
             prefix, raw_items = line.split(":", 1)
             items = [item.strip().rstrip(".") for item in raw_items.split(";") if item.strip()]
-            safe_items = [item for item in items if not _TRIGGER_RE.search(item)]
+            safe_items = [
+                item
+                for item in items
+                if not _TRIGGER_RE.search(item)
+                and "dunes, pines, promenade, or baltic sea horizon" not in item.lower()
+            ]
             if safe_items:
                 cleaned.append(prefix + ": " + "; ".join(safe_items) + ".")
             continue
         if line.startswith("Activity cue:") and _TRIGGER_RE.search(line):
-            cleaned.append("Activity cue: empty Baltic shoreline and natural sea surface; scale: none.")
+            cleaned.append("Activity cue: no foreground activity; natural scene scale only.")
             continue
         if _TRIGGER_RE.search(line):
             continue
@@ -137,8 +151,8 @@ def _sanitize_morning_prompt(
 ) -> str:
     """Remove object/night/layout trigger words from final morning prompt.
 
-    Image generators often treat negative words as objects, so morning prompts use
-    positive daylight scenic cues only.
+    The result stays scene-neutral: geography is supplied later by the selected
+    scene family instead of forcing beach+dunes+pines into every image.
     """
     cleaned = _remove_trigger_lines(prompt)
     parts: list[str] = []
@@ -164,7 +178,6 @@ def _sanitize_morning_prompt(
     if weather == "rain":
         final_prompt = re.sub(r"clear daylight sky;?\s*", "", final_prompt, flags=re.I)
         final_prompt = re.sub(r"bright sun(?:ny)?|golden[- ]hour|golden sunny", "", final_prompt, flags=re.I)
-    # Second-pass guard for compound or unexpected trigger remnants.
     final_prompt = _TRIGGER_RE.sub("", final_prompt)
     final_prompt = re.sub(r";\s*no\s*(?=[.;])", "", final_prompt, flags=re.I)
     final_prompt = re.sub(r"no\s*\.", "", final_prompt, flags=re.I)
@@ -185,22 +198,24 @@ def _extract_message_date_key(text: str, fallback: dt.date | None = None) -> str
     return fallback.isoformat() if fallback else "undated"
 
 
-def _apply_summer_vegetation_guard(prompt: str, date_key: str) -> str:
-    """Keep June-August KLD vegetation green and moisture-rich.
+def _replace_generic_controlled_composition(prompt: str, scene_contract: str) -> str:
+    """Replace the legacy coastal framing line with the selected scene contract."""
+    kept = [
+        line
+        for line in str(prompt or "").splitlines()
+        if not line.strip().startswith("Controlled composition:")
+    ]
+    kept.append(scene_contract)
+    return "\n".join(line for line in kept if line.strip())
 
-    The Baltic/Kaliningrad summer scene should not drift toward a dry steppe or
-    Mediterranean dune palette.  Keep this as a positive cue because image
-    generators can turn negative prompt words into visible objects.
-    """
-    try:
-        target_date = dt.date.fromisoformat(str(date_key)[:10])
-    except Exception:
-        return prompt
-    if target_date.month not in _SUMMER_VEGETATION_MONTHS:
-        return prompt
-    if _SUMMER_VEGETATION_CUE in str(prompt or ""):
-        return prompt
-    return str(prompt or "").rstrip() + "\n" + _SUMMER_VEGETATION_CUE
+
+def _finalize_morning_visual_policy(prompt: str, *, date_key: str, metadata: dict[str, str]) -> str:
+    text = _replace_generic_controlled_composition(prompt, build_scene_contract(metadata))
+    if SCENE_NEUTRAL_PHOTO_CONTRACT not in text:
+        text += "\n" + SCENE_NEUTRAL_PHOTO_CONTRACT
+    text = apply_summer_vegetation_guard(text, date_key)
+    text += "\n" + PROVIDER_NEGATIVE_GUARD
+    return text
 
 
 def build_kld_morning_prompt(
@@ -231,7 +246,11 @@ def build_kld_morning_prompt(
             weather_main=getattr(ctx, "weather_main", ""),
             visibility_condition=getattr(ctx, "visibility_condition", "clear"),
         )
-        from image_prompt_kld import _format_v2_style_name, apply_kld_controlled_variety
+        from image_prompt_kld import (
+            _format_v2_style_name,
+            apply_kld_controlled_variety,
+            kld_scene_metadata,
+        )
 
         prompt = apply_kld_controlled_variety(
             prompt,
@@ -241,7 +260,14 @@ def build_kld_morning_prompt(
             source_text=final_format_v2_message,
             variation_attempt=variation_attempt,
         )
-        prompt = _apply_summer_vegetation_guard(prompt, date_key)
+        metadata = kld_scene_metadata(
+            ctx,
+            date_key=date_key,
+            post_type="morning",
+            source_text=final_format_v2_message,
+            variation_attempt=variation_attempt,
+        )
+        prompt = _finalize_morning_visual_policy(prompt, date_key=date_key, metadata=metadata)
         style_name = _format_v2_style_name(
             ctx,
             date_key=date_key,
@@ -251,9 +277,10 @@ def build_kld_morning_prompt(
         )
         return prompt, "format_v2_scene_cues_morning_" + style_name.rsplit("_", 1)[-1]
     except Exception:
-        logger.exception("KLD morning visual pipeline failed; using simple coastal fallback")
+        logger.exception("KLD morning visual pipeline failed; using simple regional fallback")
         fallback = _sanitize_morning_prompt(_fallback_morning_prompt())
-        fallback = _apply_summer_vegetation_guard(fallback, date_key)
+        fallback = apply_summer_vegetation_guard(fallback, date_key)
+        fallback += "\n" + PROVIDER_NEGATIVE_GUARD
         return fallback, "format_v2_scene_cues_morning"
 
 
