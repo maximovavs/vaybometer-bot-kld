@@ -52,6 +52,7 @@ from kld_visual_dedup import (  # noqa: E402
 )
 from kld_visual_policy import (  # noqa: E402
     KLD_VISUAL_POLICY_VERSION,
+    apply_weather_scene_route,
     finalize_kld_provider_prompt,
 )
 from visual_context_kld import build_visual_context  # noqa: E402
@@ -443,44 +444,40 @@ def _candidate_payloads(
         visibility_context=visibility_context,
     )
     date_key = _extract_prompt_date(message, dt.date(2026, 6, 19))
-    candidate_metadata = [
-        (
-            index,
+
+    candidate_metadata: list[tuple[int, dict[str, Any]]] = []
+    for index in range(48):
+        metadata = dict(
             kld_scene_metadata(
                 context,
                 date_key=date_key,
                 post_type=args.post_type,
                 source_text=message,
                 variation_attempt=index,
-            ),
+            )
         )
-        for index in range(48)
-    ]
+        apply_weather_scene_route(metadata)
+        candidate_metadata.append((index, metadata))
+
     selected_attempts: list[int] = []
     used_scenes: set[str] = set()
     used_compositions: set[str] = set()
-    # Exact scene cooldown is never relaxed. The weather-specific catalogs have
-    # at least six scenes, so blocking the last three still leaves three fresh
-    # scenes. Composition cooldown may relax only after fresh scenes are kept.
-    for cooldown_mode in ("strict", "scene_only"):
-        for variation_attempt, metadata in candidate_metadata:
-            scene = str(metadata["scene_family"])
-            composition = str(metadata["composition"])
-            if scene in used_scenes or composition in used_compositions:
-                continue
-            if scene in blocked_scenes:
-                continue
-            if cooldown_mode == "strict" and composition in blocked_compositions:
-                continue
-            selected_attempts.append(variation_attempt)
-            used_scenes.add(scene)
-            used_compositions.add(composition)
-            if len(selected_attempts) >= count:
-                return (
-                    [payload_for(attempt) for attempt in selected_attempts],
-                    blocked_scenes,
-                    blocked_compositions,
-                )
+    # Scene and composition cooldowns are both hard invariants. Selection is
+    # evaluated after weather routing so the pool is unique by the exact scene
+    # and composition metadata that will be sent to providers.
+    for variation_attempt, metadata in candidate_metadata:
+        scene = str(metadata["scene_family"])
+        composition = str(metadata["composition"])
+        if scene in used_scenes or composition in used_compositions:
+            continue
+        if scene in blocked_scenes or composition in blocked_compositions:
+            continue
+        selected_attempts.append(variation_attempt)
+        used_scenes.add(scene)
+        used_compositions.add(composition)
+        if len(selected_attempts) >= count:
+            break
+
     return (
         [payload_for(attempt) for attempt in selected_attempts[:count]],
         blocked_scenes,

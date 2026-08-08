@@ -35,3 +35,55 @@ jobs:
           TZ: Europe/Kaliningrad
         run: |
           python post_kld.py --date 2025-09-05 --fx-only --dry-run
+      - name: KLD visual regressions (offline)
+        run: |
+          set -euo pipefail
+          python -m compileall -q \
+            image_prompt_kld.py \
+            image_prompt_kld_morning.py \
+            kld_visual_policy.py \
+            kld_image_content_guard.py \
+            kld_visual_dedup.py \
+            kld_image_first.py \
+            tools/kld_visual_fixture_image.py \
+            tools/test_kld_morning_prompt_contract.py \
+            tools/test_kld_evening_controlled_variety.py
+          python - <<'PY'
+          import runpy
+
+          suite = runpy.run_path("tools/test_visual_kld.py", run_name="kld_visual_legacy")
+          for case in suite["CASES"]:
+              suite["run_case"](case)
+          for check in (
+              "run_image_prompt_bridge_case",
+              "run_first_quarter_moon_guard_case",
+              "run_last_quarter_59_moon_guard_case",
+              "run_not_quite_full_moon_guard_case",
+              "run_full_moon_evening_moonlit_guard_case",
+              "run_waning_gibbous_moon_guard_case",
+              "run_storm_waning_92_visual_guard_case",
+              "run_new_moon_storm_finalizer_case",
+              "run_new_moon_nonstorm_and_cloud_cases",
+              "run_unknown_moon_does_not_force_visible_cue_case",
+              "run_storm_full_moon_single_cue_case",
+              "run_nonstorm_warning_does_not_get_storm_visual_case",
+              "run_gust19_without_storm_word_gets_storm_visual_case",
+              "run_storm_overlay_warning_priority_cases",
+              "run_scene_family_rotation_cases",
+              "run_scene_retry_and_cache_key_cases",
+          ):
+              suite[check]()
+          print("OK: current legacy KLD synthetic checks passed (superseded morning/mixed-variety blocks excluded)")
+          PY
+          python tools/test_kld_morning_prompt_contract.py
+          python tools/test_kld_evening_controlled_variety.py
+          python tools/test_kld_visual_policy.py
+          python tools/test_kld_image_content_guard.py
+          python tools/test_kld_summer_vegetation_prompt.py
+          python tools/test_kld_visual_dedup.py
+          python tools/test_kld_evening_allocator_policy.py
+          python tools/test_kld_visual_season_boundary.py
+          python tools/test_kld_visual_decision_policy.py
+          python tools/test_kld_august_2026_visual_regression.py
+          python tools/test_kld_image_first.py
+          python tools/test_kld_visual_workflow.py
