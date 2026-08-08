@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import sys
 import tempfile
@@ -146,23 +147,31 @@ def kld_dedup_genuinely_different_image_is_accepted_with_fresh_scene() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def kld_dedup_recent_scene_family_is_rejected_even_for_different_pixels() -> None:
+def kld_dedup_open_beach_macro_is_hard_rejected_on_third_of_five() -> None:
     root = _tmpdir()
     try:
         history = root / "history.json"
-        original = root / "original.ppm"
+        history.write_text(
+            json.dumps(
+                [
+                    {"date": "2026-07-01", "scene_family": "curonian_spit_dunes"},
+                    {"date": "2026-07-02", "scene_family": "zelenogradsk_promenade"},
+                    {"date": "2026-07-03", "scene_family": "yantarny_wide_beach"},
+                    {"date": "2026-07-04", "scene_family": "quiet_lagoon_coast"},
+                ]
+            ),
+            encoding="utf-8",
+        )
         different = root / "different.ppm"
-        _write_ppm(original, mode="coast_a")
         _write_ppm(different, mode="coast_b")
-        _record(history, original, scene_family="curonian_spit_dunes")
         result = _evaluate(
             different,
             history,
-            scene_family="curonian_spit_dunes",
-            composition="elevated overlook panorama",
+            scene_family="stormy_open_baltic",
+            composition="open horizon with large sky",
         )
         assert result.accepted is False
-        assert result.reason == "scene_cooldown"
+        assert result.reason == "scene_macro_cooldown"
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -305,7 +314,7 @@ TESTS = [
     kld_dedup_exact_sha_is_rejected,
     kld_dedup_near_duplicate_recolor_crop_is_rejected,
     kld_dedup_genuinely_different_image_is_accepted_with_fresh_scene,
-    kld_dedup_recent_scene_family_is_rejected_even_for_different_pixels,
+    kld_dedup_open_beach_macro_is_hard_rejected_on_third_of_five,
     kld_dedup_history_namespaces_are_separate,
     kld_dedup_record_is_atomic_and_dedupes_same_publication,
     kld_dedup_malformed_history_keeps_backup,
