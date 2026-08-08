@@ -7,7 +7,9 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
+
+from kld_visual_policy import scene_macro_family, seasonal_guard_label
 
 
 FORMAT_V2_BEGIN = "===== FORMAT_V2 MESSAGE BEGIN ====="
@@ -31,6 +33,64 @@ def _load_json(path: str | Path) -> dict[str, Any] | None:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _visual_decision(
+    result: Mapping[str, Any],
+    prompt_metadata: Mapping[str, Any] | None,
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    prompt_metadata = dict(prompt_metadata or {})
+    metadata_raw = prompt_metadata.get("metadata")
+    metadata = dict(metadata_raw) if isinstance(metadata_raw, Mapping) else {}
+
+    scene_family = str(result.get("selected_scene_family") or metadata.get("scene_family") or "")
+    composition = str(result.get("selected_composition") or metadata.get("composition") or "")
+    backend = str(result.get("backend") or "none")
+    dedup_reason = str(result.get("dedup_reason") or "")
+    telegram_image_sent = bool(result.get("telegram_image_sent"))
+
+    if backend == "local_informative_cover":
+        content_guard: dict[str, Any] = {
+            "valid": None,
+            "reason": "not_applicable_local_cover",
+        }
+    elif telegram_image_sent:
+        content_guard = {"valid": True, "reason": "accepted"}
+    elif dedup_reason.startswith("content_guard:"):
+        content_guard = {
+            "valid": False,
+            "reason": dedup_reason.split(":", 1)[1],
+        }
+    else:
+        content_guard = {"valid": None, "reason": "not_selected"}
+
+    target_date = str(metadata.get("target_date") or metadata.get("forecast_date") or "")
+    return {
+        "backend": backend,
+        "post_type": mode,
+        "weather_main": str(metadata.get("weather_scenario") or "unknown"),
+        "visibility_condition": str(metadata.get("visibility_condition") or "clear"),
+        "wind_gust_category": str(metadata.get("wind_gust_category") or "wind_unknown"),
+        "scene_route": str(metadata.get("scene_route") or "unknown"),
+        "seasonal_guard": seasonal_guard_label(target_date),
+        "scene_family": scene_family,
+        "scene_macro_family": scene_macro_family(scene_family),
+        "composition": composition,
+        "content_guard": content_guard,
+        "dedup": {
+            "reason": dedup_reason or "unknown",
+            "distance": result.get("dedup_distance"),
+        },
+        "fallback_reason": str(result.get("fallback_reason") or ""),
+        "visual_policy_version": str(
+            result.get("visual_policy_version")
+            or prompt_metadata.get("visual_policy_version")
+            or "unknown"
+        ),
+        "published": telegram_image_sent,
+    }
 
 
 def extract_format_v2_message(output: str) -> str:
@@ -78,6 +138,7 @@ def run_image_first_publication(
         "text_sent": False,
         "telegram_text_message_ids": [],
         "mode": mode,
+        "visual_decision": None,
     }
     _write_json(result_path, result)
     _write_json(
@@ -146,6 +207,11 @@ def run_image_first_publication(
                 error_message=f"image tool exited with {image_returncode}",
             )
     result["image_process_returncode"] = image_returncode
+    result["visual_decision"] = _visual_decision(
+        result,
+        _load_json(prompt_metadata_path),
+        mode=mode,
+    )
 
     if image_returncode != 0 or not result.get("telegram_image_sent"):
         print("::warning::KLD image unavailable; text publication continued.")
