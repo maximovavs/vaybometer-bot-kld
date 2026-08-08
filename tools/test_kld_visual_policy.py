@@ -57,7 +57,11 @@ def kld_policy_recent_scene_is_hard_blocked() -> None:
         {"scene_family": "zelenogradsk_promenade"},
         {"scene_family": "pine_forest_sea_path"},
     ]
-    reason, matched = scene_policy_rejection(history, scene_family="pine_forest_sea_path")
+    reason, matched = scene_policy_rejection(
+        history,
+        scene_family="pine_forest_sea_path",
+        scene_cooldown=3,
+    )
     assert reason == "scene_cooldown"
     assert matched and matched["scene_family"] == "pine_forest_sea_path"
 
