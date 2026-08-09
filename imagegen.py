@@ -84,6 +84,15 @@ def stable_horde_enabled() -> bool:
     return os.getenv("KLD_STABLE_HORDE_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def compose_stable_horde_prompt(positive_prompt: str, negative_prompt: str = "") -> str:
+    """Use AI Horde's supported positive/negative ``###`` prompt boundary."""
+    positive = " ".join(str(positive_prompt or "").split())
+    negative = " ".join(str(negative_prompt or "").split())
+    if not positive:
+        raise ValueError("imagegen: empty Stable Horde positive prompt")
+    return f"{positive} ### {negative}" if negative else positive
+
+
 def _exception_attempt(attempt: int, exc: Exception) -> dict[str, Any]:
     return {
         "attempt": attempt,
@@ -615,8 +624,10 @@ def generate_kld_stable_horde_image(*args, **kwargs) -> str:
             attempts=[],
         )
 
+    negative_prompt = str(kwargs.get("negative_prompt") or "").strip()
     prompt, style_name, out_path, extra = _extract_args(args, kwargs)
-    final_prompt = (prompt.strip() + (f" style:{style_name}" if style_name else "")).strip()
+    positive_prompt = (prompt.strip() + (f" style:{style_name}" if style_name else "")).strip()
+    final_prompt = compose_stable_horde_prompt(positive_prompt, negative_prompt)
     seed = extra.get("seed")
     if seed is None:
         seed = _sha_seed(final_prompt)

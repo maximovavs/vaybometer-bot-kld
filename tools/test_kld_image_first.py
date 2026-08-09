@@ -1224,10 +1224,16 @@ def second_backend_runs_after_pollinations_exhaustion_with_diagnostics() -> None
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         events: list[str] = []
+        secondary_calls: list[dict[str, object]] = []
+
+        def secondary_generate(**kwargs):
+            secondary_calls.append(dict(kwargs))
+            return _image(root / "horde.png", (55, 95, 145))
+
         outcome = _run_delivery(
             root,
             generate=lambda **kwargs: (_ for _ in ()).throw(ProviderFailure("Pollinations exhausted")),
-            secondary_generate=lambda **kwargs: _image(root / "horde.png", (55, 95, 145)),
+            secondary_generate=secondary_generate,
             provider_diagnostics=lambda backend: {
                 "backend": backend,
                 "http_attempt_count": 4,
@@ -1262,10 +1268,106 @@ def second_backend_runs_after_pollinations_exhaustion_with_diagnostics() -> None
         )
         assert outcome["fallback_reason"] == "provider_failure"
         assert outcome["http_attempt_count"] == 7
+        assert len(secondary_calls) == 1
+        assert str(secondary_calls[0]["prompt"]).startswith(
+            "Kaliningrad region, Baltic Sea coast, July summer."
+        )
+        assert "dry yellow living grass" in str(secondary_calls[0]["negative_prompt"])
+        assert len(str(secondary_calls[0]["prompt"]).split()) < 100
+        assert outcome["provider_attempts"][1]["prompt_contract"] == {
+            "profile": "kld_short_positive_negative",
+            "positive_words": len(str(secondary_calls[0]["prompt"]).split()),
+            "negative_words": len(str(secondary_calls[0]["negative_prompt"]).split()),
+            "negative_separated": True,
+        }
         assert outcome["selected_scene_family"]
         assert outcome["selected_composition"]
         assert outcome["selected_cache_key"]
         assert events == ["photo", "history"]
+
+
+def semantic_rejection_rotates_to_next_candidate() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        generated = 0
+
+        def generate(**kwargs):
+            nonlocal generated
+            generated += 1
+            return _image(root / f"semantic-{generated}.png", (70 + generated, 110, 140))
+
+        evaluated = 0
+
+        def evaluate(path, **kwargs):
+            nonlocal evaluated
+            evaluated += 1
+            if evaluated == 1:
+                return _duplicate(
+                    accepted=False,
+                    reason="content_guard:summer_dry_steppe",
+                    distance=18,
+                )
+            return _duplicate(accepted=True, reason="accepted", distance=20)
+
+        outcome = _run_delivery(
+            root,
+            generate=generate,
+            evaluate=evaluate,
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 109,
+            record=_record(events),
+        )
+        assert outcome["backend"] == "pollinations"
+        assert outcome["cover_attempted"] is False
+        assert len(outcome["provider_attempts"]) == 2
+        assert outcome["provider_attempts"][0]["dedup_reason"] == (
+            "content_guard:summer_dry_steppe"
+        )
+        assert outcome["provider_attempts"][1]["dedup_reason"] == "accepted"
+        assert outcome["provider_attempts"][0]["scene_family"] != (
+            outcome["provider_attempts"][1]["scene_family"]
+        )
+        assert events == ["photo", "history"]
+
+
+def semantic_rejections_exhaust_to_local_cover() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        generated = 0
+
+        def generate(**kwargs):
+            nonlocal generated
+            generated += 1
+            return _image(root / f"rejected-{generated}.png", (80 + generated, 105, 130))
+
+        def evaluate(path, **kwargs):
+            if str(path).endswith("cover.png"):
+                return _duplicate(accepted=True, reason="accepted", distance=20)
+            return _duplicate(
+                accepted=False,
+                reason="content_guard:required_baltic_missing",
+                distance=20,
+            )
+
+        outcome = _run_delivery(
+            root,
+            generate=generate,
+            evaluate=evaluate,
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 110,
+            record=_record(events),
+        )
+        assert len(outcome["provider_attempts"]) == 3
+        assert all(
+            item["dedup_reason"] == "content_guard:required_baltic_missing"
+            for item in outcome["provider_attempts"]
+        )
+        assert outcome["fallback_reason"] == "semantic_mismatch"
+        assert outcome["backend"] == "local_informative_cover"
+        assert outcome["local_cover_published"] is True
+        assert events == ["cover", "photo", "history"]
 
 
 def near_duplicate_candidates_are_hard_rejected_and_rotate_scene() -> None:
@@ -1425,8 +1527,10 @@ def stable_horde_backend_has_offline_success_and_url_safety() -> None:
     encoded = base64.b64encode(payload_buffer.getvalue()).decode("ascii")
     original_json_request = imagegen._horde_json_request
     original_enabled = os.environ.get("KLD_STABLE_HORDE_ENABLED")
+    submitted_prompt = ""
 
     def fake_json_request(url: str, *, attempts, stage: str, **kwargs):
+        nonlocal submitted_prompt
         attempts.append(
             {
                 "attempt": len(attempts) + 1,
@@ -1437,6 +1541,7 @@ def stable_horde_backend_has_offline_success_and_url_safety() -> None:
             }
         )
         if stage == "submit":
+            submitted_prompt = str((kwargs.get("payload") or {}).get("prompt") or "")
             return {"id": "offline-job"}
         if stage == "check":
             return {"done": True}
@@ -1449,6 +1554,7 @@ def stable_horde_backend_has_offline_success_and_url_safety() -> None:
             output = imagegen.generate_kld_stable_horde_image(
                 prompt="offline Baltic coast",
                 style_name="test",
+                negative_prompt="dry yellow living grass, screenshot",
                 seed=123,
                 out_path=str(Path(tmp) / "horde.jpg"),
             )
@@ -1458,6 +1564,9 @@ def stable_horde_backend_has_offline_success_and_url_safety() -> None:
         diagnostics = imagegen.get_generation_diagnostics("stable_horde")
         assert diagnostics["result"] == "success"
         assert diagnostics["http_attempt_count"] == 3
+        assert submitted_prompt == (
+            "offline Baltic coast style:test ### dry yellow living grass, screenshot"
+        )
         assert imagegen._public_horde_image_url("http://127.0.0.1/image.png") is False
         assert imagegen._public_horde_image_url("http://localhost/image.png") is False
     finally:
@@ -1494,6 +1603,8 @@ TESTS = [
     local_cover_semantic_validation_blocks_tampering,
     invalid_local_cover_is_not_sent_and_text_remains_nonblocking,
     second_backend_runs_after_pollinations_exhaustion_with_diagnostics,
+    semantic_rejection_rotates_to_next_candidate,
+    semantic_rejections_exhaust_to_local_cover,
     near_duplicate_candidates_are_hard_rejected_and_rotate_scene,
     near_duplicate_local_cover_is_not_published,
     recent_scene_and_composition_cooldown_is_applied,

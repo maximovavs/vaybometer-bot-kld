@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Mapping, MutableMapping, Sequence
 
-KLD_VISUAL_POLICY_VERSION = "kld_visual_policy_v3"
+KLD_VISUAL_POLICY_VERSION = "kld_visual_policy_v4"
 SUMMER_MONTHS = frozenset({6, 7, 8})
 
 SUMMER_VEGETATION_CUE = (
@@ -61,6 +61,88 @@ _SCENE_TEXT = {
     "kaliningrad_urban_coastal_view": "urban Baltic coastal edge with modest Kaliningrad-region architecture, promenade and sea horizon",
     "rainy_coastal_road": "rain-darkened coastal road near dunes and pines, with the Baltic shoreline visible beyond",
 }
+
+_SCENE_COMPOSITIONS: dict[str, tuple[str, ...]] = {
+    "curonian_spit_dunes": (
+        "wide diagonal shoreline composition",
+        "foreground dune grass with open water behind",
+        "pine-framed side composition",
+        "open horizon with large sky",
+    ),
+    "svetlogorsk_cliff_coast": (
+        "wide diagonal shoreline composition",
+        "low coastal stones leading line",
+        "pine-framed side composition",
+        "elevated overlook panorama",
+        "open horizon with large sky",
+    ),
+    "zelenogradsk_promenade": (
+        "wide diagonal shoreline composition",
+        "promenade railing foreground",
+        "open horizon with large sky",
+    ),
+    "baltiysk_breakwater": (
+        "wide diagonal shoreline composition",
+        "low coastal stones leading line",
+        "open horizon with large sky",
+        "breakwater perspective line",
+    ),
+    "yantarny_wide_beach": (
+        "wide diagonal shoreline composition",
+        "foreground dune grass with open water behind",
+        "open horizon with large sky",
+    ),
+    "pine_forest_sea_path": (
+        "wide diagonal shoreline composition",
+        "foreground dune grass with open water behind",
+        "pine-framed side composition",
+        "open horizon with large sky",
+    ),
+    "stormy_open_baltic": (
+        "wide diagonal shoreline composition",
+        "low coastal stones leading line",
+        "open horizon with large sky",
+    ),
+    "quiet_lagoon_coast": (
+        "wide diagonal shoreline composition",
+        "foreground dune grass with open water behind",
+        "open horizon with large sky",
+    ),
+    "wet_seaside_promenade": (
+        "wide diagonal shoreline composition",
+        "promenade railing foreground",
+        "open horizon with large sky",
+    ),
+    "elevated_baltic_overlook": (
+        "wide diagonal shoreline composition",
+        "pine-framed side composition",
+        "elevated overlook panorama",
+        "open horizon with large sky",
+    ),
+    "kaliningrad_urban_coastal_view": (
+        "wide diagonal shoreline composition",
+        "promenade railing foreground",
+        "open horizon with large sky",
+    ),
+    "rainy_coastal_road": (
+        "wide diagonal shoreline composition",
+        "pine-framed side composition",
+        "open horizon with large sky",
+    ),
+}
+
+_OPEN_BALTIC_SCENES = frozenset(
+    {
+        "curonian_spit_dunes",
+        "svetlogorsk_cliff_coast",
+        "zelenogradsk_promenade",
+        "baltiysk_breakwater",
+        "yantarny_wide_beach",
+        "stormy_open_baltic",
+        "elevated_baltic_overlook",
+        "kaliningrad_urban_coastal_view",
+    }
+)
 
 WEATHER_SCENE_ROUTES: dict[str, tuple[str, ...]] = {
     "fog_visibility": (
@@ -183,6 +265,36 @@ def weather_route_scenes(metadata: Mapping[str, Any]) -> tuple[str, ...]:
     return WEATHER_SCENE_ROUTES[weather_route_key(metadata)]
 
 
+def scene_compositions(scene_family: str) -> tuple[str, ...]:
+    """Return compositions that do not inject foreign objects into a scene."""
+    return _SCENE_COMPOSITIONS.get(
+        str(scene_family or "").strip(),
+        ("wide diagonal shoreline composition", "open horizon with large sky"),
+    )
+
+
+def scene_composition_compatible(scene_family: str, composition: str) -> bool:
+    return str(composition or "").strip() in scene_compositions(scene_family)
+
+
+def apply_scene_composition_policy(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Replace an incompatible object-led composition deterministically."""
+    normalized = dict(metadata)
+    scene = str(normalized.get("scene_family") or "").strip()
+    composition = str(normalized.get("composition") or "").strip()
+    allowed = scene_compositions(scene)
+    if composition not in allowed:
+        try:
+            attempt = int(normalized.get("variation_attempt") or 0)
+        except (TypeError, ValueError):
+            attempt = 0
+        offset = sum(ord(char) for char in composition) % len(allowed) if composition else 0
+        normalized["composition"] = allowed[(attempt + offset) % len(allowed)]
+    if isinstance(metadata, MutableMapping):
+        metadata.update(normalized)
+    return normalized
+
+
 def apply_weather_scene_route(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Bias the final provider scene toward weather-relevant KLD geography.
 
@@ -206,9 +318,90 @@ def apply_weather_scene_route(metadata: Mapping[str, Any]) -> dict[str, Any]:
         routed["scene_family"] = current
         routed["scene_text"] = _SCENE_TEXT[current]
     routed["scene_route"] = route_key
+    routed = apply_scene_composition_policy(routed)
     if isinstance(metadata, MutableMapping):
         metadata.update(routed)
     return routed
+
+
+def build_stable_horde_prompt_parts(
+    metadata: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Build a short KLD-first positive prompt and a separate Horde negative prompt."""
+    target = parse_date_key(metadata.get("target_date") or metadata.get("forecast_date"))
+    month_names = {
+        1: "January winter",
+        2: "February winter",
+        3: "March spring",
+        4: "April spring",
+        5: "May spring",
+        6: "June summer",
+        7: "July summer",
+        8: "August summer",
+        9: "September autumn",
+        10: "October autumn",
+        11: "November autumn",
+        12: "December winter",
+    }
+    season = month_names.get(target.month if target else 0, "realistic northern Baltic season")
+    summer = bool(target and target.month in SUMMER_MONTHS)
+    scene = str(metadata.get("scene_family") or "unknown")
+    scene_text = str(metadata.get("scene_text") or "real Kaliningrad-region coast")
+    composition = str(metadata.get("composition") or "natural coastal composition")
+    weather = str(metadata.get("weather_scenario") or "natural coastal weather")
+    visibility = str(metadata.get("visibility_condition") or "clear")
+    gust = str(metadata.get("wind_gust_category") or "wind_unknown")
+    post_type = str(metadata.get("post_type") or "daily")
+    lunar = str(metadata.get("lunar_phase") or "unknown")
+
+    opening = f"Kaliningrad region, Baltic Sea coast, {season}."
+    if summer:
+        opening += " Any visible living coastal vegetation is lush fresh natural green."
+    positive_parts = [
+        opening,
+        "Photorealistic northern Baltic weather photograph with restrained natural colour.",
+        f"Selected scene: {scene_text}.",
+        f"Composition: {composition}.",
+        f"Weather: {weather}; visibility: {visibility}; wind: {gust}; {post_type} light.",
+    ]
+    if scene in _OPEN_BALTIC_SCENES:
+        positive_parts.append("Open Baltic water and a readable sea horizon are clearly present.")
+    if lunar not in {"", "unknown", "none"}:
+        positive_parts.append(f"Lunar phase: {lunar}.")
+
+    negative_parts = [
+        "unrelated geography",
+        "arid steppe",
+        "savanna",
+        "Mediterranean dry landscape",
+        "tropical vegetation",
+        "map",
+        "satellite image",
+        "screenshot",
+        "browser interface",
+        "app interface",
+        "UI chrome",
+        "dashboard",
+        "poster",
+        "infographic",
+        "text overlay",
+        "watermark",
+    ]
+    if summer:
+        negative_parts[1:1] = [
+            "dry yellow living grass",
+            "golden grass field",
+            "straw-coloured living vegetation",
+        ]
+    if scene != "baltiysk_breakwater":
+        negative_parts.extend(("breakwater", "working harbour"))
+    if scene not in {
+        "zelenogradsk_promenade",
+        "wet_seaside_promenade",
+        "kaliningrad_urban_coastal_view",
+    }:
+        negative_parts.extend(("promenade railing", "urban street"))
+    return " ".join(positive_parts), ", ".join(negative_parts)
 
 
 def recent_real_scene_entries(history: Sequence[Mapping[str, Any]], *, limit: int = 5) -> list[Mapping[str, Any]]:
@@ -360,13 +553,17 @@ __all__ = [
     "SUMMER_MONTHS",
     "SUMMER_VEGETATION_CUE",
     "WEATHER_SCENE_ROUTES",
+    "apply_scene_composition_policy",
     "apply_summer_vegetation_guard",
     "apply_weather_scene_route",
     "build_scene_contract",
+    "build_stable_horde_prompt_parts",
     "finalize_kld_provider_prompt",
     "parse_date_key",
     "recent_real_scene_entries",
     "scene_macro_family",
+    "scene_composition_compatible",
+    "scene_compositions",
     "scene_policy_rejection",
     "seasonal_guard_label",
     "weather_route_key",
