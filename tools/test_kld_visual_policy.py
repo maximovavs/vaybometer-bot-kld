@@ -13,8 +13,11 @@ from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
 from kld_visual_policy import (  # noqa: E402
     PROVIDER_NEGATIVE_GUARD,
     SUMMER_VEGETATION_CUE,
+    apply_scene_composition_policy,
     apply_summer_vegetation_guard,
+    build_stable_horde_prompt_parts,
     build_scene_contract,
+    scene_composition_compatible,
     scene_macro_family,
     scene_policy_rejection,
 )
@@ -105,6 +108,46 @@ def kld_policy_august_morning_prompt_has_no_legacy_beach_lock() -> None:
     assert "Controlled composition:" not in prompt
 
 
+def curonian_spit_cannot_receive_breakwater_objects() -> None:
+    metadata = {
+        "scene_family": "curonian_spit_dunes",
+        "composition": "breakwater perspective line",
+        "variation_attempt": "0",
+    }
+    normalized = apply_scene_composition_policy(metadata)
+    assert normalized["composition"] != "breakwater perspective line"
+    assert scene_composition_compatible(
+        normalized["scene_family"], normalized["composition"]
+    )
+    assert scene_composition_compatible(
+        "baltiysk_breakwater", "breakwater perspective line"
+    )
+
+
+def stable_horde_prompt_is_short_kld_first_and_negative_separate() -> None:
+    positive, negative = build_stable_horde_prompt_parts(
+        {
+            "target_date": "2026-08-09",
+            "post_type": "morning",
+            "scene_family": "curonian_spit_dunes",
+            "scene_text": "Curonian Spit dunes with marram grass and open Baltic water",
+            "composition": "foreground dune grass with open water behind",
+            "weather_scenario": "cloudy",
+            "visibility_condition": "clear",
+            "wind_gust_category": "gust_7_9",
+            "lunar_phase": "waning crescent",
+        }
+    )
+    assert positive.startswith("Kaliningrad region, Baltic Sea coast, August summer.")
+    assert "lush fresh natural green" in positive
+    assert "Open Baltic water" in positive
+    assert len(positive.split()) < 100
+    assert "dry yellow living grass" not in positive
+    assert "dry yellow living grass" in negative
+    assert "breakwater" in negative
+    assert "screenshot" in negative
+
+
 TESTS = [
     kld_policy_august_is_green,
     kld_policy_autumn_does_not_force_summer_green,
@@ -114,6 +157,8 @@ TESTS = [
     kld_policy_open_beach_is_limited_to_two_of_five,
     kld_policy_non_beach_scene_survives_beach_quota,
     kld_policy_august_morning_prompt_has_no_legacy_beach_lock,
+    curonian_spit_cannot_receive_breakwater_objects,
+    stable_horde_prompt_is_short_kld_first_and_negative_separate,
 ]
 
 

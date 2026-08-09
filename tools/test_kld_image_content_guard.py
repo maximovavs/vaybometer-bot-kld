@@ -60,6 +60,33 @@ def _write_landscape_like(path: Path) -> bool:
     return True
 
 
+def _write_layered_scene(
+    path: Path,
+    *,
+    sky: tuple[int, int, int],
+    water: tuple[int, int, int] | None,
+    ground: tuple[int, int, int],
+    water_top: int = 210,
+    ground_top: int = 370,
+) -> bool:
+    Image, ImageDraw = _require_pillow()
+    if Image is None:
+        return False
+    image = Image.new("RGB", (512, 512), color=sky)
+    draw = ImageDraw.Draw(image)
+    if water is not None:
+        draw.rectangle((0, water_top, 511, ground_top - 1), fill=water)
+        for y in range(water_top + 10, ground_top, 24):
+            draw.line((0, y, 511, y), fill=tuple(min(255, value + 12) for value in water), width=2)
+    else:
+        ground_top = water_top
+    draw.rectangle((0, ground_top, 511, 511), fill=ground)
+    for y in range(ground_top + 8, 512, 20):
+        draw.line((0, y, 511, y), fill=tuple(max(0, value - 10) for value in ground), width=2)
+    image.save(path)
+    return True
+
+
 def kld_guard_rejects_dense_top_ui_band() -> None:
     root = _tmpdir()
     try:
@@ -83,6 +110,120 @@ def kld_guard_accepts_simple_landscape() -> None:
         verdict = inspect_kld_provider_image(path)
         assert verdict.valid is True
         assert verdict.reason == "accepted"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_rejects_summer_dry_steppe_without_baltic() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "dry-field.png"
+        if not _write_layered_scene(
+            path,
+            sky=(150, 181, 205),
+            water=None,
+            ground=(184, 148, 62),
+            water_top=190,
+        ):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="curonian_spit_dunes",
+            target_date="2026-08-09",
+        )
+        assert verdict.valid is False
+        assert verdict.reason == "summer_dry_steppe"
+        assert verdict.lower_gold_fraction >= 0.32
+        assert verdict.lower_green_fraction <= 0.07
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_accepts_green_baltic_coast() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "green-coast.png"
+        if not _write_layered_scene(
+            path,
+            sky=(156, 181, 198),
+            water=(65, 108, 130),
+            ground=(72, 119, 64),
+        ):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="curonian_spit_dunes",
+            target_date="2026-08-09",
+        )
+        assert verdict.valid is True, verdict
+        assert verdict.water_rows >= 4
+        assert verdict.lower_green_fraction > 0.10
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_accepts_sand_wood_reeds_and_cloudy_baltic() -> None:
+    root = _tmpdir()
+    try:
+        cases = (
+            ("sand", (151, 181, 199), (61, 104, 127), (208, 188, 137), "curonian_spit_dunes"),
+            ("wood", (151, 181, 199), (61, 104, 127), (132, 91, 49), "zelenogradsk_promenade"),
+            ("reeds", (151, 181, 199), (61, 104, 127), (176, 146, 78), "quiet_lagoon_coast"),
+            ("cloudy", (132, 142, 149), (91, 105, 113), (73, 104, 67), "curonian_spit_dunes"),
+        )
+        for name, sky, water, ground, scene in cases:
+            path = root / f"{name}.png"
+            assert _write_layered_scene(path, sky=sky, water=water, ground=ground)
+            verdict = inspect_kld_provider_image(
+                path,
+                scene_family=scene,
+                target_date="2026-08-09",
+            )
+            assert verdict.valid is True, (name, verdict)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_accepts_autumn_gold_with_baltic() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "autumn.png"
+        if not _write_layered_scene(
+            path,
+            sky=(140, 155, 165),
+            water=(78, 102, 118),
+            ground=(177, 137, 57),
+        ):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="curonian_spit_dunes",
+            target_date="2026-10-09",
+        )
+        assert verdict.valid is True, verdict
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_rejects_land_only_frame_for_open_baltic_scene() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "inland-meadow.png"
+        if not _write_layered_scene(
+            path,
+            sky=(160, 185, 203),
+            water=None,
+            ground=(69, 122, 65),
+            water_top=200,
+        ):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="curonian_spit_dunes",
+            target_date="2026-08-09",
+        )
+        assert verdict.valid is False
+        assert verdict.reason == "required_baltic_missing"
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -137,6 +278,11 @@ def kld_local_cover_bypasses_provider_content_guard() -> None:
 TESTS = [
     kld_guard_rejects_dense_top_ui_band,
     kld_guard_accepts_simple_landscape,
+    kld_guard_rejects_summer_dry_steppe_without_baltic,
+    kld_guard_accepts_green_baltic_coast,
+    kld_guard_accepts_sand_wood_reeds_and_cloudy_baltic,
+    kld_guard_accepts_autumn_gold_with_baltic,
+    kld_guard_rejects_land_only_frame_for_open_baltic_scene,
     kld_dedup_gate_propagates_content_rejection,
     kld_local_cover_bypasses_provider_content_guard,
 ]

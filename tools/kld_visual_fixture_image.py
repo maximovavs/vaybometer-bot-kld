@@ -53,6 +53,7 @@ from kld_visual_dedup import (  # noqa: E402
 from kld_visual_policy import (  # noqa: E402
     KLD_VISUAL_POLICY_VERSION,
     apply_weather_scene_route,
+    build_stable_horde_prompt_parts,
     finalize_kld_provider_prompt,
 )
 from visual_context_kld import build_visual_context  # noqa: E402
@@ -492,12 +493,13 @@ def _provider_attempt_payload(
     result: str,
     diagnostics: Mapping[str, Any] | None = None,
     error: Mapping[str, Any] | None = None,
+    prompt_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = candidate["metadata"]
     diagnostics = dict(diagnostics or {})
     error = dict(error or {})
     http_attempts = list(diagnostics.get("attempts") or error.get("attempts") or [])
-    return {
+    payload = {
         "backend": backend,
         "variation_attempt": int(candidate.get("variation_attempt") or 0),
         "scene_family": str(metadata.get("scene_family") or ""),
@@ -513,6 +515,9 @@ def _provider_attempt_payload(
         ),
         "http_attempts": http_attempts,
     }
+    if prompt_contract:
+        payload["prompt_contract"] = dict(prompt_contract)
+    return payload
 
 
 def _rejection_fallback_reason(reasons: list[str]) -> str:
@@ -589,12 +594,27 @@ def execute_image_delivery(
             provider_candidates = []
         for candidate in provider_candidates:
             metadata = candidate["metadata"]
-            try:
-                img_path = generator(
-                    prompt=candidate["image_prompt"],
-                    style_name=candidate["style_name"],
-                    seed=_seed_from_cache_key(candidate["cache_key"]),
+            generation_kwargs: dict[str, Any] = {
+                "prompt": candidate["image_prompt"],
+                "style_name": candidate["style_name"],
+                "seed": _seed_from_cache_key(candidate["cache_key"]),
+            }
+            prompt_contract: dict[str, Any] = {"profile": "full_provider_prompt"}
+            if backend == "stable_horde":
+                positive_prompt, negative_prompt = build_stable_horde_prompt_parts(metadata)
+                generation_kwargs.update(
+                    prompt=positive_prompt,
+                    style_name="",
+                    negative_prompt=negative_prompt,
                 )
+                prompt_contract = {
+                    "profile": "kld_short_positive_negative",
+                    "positive_words": len(positive_prompt.split()),
+                    "negative_words": len(negative_prompt.split()),
+                    "negative_separated": True,
+                }
+            try:
+                img_path = generator(**generation_kwargs)
             except Exception as exc:
                 provider_failed = True
                 error = _error_payload(exc)
@@ -612,6 +632,7 @@ def execute_image_delivery(
                     candidate=candidate,
                     result="failed",
                     error=error,
+                    prompt_contract=prompt_contract,
                 )
                 outcome["provider_attempts"].append(attempt_payload)
                 outcome["http_attempt_count"] += attempt_payload["http_attempt_count"]
@@ -627,6 +648,7 @@ def execute_image_delivery(
                 candidate=candidate,
                 result="generated",
                 diagnostics=diagnostics,
+                prompt_contract=prompt_contract,
             )
             outcome["provider_attempts"].append(attempt_payload)
             outcome["http_attempt_count"] += attempt_payload["http_attempt_count"]
