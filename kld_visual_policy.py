@@ -153,7 +153,6 @@ WEATHER_SCENE_ROUTES: dict[str, tuple[str, ...]] = {
         "zelenogradsk_promenade",
     ),
     "rain": (
-        "wet_seaside_promenade",
         "rainy_coastal_road",
         "zelenogradsk_promenade",
         "kaliningrad_urban_coastal_view",
@@ -164,7 +163,6 @@ WEATHER_SCENE_ROUTES: dict[str, tuple[str, ...]] = {
         "baltiysk_breakwater",
         "svetlogorsk_cliff_coast",
         "stormy_open_baltic",
-        "wet_seaside_promenade",
         "rainy_coastal_road",
         "elevated_baltic_overlook",
     ),
