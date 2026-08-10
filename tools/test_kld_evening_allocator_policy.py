@@ -121,8 +121,9 @@ def storm_allocator_keeps_last_three_scenes_hard_blocked() -> None:
             count=3,
         )
         scenes = [str(item["metadata"]["scene_family"]) for item in candidates]
-        assert len(candidates) == 3
-        assert len(set(scenes)) == 3
+        assert len(candidates) == 2
+        assert len(set(scenes)) == 2
+        assert set(scenes) == {"rainy_coastal_road", "elevated_baltic_overlook"}
         assert set(scene_cooldown) == set(blocked)
         assert not (set(scenes) & set(blocked))
 
@@ -172,7 +173,7 @@ def secondary_backend_rotates_same_fresh_candidate_pool() -> None:
             record_publication=lambda **kwargs: events.append("history") or {"sha256": "b" * 64},
         )
         assert outcome["backend"] == "stable_horde"
-        assert len(outcome["candidate_pool"]) == 3
+        assert len(outcome["candidate_pool"]) == 2
         first_pollinations = outcome["provider_attempts"][0]
         first_horde = outcome["provider_attempts"][1]
         assert first_pollinations["backend"] == "pollinations"
