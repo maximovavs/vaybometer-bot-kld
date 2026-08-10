@@ -13,8 +13,10 @@ from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
 from kld_visual_policy import (  # noqa: E402
     PROVIDER_NEGATIVE_GUARD,
     SUMMER_VEGETATION_CUE,
+    WEATHER_SCENE_ROUTES,
     apply_scene_composition_policy,
     apply_summer_vegetation_guard,
+    apply_weather_scene_route,
     build_stable_horde_prompt_parts,
     build_scene_contract,
     scene_composition_compatible,
@@ -124,6 +126,46 @@ def curonian_spit_cannot_receive_breakwater_objects() -> None:
     )
 
 
+def wet_promenade_is_fail_closed_out_of_rain_and_storm_routes() -> None:
+    rain_route = WEATHER_SCENE_ROUTES["rain"]
+    storm_route = WEATHER_SCENE_ROUTES["storm"]
+    assert rain_route == (
+        "rainy_coastal_road",
+        "zelenogradsk_promenade",
+        "kaliningrad_urban_coastal_view",
+        "baltiysk_breakwater",
+        "pine_forest_sea_path",
+    )
+    assert storm_route == (
+        "baltiysk_breakwater",
+        "svetlogorsk_cliff_coast",
+        "stormy_open_baltic",
+        "rainy_coastal_road",
+        "elevated_baltic_overlook",
+    )
+    assert "wet_seaside_promenade" not in rain_route
+    assert "wet_seaside_promenade" not in storm_route
+    assert "zelenogradsk_promenade" in rain_route
+    assert "kaliningrad_urban_coastal_view" in rain_route
+
+    metadata = {
+        "scene_family": "wet_seaside_promenade",
+        "scene_text": "wet seaside promenade after rain with dry-to-damp stone texture and realistic reflections",
+        "composition": "promenade railing foreground",
+        "weather_scenario": "rain",
+        "wind_gust_category": "gust_7_9",
+        "visibility_condition": "clear",
+        "variation_attempt": "6",
+    }
+    routed = apply_weather_scene_route(metadata)
+    assert routed["scene_route"] == "rain"
+    assert routed["scene_family"] in rain_route
+    assert routed["scene_family"] != "wet_seaside_promenade"
+    assert scene_composition_compatible(
+        routed["scene_family"], routed["composition"]
+    )
+
+
 def stable_horde_prompt_is_short_kld_first_and_negative_separate() -> None:
     positive, negative = build_stable_horde_prompt_parts(
         {
@@ -158,6 +200,7 @@ TESTS = [
     kld_policy_non_beach_scene_survives_beach_quota,
     kld_policy_august_morning_prompt_has_no_legacy_beach_lock,
     curonian_spit_cannot_receive_breakwater_objects,
+    wet_promenade_is_fail_closed_out_of_rain_and_storm_routes,
     stable_horde_prompt_is_short_kld_first_and_negative_separate,
 ]
 
