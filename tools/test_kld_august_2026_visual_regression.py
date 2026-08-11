@@ -116,10 +116,12 @@ def august_weather_routes_match_real_regimes() -> None:
 
 def calm_days_are_not_forced_to_open_beach() -> None:
     calm_route = WEATHER_SCENE_ROUTES["calm"]
-    assert scene_macro_family(calm_route[0]) == "promenade_urban"
-    assert scene_macro_family(calm_route[1]) == "forest_road"
-    assert scene_macro_family(calm_route[2]) == "lagoon"
-    assert scene_macro_family(calm_route[3]) == "promenade_urban"
+    assert calm_route[:3] == (
+        "kaliningrad_urban_coastal_view",
+        "quiet_lagoon_coast",
+        "zelenogradsk_promenade",
+    )
+    assert all(scene_macro_family(scene) != "open_beach" for scene in calm_route[:3])
 
 
 def strong_wind_days_prioritize_breakwater_cliff_overlook() -> None:

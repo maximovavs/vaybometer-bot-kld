@@ -15,9 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from image_prompt_kld import build_kld_evening_prompt  # noqa: E402
+from image_prompt_kld import (  # noqa: E402
+    KLD_SCENE_FAMILIES,
+    _scene_catalog,
+    build_kld_evening_prompt,
+)
 
 
+PINE_SCENE = "pine_forest_sea_path"
 MESSAGE = "\n".join(
     [
         "🌊 Морские города",
@@ -38,6 +43,27 @@ def _build(date_value: dt.date) -> tuple[str, str]:
         final_format_v2_message=MESSAGE,
         post_type="evening",
     )
+
+
+def _selected_scene(prompt: str) -> str:
+    marker = "dominant Baltic scene family: "
+    for line in prompt.splitlines():
+        if marker in line:
+            return line.split(marker, 1)[1].split(";", 1)[0].strip()
+    raise AssertionError("controlled-variety prompt must expose the selected scene family")
+
+
+def provider_scene_catalog_excludes_unverifiable_pine() -> None:
+    for weather in ("rain", "drizzle", "cloudy", "clear"):
+        if PINE_SCENE in _scene_catalog(weather):
+            raise AssertionError(f"{PINE_SCENE} must not be provider-selectable for {weather}")
+
+    if PINE_SCENE not in KLD_SCENE_FAMILIES:
+        raise AssertionError("historical KLD scene catalog compatibility must retain the pine scene")
+
+    review_prompt, _ = _build(dt.date(2026, 8, 8))
+    if _selected_scene(review_prompt) == PINE_SCENE:
+        raise AssertionError("cloudy 2026-08-08 evening must not select the pine scene")
 
 
 def main() -> None:
@@ -67,6 +93,9 @@ def main() -> None:
     if style_a1 == style_b:
         raise AssertionError("different evening dates should produce a different style/cache identity")
 
+    provider_scene_catalog_excludes_unverifiable_pine()
+
+    print("PASS evening_provider_catalog_excludes_pine")
     print("PASS evening_controlled_variety")
 
 
