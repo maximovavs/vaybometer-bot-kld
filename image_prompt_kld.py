@@ -789,7 +789,6 @@ def _scene_catalog(weather_main: str) -> tuple[str, ...]:
             "zelenogradsk_promenade",
             "baltiysk_breakwater",
             "svetlogorsk_cliff_coast",
-            "pine_forest_sea_path",
             "kaliningrad_urban_coastal_view",
             "curonian_spit_dunes",
             "quiet_lagoon_coast",
@@ -798,7 +797,13 @@ def _scene_catalog(weather_main: str) -> tuple[str, ...]:
     return tuple(
         scene
         for scene in KLD_SCENE_FAMILIES
-        if scene not in {"stormy_open_baltic", "wet_seaside_promenade", "rainy_coastal_road"}
+        if scene
+        not in {
+            "stormy_open_baltic",
+            "wet_seaside_promenade",
+            "rainy_coastal_road",
+            "pine_forest_sea_path",
+        }
     )
 
 
