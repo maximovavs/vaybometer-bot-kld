@@ -70,16 +70,16 @@ def calm_route_keeps_non_beach_options_available() -> None:
     metadata = _metadata(
         weather_scenario="cloudy",
         wind_gust_category="calm_to_breezy",
-        scene_family="pine_forest_sea_path",
+        scene_family="quiet_lagoon_coast",
     )
     routed = apply_weather_scene_route(metadata)
     assert routed["scene_route"] == "calm"
-    assert routed["scene_family"] == "pine_forest_sea_path"
+    assert routed["scene_family"] == "quiet_lagoon_coast"
     assert WEATHER_SCENE_ROUTES["calm"][:4] == (
         "kaliningrad_urban_coastal_view",
-        "pine_forest_sea_path",
         "quiet_lagoon_coast",
         "zelenogradsk_promenade",
+        "curonian_spit_dunes",
     )
 
 

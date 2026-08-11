@@ -147,7 +147,6 @@ _OPEN_BALTIC_SCENES = frozenset(
 WEATHER_SCENE_ROUTES: dict[str, tuple[str, ...]] = {
     "fog_visibility": (
         "quiet_lagoon_coast",
-        "pine_forest_sea_path",
         "curonian_spit_dunes",
         "elevated_baltic_overlook",
         "zelenogradsk_promenade",
@@ -157,7 +156,6 @@ WEATHER_SCENE_ROUTES: dict[str, tuple[str, ...]] = {
         "zelenogradsk_promenade",
         "kaliningrad_urban_coastal_view",
         "baltiysk_breakwater",
-        "pine_forest_sea_path",
     ),
     "storm": (
         "baltiysk_breakwater",
@@ -175,7 +173,6 @@ WEATHER_SCENE_ROUTES: dict[str, tuple[str, ...]] = {
     ),
     "calm": (
         "kaliningrad_urban_coastal_view",
-        "pine_forest_sea_path",
         "quiet_lagoon_coast",
         "zelenogradsk_promenade",
         "curonian_spit_dunes",

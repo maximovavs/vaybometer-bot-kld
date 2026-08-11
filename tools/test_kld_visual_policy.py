@@ -134,7 +134,6 @@ def wet_promenade_is_fail_closed_out_of_rain_and_storm_routes() -> None:
         "zelenogradsk_promenade",
         "kaliningrad_urban_coastal_view",
         "baltiysk_breakwater",
-        "pine_forest_sea_path",
     )
     assert storm_route == (
         "baltiysk_breakwater",
@@ -161,6 +160,29 @@ def wet_promenade_is_fail_closed_out_of_rain_and_storm_routes() -> None:
     assert routed["scene_route"] == "rain"
     assert routed["scene_family"] in rain_route
     assert routed["scene_family"] != "wet_seaside_promenade"
+    assert scene_composition_compatible(
+        routed["scene_family"], routed["composition"]
+    )
+
+
+def pine_forest_sea_path_is_fail_closed_out_of_provider_routes() -> None:
+    assert all(
+        "pine_forest_sea_path" not in route
+        for route in WEATHER_SCENE_ROUTES.values()
+    )
+    metadata = {
+        "scene_family": "pine_forest_sea_path",
+        "scene_text": "pine forest sea path opening toward the Baltic shore, realistic northern vegetation",
+        "composition": "pine-framed side composition",
+        "weather_scenario": "drizzle",
+        "wind_gust_category": "gust_7_9",
+        "visibility_condition": "clear",
+        "variation_attempt": "0",
+    }
+    routed = apply_weather_scene_route(metadata)
+    assert routed["scene_route"] == "rain"
+    assert routed["scene_family"] in WEATHER_SCENE_ROUTES["rain"]
+    assert routed["scene_family"] != "pine_forest_sea_path"
     assert scene_composition_compatible(
         routed["scene_family"], routed["composition"]
     )
@@ -201,6 +223,7 @@ TESTS = [
     kld_policy_august_morning_prompt_has_no_legacy_beach_lock,
     curonian_spit_cannot_receive_breakwater_objects,
     wet_promenade_is_fail_closed_out_of_rain_and_storm_routes,
+    pine_forest_sea_path_is_fail_closed_out_of_provider_routes,
     stable_horde_prompt_is_short_kld_first_and_negative_separate,
 ]
 
