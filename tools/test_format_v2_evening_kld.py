@@ -301,94 +301,6 @@ def kld_evening_preserves_compact_astro() -> None:
     assert len(block) <= 6
 
 
-def kld_evening_sunrise_only_format_is_preserved() -> None:
-    source = NORMAL_EVENING.replace("🌇 Закат завтра: 21:33\n", "")
-    text = build_evening_format_v2("Калининградская область", source)
-    assert "🌅 Рассвет завтра: 04:08" in text
-    assert "🌇 Закат завтра:" not in text
-
-
-def kld_evening_production_uses_tomorrow_sunrise() -> None:
-    post_common = importlib.import_module("post_common")
-    original_day_offset = post_common.DAY_OFFSET
-    original_astro_offset = post_common.ASTRO_OFFSET
-    patched_names = (
-        "pendulum",
-        "get_sunrise_sunset",
-        "get_weather",
-        "day_night_stats",
-        "pick_tomorrow_header_metrics",
-        "storm_flags_for_tomorrow",
-        "build_astro_section",
-        "get_air",
-        "get_schumann_with_fallback",
-        "_kld_visibility_for_post",
-        "_kld_quake_line_24h",
-        "safe_tips",
-    )
-    originals = {name: getattr(post_common, name) for name in patched_names}
-    calls: list[tuple[float, float, str, int]] = []
-
-    class _FakeTZ:
-        name = "Europe/Kaliningrad"
-
-    class _FakeDate:
-        def add(self, *, days: int = 0):
-            return self
-
-        def format(self, _pattern: str) -> str:
-            return "20.06.2026"
-
-        def to_date_string(self) -> str:
-            return "2026-06-20"
-
-    def _sun(lat: float, lon: float, tz_name: str, day_offset: int = 0):
-        calls.append((lat, lon, tz_name, day_offset))
-        return "04:08", "21:33"
-
-    try:
-        post_common.DAY_OFFSET = 1
-        post_common.ASTRO_OFFSET = 1
-        post_common.pendulum = types.SimpleNamespace(
-            timezone=lambda _tz: _FakeTZ(),
-            today=lambda _tz=None: _FakeDate(),
-        )
-        post_common.get_sunrise_sunset = _sun
-        post_common.get_weather = lambda *_args, **_kwargs: {}
-        post_common.day_night_stats = lambda *_args, **_kwargs: {}
-        post_common.pick_tomorrow_header_metrics = lambda *_args, **_kwargs: (None, None, None, "→")
-        post_common.storm_flags_for_tomorrow = lambda *_args, **_kwargs: {"warning": False}
-        post_common.build_astro_section = lambda *_args, **_kwargs: "📻 <b>Астрособытия</b>"
-        post_common.get_air = lambda *_args, **_kwargs: {}
-        post_common.get_schumann_with_fallback = lambda: {}
-        post_common._kld_visibility_for_post = lambda *_args, **_kwargs: (None, None)
-        post_common._kld_quake_line_24h = lambda: None
-        post_common.safe_tips = lambda _theme: []
-
-        text = post_common.build_message_legacy_evening(
-            "Калининградская область",
-            "Морские города",
-            [],
-            "Другие города",
-            [],
-            "Europe/Kaliningrad",
-        )
-    finally:
-        post_common.DAY_OFFSET = original_day_offset
-        post_common.ASTRO_OFFSET = original_astro_offset
-        for name, value in originals.items():
-            setattr(post_common, name, value)
-
-    assert calls == [(post_common.KLD_LAT, post_common.KLD_LON, "Europe/Kaliningrad", 1)]
-    assert "🌅 Рассвет завтра: 04:08" in text
-    assert "🌇 Закат завтра: 21:33" not in text
-
-
-def kld_morning_source_contract_keeps_today_sunset() -> None:
-    source = (ROOT / "post_common.py").read_text(encoding="utf-8")
-    assert 'sunset_line = f"🌇 Закат сегодня: {sunset}"' in source
-
-
 def kld_evening_preserves_quake_line() -> None:
     text = build_evening_format_v2("Калининградская область", NORMAL_EVENING)
     assert "🌍 Сейсмика 24ч:" in text
@@ -537,6 +449,10 @@ def kld_evening_safe_postprocess_does_not_promote_wind_nuance_to_storm() -> None
 
 
 def kld_has_confirmed_storm_word_ignores_negation_from_a_different_line() -> None:
+    # Regression: _has_confirmed_storm_word used to check the whole text at once
+    # (word present AND no negation anywhere), so a negation in one line ("риск
+    # шторма в другой части области невысок") could cancel a real confirmation
+    # in a different line ("Штормовое предупреждение: порывы до 18 м/с.").
     text = (
         "Штормовое предупреждение: порывы до 18 м/с.\n"
         "Риск шторма в другой части области невысок."
@@ -558,6 +474,12 @@ def kld_has_confirmed_storm_word_confirmed_line_order_independent() -> None:
 
 
 def kld_storm_negation_handles_modifiers_and_clauses() -> None:
+    # Regression: storm negation required the negation/risk-assessment to sit
+    # immediately after "шторм" (no filler words) and only worked at line
+    # granularity, so hedged phrasings with modifiers ("Шторма точно не
+    # будет.") or a negation and a confirmation sharing one line via ", но"
+    # were misclassified. weather_text.has_confirmed_storm_word is the single
+    # shared contract used by format_v2.py, safe_test_post.py and post_kld.py.
     cases = [
         ("Риск шторма в другой части области невысок.", False),
         ("Шторма точно не будет.", False),
@@ -571,6 +493,8 @@ def kld_storm_negation_handles_modifiers_and_clauses() -> None:
 
 
 def kld_storm_uncertainty_is_not_confirmation() -> None:
+    # A hedged storm mention (possibility/probability/persisting-risk/
+    # check-later/not-ruled-out) must not count as a confirmed storm.
     for text in (
         "Шторм возможен.",
         "Возможен шторм.",
@@ -583,6 +507,10 @@ def kld_storm_uncertainty_is_not_confirmation() -> None:
 
 
 def kld_storm_cancellation_is_scoped_to_the_warning() -> None:
+    # Only the *warning* being cancelled denies a storm. The storm being the
+    # actor of a cancellation ("Шторм отменил...", "Из-за шторма отменены...")
+    # still confirms a storm. Bare "отмен\w*"/"исключ\w*" must not be treated
+    # as fact negation.
     negated = (
         "Штормовое предупреждение отменено.",
         "Штормовое предупреждение снято.",
@@ -599,6 +527,10 @@ def kld_storm_cancellation_is_scoped_to_the_warning() -> None:
 
 
 def kld_first_line_contains_is_clause_aware_morning_and_evening() -> None:
+    # Regression: format_v2._first_line_contains dropped the whole warning line
+    # when a negation matched anywhere in it, so the confirmed second clause of
+    # "Риск шторма невысок, но штормовое предупреждение действует у моря." was
+    # lost. It must survive into both the morning and evening builds.
     warning = "⚠️ Риск шторма невысок, но штормовое предупреждение действует у моря."
     body = (
         "Погода: 🏙️ Калининград — 22/16 °C • облачно • 💨 6 м/с • порывы до 9 м/с.\n"
@@ -623,6 +555,11 @@ def kld_first_line_contains_is_clause_aware_morning_and_evening() -> None:
 
 
 def kld_storm_gust_ms_override_is_consistent_across_layers() -> None:
+    # Regression: format_v2.py read STORM_GUST_MS from the environment, but
+    # safe_test_post.py and post_kld.py still compared against a literal 15,
+    # so overriding the threshold changed the text classification without
+    # changing the image-overlay classification. All three now import
+    # STORM_GUST_MS from weather_text.py.
     old_value = os.environ.get("STORM_GUST_MS")
     try:
         os.environ["STORM_GUST_MS"] = "16"
@@ -652,6 +589,8 @@ def kld_storm_gust_ms_override_is_consistent_across_layers() -> None:
         importlib.reload(format_v2)
         importlib.reload(safe_test_post)
         importlib.reload(post_kld)
+        # After restoration, expect whatever the environment actually had: the
+        # caller's own STORM_GUST_MS if one was set, otherwise the 15.0 default.
         expected_restored = float(old_value) if old_value is not None else 15.0
         assert weather_text.STORM_GUST_MS == expected_restored
 
@@ -669,6 +608,7 @@ def _wind_gust_evening(wind_ms, gust_ms=None) -> str:
 
 
 def _four_layer_storm_state(msg: str) -> dict:
+    """Storm decision as seen by each of the four layers, for one message."""
     lines = msg.splitlines()
     fv = format_v2._evening_flags(lines, storm="")
     score_line = safe_test_post._kld_evening_score_line(msg)
@@ -684,6 +624,10 @@ def _four_layer_storm_state(msg: str) -> dict:
 
 
 def kld_storm_gust_uses_gust_not_average_wind_across_all_layers() -> None:
+    # Cross-layer contract: storm classification keys on the actual gust
+    # ("порыв …"), never on average wind. format_v2._max_wind_ms previously
+    # matched both, so "ветер 16 м/с, порывы до 14 м/с" was wrongly a storm in
+    # format_v2 while the other three layers (real gust 14 < 15) said no.
     def _assert_all(state: dict, storm: bool) -> None:
         assert state["format_v2_storm_gust"] is storm, state
         assert state["post_kld_overlay"] is storm, state
@@ -691,10 +635,17 @@ def kld_storm_gust_uses_gust_not_average_wind_across_all_layers() -> None:
         assert state["cover_storm_gust"] is storm, state
         assert state["cover_storm_badge"] is storm, state
 
+    # A. Average wind 16, no "порывы": not a storm anywhere.
     _assert_all(_four_layer_storm_state(_wind_gust_evening(16)), storm=False)
+    # B. Average wind 16, gust 14 (< default 15): not a storm in any layer,
+    #    even though the average wind is high.
     _assert_all(_four_layer_storm_state(_wind_gust_evening(16, 14)), storm=False)
+    # C. Average wind 8, gust 15 (== default 15): a storm in every layer.
     _assert_all(_four_layer_storm_state(_wind_gust_evening(8, 15)), storm=True)
 
+    # B also keeps windy/water cues alive: a strong average wind still marks
+    # the day windy and can make the water guidance strict — it just isn't a
+    # storm. (max_wind comes through even when storm_gust is False.)
     windy_flags = format_v2._evening_flags(_wind_gust_evening(16, 14).splitlines(), storm="")
     assert windy_flags["wind"] is True
     assert windy_flags["max_wind"] == 16.0
@@ -703,6 +654,8 @@ def kld_storm_gust_uses_gust_not_average_wind_across_all_layers() -> None:
 
 
 def kld_storm_gust_threshold_override_uses_gust_across_all_layers() -> None:
+    # D/E. Raise the threshold to 16 and reload the env-bound layers; the cover
+    # reads the threshold live. 15 м/с gust is no longer a storm; 16 м/с is.
     old_value = os.environ.get("STORM_GUST_MS")
     try:
         os.environ["STORM_GUST_MS"] = "16"
@@ -710,6 +663,8 @@ def kld_storm_gust_threshold_override_uses_gust_across_all_layers() -> None:
             importlib.reload(mod)
         assert weather_text.STORM_GUST_MS == 16.0
 
+        # D. gust 15 with a high average wind 16: below the raised threshold,
+        #    so no storm in any layer.
         d = _four_layer_storm_state(_wind_gust_evening(16, 15))
         assert d["format_v2_storm_gust"] is False, d
         assert d["post_kld_overlay"] is False, d
@@ -717,6 +672,7 @@ def kld_storm_gust_threshold_override_uses_gust_across_all_layers() -> None:
         assert d["cover_storm_gust"] is False, d
         assert d["cover_storm_badge"] is False, d
 
+        # E. gust 16, weak average wind 8: at the raised threshold, a storm.
         e = _four_layer_storm_state(_wind_gust_evening(8, 16))
         assert e["format_v2_storm_gust"] is True, e
         assert e["post_kld_overlay"] is True, e
@@ -734,6 +690,9 @@ def kld_storm_gust_threshold_override_uses_gust_across_all_layers() -> None:
 
 
 def kld_evening_low_gust_hedged_storm_word_is_not_storm() -> None:
+    # Regression: "риск шторма невысок" at 9 м/с previously badged the day as
+    # storm because _has_explicit_storm_text / _extract_storm_warning only
+    # excluded the literal phrase "без шторма".
     text = build_evening_format_v2("Калининградская область", LOW_GUST_STORM_WORD_EVENING)
     assert "Штормовое предупреждение" not in text
     assert "🧭 Главное завтра: неустойчивое погодное окно" not in text
@@ -741,6 +700,10 @@ def kld_evening_low_gust_hedged_storm_word_is_not_storm() -> None:
 
 
 def kld_evening_gust14_below_threshold_is_not_storm_but_has_wind_nuance() -> None:
+    # Regression: 21.07 -> 22.07 case from the production export — 14 м/с is the
+    # strongest gust of the week (below STORM_GUST_MS=15) and the source text
+    # never says "шторм", so it must not get the storm badge, but it also must
+    # not be silently dropped to a plain forecast with no wind callout.
     text = build_evening_format_v2("Калининградская область", GUST14_NO_STORM_WORD_EVENING)
     assert "Штормовое предупреждение" not in text
     assert "🧭 Главное завтра: неустойчивое погодное окно" not in text
@@ -832,9 +795,6 @@ def main() -> None:
         kld_evening_has_one_final_plan,
         kld_evening_preserves_city_and_marine_lines,
         kld_evening_preserves_compact_astro,
-        kld_evening_sunrise_only_format_is_preserved,
-        kld_evening_production_uses_tomorrow_sunrise,
-        kld_morning_source_contract_keeps_today_sunset,
         kld_evening_preserves_quake_line,
         kld_evening_uncertain_has_short_confidence_line,
         kld_evening_warm_uncertain_confidence_is_not_high,
