@@ -301,6 +301,94 @@ def kld_evening_preserves_compact_astro() -> None:
     assert len(block) <= 6
 
 
+def kld_evening_sunrise_only_format_is_preserved() -> None:
+    source = NORMAL_EVENING.replace("🌇 Закат завтра: 21:33\n", "")
+    text = build_evening_format_v2("Калининградская область", source)
+    assert "🌅 Рассвет завтра: 04:08" in text
+    assert "🌇 Закат завтра:" not in text
+
+
+def kld_evening_production_uses_tomorrow_sunrise() -> None:
+    post_common = importlib.import_module("post_common")
+    original_day_offset = post_common.DAY_OFFSET
+    original_astro_offset = post_common.ASTRO_OFFSET
+    patched_names = (
+        "pendulum",
+        "get_sunrise_sunset",
+        "get_weather",
+        "day_night_stats",
+        "pick_tomorrow_header_metrics",
+        "storm_flags_for_tomorrow",
+        "build_astro_section",
+        "get_air",
+        "get_schumann_with_fallback",
+        "_kld_visibility_for_post",
+        "_kld_quake_line_24h",
+        "safe_tips",
+    )
+    originals = {name: getattr(post_common, name) for name in patched_names}
+    calls: list[tuple[float, float, str, int]] = []
+
+    class _FakeTZ:
+        name = "Europe/Kaliningrad"
+
+    class _FakeDate:
+        def add(self, *, days: int = 0):
+            return self
+
+        def format(self, _pattern: str) -> str:
+            return "20.06.2026"
+
+        def to_date_string(self) -> str:
+            return "2026-06-20"
+
+    def _sun(lat: float, lon: float, tz_name: str, day_offset: int = 0):
+        calls.append((lat, lon, tz_name, day_offset))
+        return "04:08", "21:33"
+
+    try:
+        post_common.DAY_OFFSET = 1
+        post_common.ASTRO_OFFSET = 1
+        post_common.pendulum = types.SimpleNamespace(
+            timezone=lambda _tz: _FakeTZ(),
+            today=lambda _tz=None: _FakeDate(),
+        )
+        post_common.get_sunrise_sunset = _sun
+        post_common.get_weather = lambda *_args, **_kwargs: {}
+        post_common.day_night_stats = lambda *_args, **_kwargs: {}
+        post_common.pick_tomorrow_header_metrics = lambda *_args, **_kwargs: (None, None, None, "→")
+        post_common.storm_flags_for_tomorrow = lambda *_args, **_kwargs: {"warning": False}
+        post_common.build_astro_section = lambda *_args, **_kwargs: "📻 <b>Астрособытия</b>"
+        post_common.get_air = lambda *_args, **_kwargs: {}
+        post_common.get_schumann_with_fallback = lambda: {}
+        post_common._kld_visibility_for_post = lambda *_args, **_kwargs: (None, None)
+        post_common._kld_quake_line_24h = lambda: None
+        post_common.safe_tips = lambda _theme: []
+
+        text = post_common.build_message_legacy_evening(
+            "Калининградская область",
+            "Морские города",
+            [],
+            "Другие города",
+            [],
+            "Europe/Kaliningrad",
+        )
+    finally:
+        post_common.DAY_OFFSET = original_day_offset
+        post_common.ASTRO_OFFSET = original_astro_offset
+        for name, value in originals.items():
+            setattr(post_common, name, value)
+
+    assert calls == [(post_common.KLD_LAT, post_common.KLD_LON, "Europe/Kaliningrad", 1)]
+    assert "🌅 Рассвет завтра: 04:08" in text
+    assert "🌇 Закат завтра: 21:33" not in text
+
+
+def kld_morning_source_contract_keeps_today_sunset() -> None:
+    source = (ROOT / "post_common.py").read_text(encoding="utf-8")
+    assert 'sunset_line = f"🌇 Закат сегодня: {sunset}"' in source
+
+
 def kld_evening_preserves_quake_line() -> None:
     text = build_evening_format_v2("Калининградская область", NORMAL_EVENING)
     assert "🌍 Сейсмика 24ч:" in text
@@ -795,6 +883,9 @@ def main() -> None:
         kld_evening_has_one_final_plan,
         kld_evening_preserves_city_and_marine_lines,
         kld_evening_preserves_compact_astro,
+        kld_evening_sunrise_only_format_is_preserved,
+        kld_evening_production_uses_tomorrow_sunrise,
+        kld_morning_source_contract_keeps_today_sunset,
         kld_evening_preserves_quake_line,
         kld_evening_uncertain_has_short_confidence_line,
         kld_evening_warm_uncertain_confidence_is_not_high,
