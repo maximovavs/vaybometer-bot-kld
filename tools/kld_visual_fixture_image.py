@@ -55,6 +55,7 @@ from kld_visual_policy import (  # noqa: E402
     apply_weather_scene_route,
     build_stable_horde_prompt_parts,
     finalize_kld_provider_prompt,
+    scene_policy_rejection,
 )
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues, to_json  # noqa: E402
@@ -420,10 +421,15 @@ def _select_candidate_attempts(
     blocked_scenes: list[str],
     blocked_compositions: list[str],
     count: int,
+    policy_history: list[Mapping[str, Any]] | None = None,
 ) -> tuple[list[int], list[str]]:
     """Select strict candidates, relaxing only oldest compositions on full exhaustion."""
 
-    def select(effective_blocked_compositions: set[str]) -> list[int]:
+    def select(
+        effective_blocked_compositions: set[str],
+        *,
+        require_hard_policy: bool = False,
+    ) -> list[int]:
         selected: list[int] = []
         used_scenes: set[str] = set()
         used_compositions: set[str] = set()
@@ -434,6 +440,14 @@ def _select_candidate_attempts(
                 continue
             if scene in blocked_scenes or composition in effective_blocked_compositions:
                 continue
+            if require_hard_policy and policy_history is not None:
+                policy_reason, _ = scene_policy_rejection(
+                    policy_history,
+                    scene_family=scene,
+                    composition="",
+                )
+                if policy_reason in {"scene_cooldown", "scene_macro_cooldown"}:
+                    continue
             selected.append(variation_attempt)
             used_scenes.add(scene)
             used_compositions.add(composition)
@@ -446,10 +460,11 @@ def _select_candidate_attempts(
         return selected, []
 
     # _recent_visual_cooldown returns newest -> oldest. Relax the oldest
-    # composition first, and stop at the first depth that restores a candidate.
+    # composition first. Continue only when the current depth yields no
+    # candidate that can pass the hard scene/macro policy.
     for relaxation_depth in range(1, len(blocked_compositions) + 1):
         effective = set(blocked_compositions[:-relaxation_depth])
-        selected = select(effective)
+        selected = select(effective, require_hard_policy=True)
         if selected:
             return selected, list(blocked_compositions[-relaxation_depth:])
     return [], []
@@ -506,6 +521,7 @@ def _candidate_payloads(
         blocked_scenes=blocked_scenes,
         blocked_compositions=blocked_compositions,
         count=count,
+        policy_history=load_kld_visual_history(history_path),
     )
     relaxation_depth = len(relaxed_compositions)
     candidates: list[dict[str, Any]] = []
