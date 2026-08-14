@@ -414,6 +414,47 @@ def _recent_visual_cooldown(history_path: Path) -> tuple[list[str], list[str]]:
     return scenes, compositions
 
 
+def _select_candidate_attempts(
+    candidate_metadata: list[tuple[int, Mapping[str, Any]]],
+    *,
+    blocked_scenes: list[str],
+    blocked_compositions: list[str],
+    count: int,
+) -> tuple[list[int], list[str]]:
+    """Select strict candidates, relaxing only oldest compositions on full exhaustion."""
+
+    def select(effective_blocked_compositions: set[str]) -> list[int]:
+        selected: list[int] = []
+        used_scenes: set[str] = set()
+        used_compositions: set[str] = set()
+        for variation_attempt, metadata in candidate_metadata:
+            scene = str(metadata["scene_family"])
+            composition = str(metadata["composition"])
+            if scene in used_scenes or composition in used_compositions:
+                continue
+            if scene in blocked_scenes or composition in effective_blocked_compositions:
+                continue
+            selected.append(variation_attempt)
+            used_scenes.add(scene)
+            used_compositions.add(composition)
+            if len(selected) >= count:
+                break
+        return selected
+
+    selected = select(set(blocked_compositions))
+    if selected or not blocked_compositions:
+        return selected, []
+
+    # _recent_visual_cooldown returns newest -> oldest. Relax the oldest
+    # composition first, and stop at the first depth that restores a candidate.
+    for relaxation_depth in range(1, len(blocked_compositions) + 1):
+        effective = set(blocked_compositions[:-relaxation_depth])
+        selected = select(effective)
+        if selected:
+            return selected, list(blocked_compositions[-relaxation_depth:])
+    return [], []
+
+
 def _candidate_payloads(
     *,
     args: argparse.Namespace,
@@ -460,30 +501,25 @@ def _candidate_payloads(
         apply_weather_scene_route(metadata)
         candidate_metadata.append((index, metadata))
 
-    selected_attempts: list[int] = []
-    used_scenes: set[str] = set()
-    used_compositions: set[str] = set()
-    # Scene and composition cooldowns are both hard invariants. Selection is
-    # evaluated after weather routing so the pool is unique by the exact scene
-    # and composition metadata that will be sent to providers.
-    for variation_attempt, metadata in candidate_metadata:
-        scene = str(metadata["scene_family"])
-        composition = str(metadata["composition"])
-        if scene in used_scenes or composition in used_compositions:
-            continue
-        if scene in blocked_scenes or composition in blocked_compositions:
-            continue
-        selected_attempts.append(variation_attempt)
-        used_scenes.add(scene)
-        used_compositions.add(composition)
-        if len(selected_attempts) >= count:
-            break
-
-    return (
-        [payload_for(attempt) for attempt in selected_attempts[:count]],
-        blocked_scenes,
-        blocked_compositions,
+    selected_attempts, relaxed_compositions = _select_candidate_attempts(
+        candidate_metadata,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
+        count=count,
     )
+    relaxation_depth = len(relaxed_compositions)
+    candidates: list[dict[str, Any]] = []
+    for attempt in selected_attempts[:count]:
+        candidate = payload_for(attempt)
+        composition = str(candidate["metadata"].get("composition") or "")
+        relaxed = composition in relaxed_compositions
+        candidate["composition_cooldown_relaxed"] = relaxed
+        if relaxed:
+            candidate["composition_cooldown_relaxed_value"] = composition
+            candidate["composition_cooldown_relaxation_depth"] = relaxation_depth
+        candidates.append(candidate)
+
+    return candidates, blocked_scenes, blocked_compositions
 
 
 def _provider_attempt_payload(
@@ -505,6 +541,9 @@ def _provider_attempt_payload(
         "scene_family": str(metadata.get("scene_family") or ""),
         "composition": str(metadata.get("composition") or ""),
         "cache_key": str(candidate.get("cache_key") or ""),
+        "composition_cooldown_relaxed": bool(candidate.get("composition_cooldown_relaxed")),
+        "composition_cooldown_relaxed_value": str(candidate.get("composition_cooldown_relaxed_value") or ""),
+        "composition_cooldown_relaxation_depth": int(candidate.get("composition_cooldown_relaxation_depth") or 0),
         "result": result,
         "exception_type": str(error.get("type") or diagnostics.get("exception_type") or ""),
         "error_message": str(error.get("message") or ""),
@@ -580,6 +619,9 @@ def execute_image_delivery(
             "scene_family": str(candidate["metadata"].get("scene_family") or ""),
             "composition": str(candidate["metadata"].get("composition") or ""),
             "cache_key": str(candidate.get("cache_key") or ""),
+            "composition_cooldown_relaxed": bool(candidate.get("composition_cooldown_relaxed")),
+            "composition_cooldown_relaxed_value": str(candidate.get("composition_cooldown_relaxed_value") or ""),
+            "composition_cooldown_relaxation_depth": int(candidate.get("composition_cooldown_relaxation_depth") or 0),
         }
         for candidate in candidates
     ]
@@ -667,6 +709,7 @@ def execute_image_delivery(
                     composition=metadata["composition"],
                     prompt_version=metadata["prompt_version"],
                     history_path=history_path,
+                    allow_composition_cooldown_relaxation=bool(candidate.get("composition_cooldown_relaxed")),
                 )
             except Exception as exc:
                 provider_failed = True
