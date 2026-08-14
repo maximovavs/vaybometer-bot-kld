@@ -13,16 +13,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import kld_visual_dedup as dedup_module  # noqa: E402
 from kld_visual_dedup import KldVisualDuplicateResult  # noqa: E402
 from kld_visual_policy import (  # noqa: E402
     KLD_VISUAL_POLICY_VERSION,
     SUMMER_VEGETATION_CUE,
     scene_policy_rejection,
 )
+import tools.kld_visual_fixture_image as fixture_module  # noqa: E402
 from tools.kld_visual_fixture_image import (  # noqa: E402
     FIXTURES,
     _candidate_payloads,
     _rejection_fallback_reason,
+    _select_candidate_attempts,
     build_payload,
     execute_image_delivery,
 )
@@ -126,6 +129,231 @@ def storm_allocator_keeps_last_three_scenes_hard_blocked() -> None:
         assert set(scenes) == {"rainy_coastal_road", "elevated_baltic_overlook"}
         assert set(scene_cooldown) == set(blocked)
         assert not (set(scenes) & set(blocked))
+        assert not any(item.get("composition_cooldown_relaxed") for item in candidates)
+
+
+def composition_exhaustion_relaxes_oldest_only() -> None:
+    blocked_scenes = [
+        "kaliningrad_urban_coastal_view",
+        "quiet_lagoon_coast",
+        "zelenogradsk_promenade",
+    ]
+    blocked_compositions = [
+        "open horizon with large sky",
+        "pine-framed side composition",
+        "foreground dune grass with open water behind",
+        "wide diagonal shoreline composition",
+    ]
+    candidate_metadata = [
+        (0, {"scene_family": blocked_scenes[0], "composition": "promenade railing foreground"}),
+        (1, {"scene_family": blocked_scenes[1], "composition": "open horizon with large sky"}),
+        (2, {"scene_family": blocked_scenes[2], "composition": "promenade railing foreground"}),
+        (3, {"scene_family": "curonian_spit_dunes", "composition": "wide diagonal shoreline composition"}),
+        (4, {"scene_family": "elevated_baltic_overlook", "composition": "pine-framed side composition"}),
+    ]
+
+    strict_attempts, _ = _select_candidate_attempts(
+        candidate_metadata,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
+        count=3,
+    )
+    assert strict_attempts == [3]
+
+    # Verify that no strict candidate exists before the helper's exhaustion fallback.
+    strict_only = []
+    for attempt, metadata in candidate_metadata:
+        if metadata["scene_family"] in blocked_scenes:
+            continue
+        if metadata["composition"] in blocked_compositions:
+            continue
+        strict_only.append(attempt)
+    assert strict_only == []
+
+    attempts, relaxed = _select_candidate_attempts(
+        candidate_metadata,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
+        count=3,
+    )
+    assert attempts == [3]
+    assert relaxed == ["wide diagonal shoreline composition"]
+
+
+def relaxed_candidate_reaches_provider_and_marks_final_gate() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        history_path = root / "history.json"
+        history_path.write_text("[]", encoding="utf-8")
+        args = _args(root)
+        initial = build_payload(FIXTURES["storm"], "storm", post_type="evening")
+        candidate = {
+            "variation_attempt": 17,
+            "image_prompt": "offline prompt",
+            "style_name": "offline-style",
+            "cache_key": "offline-cache-key",
+            "metadata": {
+                "forecast_date": "2026-08-15",
+                "target_date": "2026-08-15",
+                "scene_family": "rainy_coastal_road",
+                "composition": "wide diagonal shoreline composition",
+                "prompt_version": "v6+kld_visual_policy_v4",
+            },
+            "composition_cooldown_relaxed": True,
+            "composition_cooldown_relaxed_value": "wide diagonal shoreline composition",
+            "composition_cooldown_relaxation_depth": 1,
+        }
+        events: list[str] = []
+        captured: dict[str, object] = {}
+        original_candidate_payloads = fixture_module._candidate_payloads
+        try:
+            fixture_module._candidate_payloads = lambda **kwargs: (
+                [candidate],
+                ["zelenogradsk_promenade", "quiet_lagoon_coast", "kaliningrad_urban_coastal_view"],
+                [
+                    "open horizon with large sky",
+                    "pine-framed side composition",
+                    "foreground dune grass with open water behind",
+                    "wide diagonal shoreline composition",
+                ],
+            )
+
+            def generate(**kwargs):
+                events.append("provider")
+                return _ppm(root / "candidate.ppm")
+
+            def evaluate(path, **kwargs):
+                captured.update(kwargs)
+                return _accepted()
+
+            outcome = fixture_module.execute_image_delivery(
+                args=args,
+                message=FIXTURES["storm"],
+                initial_payload=initial,
+                visibility_context=None,
+                history_path=history_path,
+                generate_image=generate,
+                secondary_generate_image=None,
+                evaluate_candidate=evaluate,
+                cover_renderer=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cover not expected")),
+                validate_cover=lambda *args, **kwargs: {"valid": True, "errors": []},
+                send_photo=lambda *args, **kwargs: events.append("photo") or 321,
+                record_publication=lambda **kwargs: events.append("history") or {"sha256": "c" * 64},
+            )
+        finally:
+            fixture_module._candidate_payloads = original_candidate_payloads
+
+        assert events == ["provider", "photo", "history"]
+        assert outcome["provider_attempts"]
+        assert outcome["candidate_pool"][0]["composition_cooldown_relaxed"] is True
+        assert outcome["provider_attempts"][0]["composition_cooldown_relaxed"] is True
+        assert captured["allow_composition_cooldown_relaxation"] is True
+
+
+def composition_relaxation_does_not_weaken_other_guards() -> None:
+    class Verdict:
+        def __init__(self, valid: bool, reason: str = "accepted"):
+            self.valid = valid
+            self.reason = reason
+
+        def to_dict(self):
+            return {"valid": self.valid, "reason": self.reason}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        image_path = Path(_ppm(root / "candidate.ppm", 111))
+        history_path = root / "history.json"
+        original_guard = dedup_module.inspect_kld_provider_image
+        try:
+            dedup_module.inspect_kld_provider_image = lambda *args, **kwargs: Verdict(True)
+            composition_history = [
+                {"date": "2026-08-11", "scene_family": "quiet_lagoon_coast", "composition": "wide diagonal shoreline composition"},
+                {"date": "2026-08-12", "scene_family": "zelenogradsk_promenade", "composition": "promenade railing foreground"},
+                {"date": "2026-08-13", "scene_family": "baltiysk_breakwater", "composition": "breakwater perspective line"},
+                {"date": "2026-08-14", "scene_family": "svetlogorsk_cliff_coast", "composition": "elevated overlook panorama"},
+            ]
+            history_path.write_text(json.dumps(composition_history), encoding="utf-8")
+            strict = dedup_module.evaluate_kld_visual_candidate(
+                image_path,
+                date_value="2026-08-15",
+                target_date="2026-08-15",
+                post_type="evening",
+                scene_family="rainy_coastal_road",
+                composition="wide diagonal shoreline composition",
+                prompt_version="test",
+                history_path=history_path,
+            )
+            assert strict.reason == "composition_cooldown"
+            relaxed = dedup_module.evaluate_kld_visual_candidate(
+                image_path,
+                date_value="2026-08-15",
+                target_date="2026-08-15",
+                post_type="evening",
+                scene_family="rainy_coastal_road",
+                composition="wide diagonal shoreline composition",
+                prompt_version="test",
+                history_path=history_path,
+                allow_composition_cooldown_relaxation=True,
+            )
+            assert relaxed.accepted is True
+
+            scene_history = composition_history + [
+                {"date": "2026-08-15", "scene_family": "rainy_coastal_road", "composition": "open horizon with large sky"}
+            ]
+            history_path.write_text(json.dumps(scene_history), encoding="utf-8")
+            scene_blocked = dedup_module.evaluate_kld_visual_candidate(
+                image_path,
+                date_value="2026-08-15",
+                target_date="2026-08-15",
+                post_type="evening",
+                scene_family="rainy_coastal_road",
+                composition="wide diagonal shoreline composition",
+                prompt_version="test",
+                history_path=history_path,
+                allow_composition_cooldown_relaxation=True,
+            )
+            assert scene_blocked.reason == "scene_cooldown"
+
+            perceptual = dedup_module.dhash_file(image_path)
+            near_history = [
+                {
+                    "date": "2026-08-14",
+                    "scene_family": "quiet_lagoon_coast",
+                    "composition": "open horizon with large sky",
+                    "sha256": "f" * 64,
+                    "perceptual_hash": perceptual,
+                }
+            ]
+            history_path.write_text(json.dumps(near_history), encoding="utf-8")
+            near_blocked = dedup_module.evaluate_kld_visual_candidate(
+                image_path,
+                date_value="2026-08-15",
+                target_date="2026-08-15",
+                post_type="evening",
+                scene_family="rainy_coastal_road",
+                composition="wide diagonal shoreline composition",
+                prompt_version="test",
+                history_path=history_path,
+                allow_composition_cooldown_relaxation=True,
+            )
+            assert near_blocked.reason == "near_duplicate"
+
+            dedup_module.inspect_kld_provider_image = lambda *args, **kwargs: Verdict(False, "screen_or_ui_chrome")
+            history_path.write_text("[]", encoding="utf-8")
+            content_blocked = dedup_module.evaluate_kld_visual_candidate(
+                image_path,
+                date_value="2026-08-15",
+                target_date="2026-08-15",
+                post_type="evening",
+                scene_family="rainy_coastal_road",
+                composition="wide diagonal shoreline composition",
+                prompt_version="test",
+                history_path=history_path,
+                allow_composition_cooldown_relaxation=True,
+            )
+            assert content_blocked.reason == "content_guard:screen_or_ui_chrome"
+        finally:
+            dedup_module.inspect_kld_provider_image = original_guard
 
 
 def secondary_backend_rotates_same_fresh_candidate_pool() -> None:
@@ -203,6 +431,9 @@ TESTS = [
     evening_prompt_is_scene_authoritative_and_summer_green,
     winter_evening_prompt_does_not_force_summer_green,
     storm_allocator_keeps_last_three_scenes_hard_blocked,
+    composition_exhaustion_relaxes_oldest_only,
+    relaxed_candidate_reaches_provider_and_marks_final_gate,
+    composition_relaxation_does_not_weaken_other_guards,
     secondary_backend_rotates_same_fresh_candidate_pool,
     final_scene_policy_is_hard_and_reasons_are_explicit,
 ]
