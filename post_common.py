@@ -2300,20 +2300,20 @@ def build_message_legacy_evening(
 
         P.append("———")
 
-    # Закат и астрособытия завтрашнего дня
+    # Рассвет и астрособытия завтрашнего дня
     try:
-        _sunrise, sunset = get_sunrise_sunset(
+        sunrise, _sunset = get_sunrise_sunset(
             KLD_LAT,
             KLD_LON,
             tz_name,
             DAY_OFFSET,
         )
-        if sunset:
-            P.append(f"🌇 Закат завтра: {sunset}")
+        if sunrise:
+            P.append(f"🌅 Рассвет завтра: {sunrise}")
         else:
-            logging.info("KLD evening: время заката недоступно")
+            logging.info("KLD evening: время рассвета недоступно")
     except Exception as e:
-        logging.info("KLD evening: не удалось получить время заката: %s", e)
+        logging.info("KLD evening: не удалось получить время рассвета: %s", e)
     date_for_astro = pendulum.today(tz_obj).add(days=ASTRO_OFFSET)
     P.append(build_astro_section(date_local=date_for_astro, tz_local=tz_name))
     P.append("———")
