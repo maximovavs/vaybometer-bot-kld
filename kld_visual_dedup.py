@@ -248,6 +248,7 @@ def evaluate_kld_visual_candidate(
     history_path: str | Path = KLD_VISUAL_HISTORY_PATH,
     current_date: date | None = None,
     threshold: int = KLD_VISUAL_DHASH_THRESHOLD,
+    allow_composition_cooldown_relaxation: bool = False,
 ) -> KldVisualDuplicateResult:
     current = current_date or _parse_date(target_date) or _parse_date(date_value) or _today()
     history = load_kld_visual_history(history_path)
@@ -318,6 +319,12 @@ def evaluate_kld_visual_candidate(
             scene_family=scene_family,
             composition=composition,
         )
+        if policy_reason == "composition_cooldown" and allow_composition_cooldown_relaxation:
+            policy_reason, policy_match = scene_policy_rejection(
+                history,
+                scene_family=scene_family,
+                composition="",
+            )
         if policy_reason:
             return KldVisualDuplicateResult(
                 accepted=False,
