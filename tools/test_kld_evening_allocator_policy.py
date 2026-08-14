@@ -356,6 +356,193 @@ def composition_relaxation_does_not_weaken_other_guards() -> None:
             dedup_module.inspect_kld_provider_image = original_guard
 
 
+def macro_blocked_depth_continues_to_minimal_viable_candidate() -> None:
+    blocked_scenes = [
+        "baltiysk_breakwater",
+        "svetlogorsk_cliff_coast",
+        "zelenogradsk_promenade",
+    ]
+    blocked_compositions = [
+        "wide diagonal shoreline composition",
+        "pine-framed side composition",
+        "open horizon with large sky",
+        "foreground dune grass with open water behind",
+    ]
+    policy_history = [
+        {"date": "2026-08-10", "scene_family": "yantarny_wide_beach", "composition": "wide diagonal shoreline composition"},
+        {"date": "2026-08-11", "scene_family": "curonian_spit_dunes", "composition": "foreground dune grass with open water behind"},
+        {"date": "2026-08-12", "scene_family": "zelenogradsk_promenade", "composition": "open horizon with large sky"},
+        {"date": "2026-08-13", "scene_family": "svetlogorsk_cliff_coast", "composition": "pine-framed side composition"},
+        {"date": "2026-08-14", "scene_family": "baltiysk_breakwater", "composition": "wide diagonal shoreline composition"},
+    ]
+    candidate_metadata = [
+        (10, {"scene_family": "yantarny_wide_beach", "composition": "foreground dune grass with open water behind"}),
+        (11, {"scene_family": "elevated_baltic_overlook", "composition": "open horizon with large sky"}),
+    ]
+
+    strict_only = [
+        attempt
+        for attempt, metadata in candidate_metadata
+        if metadata["scene_family"] not in blocked_scenes
+        and metadata["composition"] not in blocked_compositions
+    ]
+    assert strict_only == []
+
+    depth_one_attempts, depth_one_relaxed = _select_candidate_attempts(
+        candidate_metadata,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
+        count=3,
+    )
+    assert depth_one_attempts == [10]
+    assert depth_one_relaxed == ["foreground dune grass with open water behind"]
+
+    macro_reason, _ = scene_policy_rejection(
+        policy_history,
+        scene_family="yantarny_wide_beach",
+        composition="",
+    )
+    assert macro_reason == "scene_macro_cooldown"
+
+    attempts, relaxed = _select_candidate_attempts(
+        candidate_metadata,
+        blocked_scenes=blocked_scenes,
+        blocked_compositions=blocked_compositions,
+        count=3,
+        policy_history=policy_history,
+    )
+    assert attempts == [11]
+    assert relaxed == [
+        "open horizon with large sky",
+        "foreground dune grass with open water behind",
+    ]
+    viable_reason, _ = scene_policy_rejection(
+        policy_history,
+        scene_family="elevated_baltic_overlook",
+        composition="",
+    )
+    assert viable_reason == ""
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        history_path = root / "history.json"
+        history_path.write_text(json.dumps(policy_history), encoding="utf-8")
+        args = _args(root)
+        initial = build_payload(FIXTURES["storm"], "storm", post_type="evening")
+        candidate = {
+            "variation_attempt": 11,
+            "image_prompt": "offline viable depth-2 prompt",
+            "style_name": "offline-style",
+            "cache_key": "offline-depth-2-cache-key",
+            "metadata": {
+                "forecast_date": "2026-08-15",
+                "target_date": "2026-08-15",
+                "scene_family": "elevated_baltic_overlook",
+                "composition": "open horizon with large sky",
+                "prompt_version": "v6+kld_visual_policy_v4",
+            },
+            "composition_cooldown_relaxed": True,
+            "composition_cooldown_relaxed_value": "open horizon with large sky",
+            "composition_cooldown_relaxation_depth": 2,
+        }
+        events: list[str] = []
+        original_candidate_payloads = fixture_module._candidate_payloads
+        try:
+            fixture_module._candidate_payloads = lambda **kwargs: (
+                [candidate],
+                blocked_scenes,
+                blocked_compositions,
+            )
+
+            def generate(**kwargs):
+                events.append("provider")
+                return _ppm(root / "depth-2.ppm", 132)
+
+            outcome = fixture_module.execute_image_delivery(
+                args=args,
+                message=FIXTURES["storm"],
+                initial_payload=initial,
+                visibility_context=None,
+                history_path=history_path,
+                generate_image=generate,
+                secondary_generate_image=None,
+                evaluate_candidate=lambda *args, **kwargs: _accepted(),
+                cover_renderer=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cover not expected")),
+                validate_cover=lambda *args, **kwargs: {"valid": True, "errors": []},
+                send_photo=lambda *args, **kwargs: events.append("photo") or 456,
+                record_publication=lambda **kwargs: events.append("history") or {"sha256": "d" * 64},
+            )
+        finally:
+            fixture_module._candidate_payloads = original_candidate_payloads
+
+        assert events == ["provider", "photo", "history"]
+        assert outcome["candidate_pool"][0]["scene_family"] == "elevated_baltic_overlook"
+        assert outcome["candidate_pool"][0]["composition_cooldown_relaxation_depth"] == 2
+        assert outcome["provider_attempts"][0]["scene_family"] == "elevated_baltic_overlook"
+
+
+def composition_relaxation_keeps_exact_and_macro_guards_hard() -> None:
+    class Verdict:
+        def __init__(self, valid: bool, reason: str = "accepted"):
+            self.valid = valid
+            self.reason = reason
+
+        def to_dict(self):
+            return {"valid": self.valid, "reason": self.reason}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        image_path = Path(_ppm(root / "candidate.ppm", 121))
+        history_path = root / "history.json"
+        original_guard = dedup_module.inspect_kld_provider_image
+        try:
+            dedup_module.inspect_kld_provider_image = lambda *args, **kwargs: Verdict(True)
+            exact_history = [
+                {
+                    "date": "2026-08-14",
+                    "scene_family": "quiet_lagoon_coast",
+                    "composition": "promenade railing foreground",
+                    "sha256": dedup_module.sha256_file(image_path),
+                }
+            ]
+            history_path.write_text(json.dumps(exact_history), encoding="utf-8")
+            exact_blocked = dedup_module.evaluate_kld_visual_candidate(
+                image_path,
+                date_value="2026-08-15",
+                target_date="2026-08-15",
+                post_type="evening",
+                scene_family="elevated_baltic_overlook",
+                composition="open horizon with large sky",
+                prompt_version="test",
+                history_path=history_path,
+                allow_composition_cooldown_relaxation=True,
+            )
+            assert exact_blocked.reason == "exact_duplicate"
+
+            macro_history = [
+                {"date": "2026-08-10", "scene_family": "yantarny_wide_beach", "composition": "wide diagonal shoreline composition"},
+                {"date": "2026-08-11", "scene_family": "curonian_spit_dunes", "composition": "pine-framed side composition"},
+                {"date": "2026-08-12", "scene_family": "zelenogradsk_promenade", "composition": "promenade railing foreground"},
+                {"date": "2026-08-13", "scene_family": "svetlogorsk_cliff_coast", "composition": "elevated overlook panorama"},
+                {"date": "2026-08-14", "scene_family": "baltiysk_breakwater", "composition": "breakwater perspective line"},
+            ]
+            history_path.write_text(json.dumps(macro_history), encoding="utf-8")
+            macro_blocked = dedup_module.evaluate_kld_visual_candidate(
+                image_path,
+                date_value="2026-08-15",
+                target_date="2026-08-15",
+                post_type="evening",
+                scene_family="yantarny_wide_beach",
+                composition="foreground dune grass with open water behind",
+                prompt_version="test",
+                history_path=history_path,
+                allow_composition_cooldown_relaxation=True,
+            )
+            assert macro_blocked.reason == "scene_macro_cooldown"
+        finally:
+            dedup_module.inspect_kld_provider_image = original_guard
+
+
 def secondary_backend_rotates_same_fresh_candidate_pool() -> None:
     class PollinationsFailure(RuntimeError):
         backend = "pollinations"
@@ -434,6 +621,8 @@ TESTS = [
     composition_exhaustion_relaxes_oldest_only,
     relaxed_candidate_reaches_provider_and_marks_final_gate,
     composition_relaxation_does_not_weaken_other_guards,
+    macro_blocked_depth_continues_to_minimal_viable_candidate,
+    composition_relaxation_keeps_exact_and_macro_guards_hard,
     secondary_backend_rotates_same_fresh_candidate_pool,
     final_scene_policy_is_hard_and_reasons_are_explicit,
 ]
