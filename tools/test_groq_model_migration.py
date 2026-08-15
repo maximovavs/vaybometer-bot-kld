@@ -18,6 +18,8 @@ if str(ROOT) not in sys.path:
 
 PRIMARY_MODEL = "openai/gpt-oss-120b"
 FALLBACK_MODEL = "openai/gpt-oss-20b"
+GEMINI_PRIMARY_MODEL = "gemini-3.7-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
 
 pendulum_stub = types.ModuleType("pendulum")
 pendulum_stub.DateTime = object
@@ -71,6 +73,9 @@ def _import_gpt_fresh():
     for name in (
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
+        "GEMINI_MODEL",
+        "GEMINI_FALLBACK_MODEL",
+        "GEMINI_MODELS",
         "GROQ_API_KEY",
         "GROQ_MODEL",
         "GROQ_FALLBACK_MODEL",
@@ -103,6 +108,29 @@ class _FakeGroqClient:
         )
 
 
+class _FakeGeminiClient:
+    def __init__(self, failures: set[str]) -> None:
+        self.failures = failures
+        self.calls: list[dict] = []
+        self.models = SimpleNamespace(
+            list=lambda: SimpleNamespace(
+                data=[
+                    SimpleNamespace(id=GEMINI_PRIMARY_MODEL),
+                    SimpleNamespace(id=GEMINI_FALLBACK_MODEL),
+                ]
+            )
+        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+    def create(self, **request):
+        self.calls.append(request)
+        if request["model"] in self.failures:
+            raise RuntimeError("model not found")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Gemini fallback text"))]
+        )
+
+
 def _force_groq_only(gpt, client: _FakeGroqClient) -> None:
     gpt.OPENAI_KEY = ""
     gpt.GEMINI_KEY = ""
@@ -120,6 +148,41 @@ def test_default_groq_model_config() -> None:
     assert gpt.GROQ_MODEL == PRIMARY_MODEL
     assert gpt.GROQ_FALLBACK_MODEL == FALLBACK_MODEL
     assert gpt.GROQ_MODELS == [PRIMARY_MODEL, FALLBACK_MODEL]
+
+
+def test_default_gemini_model_config() -> None:
+    gpt = _import_gpt_fresh()
+    assert gpt.GEMINI_MODEL == GEMINI_PRIMARY_MODEL
+    assert gpt.GEMINI_FALLBACK_MODEL == GEMINI_FALLBACK_MODEL
+    assert gpt.GEMINI_MODELS == [GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL]
+
+
+def test_gemini_37_falls_back_without_legacy_sampling_controls() -> None:
+    gpt = _import_gpt_fresh()
+    client = _FakeGeminiClient(failures={GEMINI_PRIMARY_MODEL})
+    gpt.OPENAI_KEY = ""
+    gpt.GEMINI_KEY = "test"
+    gpt.GROQ_KEY = ""
+    gpt._OPENAI_DISABLED_FOR_RUN = False
+    gpt._GEMINI_DISABLED_FOR_RUN = False
+    gpt._GEMINI_MODEL_SET = None
+    gpt._gemini_openai_compat_client = lambda: client
+
+    text = gpt.gpt_complete("test prompt", temperature=0.7, max_tokens=80)
+
+    assert text == "Gemini fallback text"
+    assert [call["model"] for call in client.calls] == [GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL]
+    primary_request, fallback_request = client.calls
+    assert "temperature" not in primary_request
+    assert "top_p" not in primary_request
+    assert "top_k" not in primary_request
+    assert fallback_request["temperature"] == 0.7
+
+
+def test_removed_gemini_preview_ids_are_not_runtime_candidates() -> None:
+    runtime = (ROOT / "gpt.py").read_text(encoding="utf-8")
+    removed = ("gemini-" + "3-flash", "gemini-" + "3-pro", "gemini-" + "3-flash-preview")
+    assert not [model for model in removed if model in runtime]
 
 
 def test_primary_failure_attempts_fallback_model() -> None:
@@ -214,6 +277,9 @@ def main() -> None:
     tests = [
         test_no_deprecated_model_ids_in_runtime_files,
         test_default_groq_model_config,
+        test_default_gemini_model_config,
+        test_gemini_37_falls_back_without_legacy_sampling_controls,
+        test_removed_gemini_preview_ids_are_not_runtime_candidates,
         test_primary_failure_attempts_fallback_model,
         test_total_groq_failure_uses_local_blurb_fallback,
         kld_missing_core_morning_fails_closed,
