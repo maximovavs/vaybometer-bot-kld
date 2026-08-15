@@ -8,7 +8,7 @@ gpt.py
 - Порядок провайдеров: OpenAI → Gemini → Groq.
 - При 429/insufficient_quota у OpenAI отключаем OpenAI на весь текущий запуск,
   чтобы не «стучать» повторно в платный провайдер.
-- Gemini перебираем по списку моделей (как вы просили), а затем (если нужно) идём в Groq.
+- Gemini перебираем по стабильной цепочке primary → fallback, а затем (если нужно) идём в Groq.
 - Контракт gpt_blurb(culprit) сохранён: возвращает (summary: str, tips: List[str]).
 
 Важно про Gemini:
@@ -40,13 +40,13 @@ GROQ_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
 # ── модели ───────────────────────────────────────────────────────────────────
 OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-# Gemini: перебор моделей (как вы попросили)
-GEMINI_MODELS = [
-    "gemini-3-flash",
-    "gemini-3-pro",
-    "gemini-2.5-flash",
-    "gemini-3-flash-preview",
-]
+DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
+DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = (os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+GEMINI_FALLBACK_MODEL = (
+    (os.getenv("GEMINI_FALLBACK_MODEL") or DEFAULT_GEMINI_FALLBACK_MODEL).strip()
+    or DEFAULT_GEMINI_FALLBACK_MODEL
+)
 
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b"
@@ -65,6 +65,14 @@ def _unique_nonempty_models(*models: str) -> List[str]:
             out.append(model)
     return out
 
+
+# Gemini: stable primary first, then the configured fallback. GEMINI_MODELS can
+# prepend explicitly configured candidates without duplicating either default.
+GEMINI_MODELS = _unique_nonempty_models(
+    *((os.getenv("GEMINI_MODELS") or "").split(",")),
+    GEMINI_MODEL,
+    GEMINI_FALLBACK_MODEL,
+)
 
 # Groq: primary model first, then the configured fallback.
 GROQ_MODELS = _unique_nonempty_models(GROQ_MODEL, GROQ_FALLBACK_MODEL)
@@ -222,12 +230,17 @@ def gpt_complete(
 
             for mdl in candidates:
                 try:
-                    r = cli.chat.completions.create(
-                        model=mdl,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                    )
+                    request = {
+                        "model": mdl,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                    }
+                    # Gemini 3.x rejects the legacy temperature/top-p/top-k
+                    # controls. Keep temperature only for the 2.5 fallback,
+                    # which preserves the previous behavior there.
+                    if not mdl.startswith("gemini-3"):
+                        request["temperature"] = temperature
+                    r = cli.chat.completions.create(**request)
                     text = (r.choices[0].message.content or "").strip()
                     if text:
                         log.info("LLM: Gemini ok (model=%s)", mdl)
