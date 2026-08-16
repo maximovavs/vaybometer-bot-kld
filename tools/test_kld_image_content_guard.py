@@ -87,6 +87,22 @@ def _write_layered_scene(
     return True
 
 
+def _write_foamy_baltic_scene(path: Path) -> bool:
+    Image, ImageDraw = _require_pillow()
+    if Image is None:
+        return False
+    image = Image.new("RGB", (512, 512), color=(138, 151, 161))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 190, 511, 369), fill=(72, 105, 124))
+    for y in range(215, 360, 26):
+        draw.line((0, y, 511, y), fill=(236, 241, 243), width=8)
+    draw.rectangle((0, 370, 511, 511), fill=(112, 122, 125))
+    for y in range(385, 512, 28):
+        draw.line((0, y, 511, y), fill=(96, 105, 108), width=3)
+    image.save(path)
+    return True
+
+
 def kld_guard_rejects_dense_top_ui_band() -> None:
     root = _tmpdir()
     try:
@@ -139,6 +155,52 @@ def kld_guard_rejects_summer_dry_steppe_without_baltic() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def kld_guard_rejects_august_snow_covered_promenade() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "summer-snow.png"
+        if not _write_layered_scene(
+            path,
+            sky=(148, 164, 178),
+            water=(67, 102, 124),
+            ground=(229, 237, 244),
+        ):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="zelenogradsk_promenade",
+            target_date="2026-08-17",
+        )
+        assert verdict.valid is False, verdict
+        assert verdict.reason == "summer_snow_or_ice"
+        assert verdict.lower_cold_white_fraction >= 0.58
+        assert verdict.dense_cold_white_rows >= 18
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_allows_same_snow_surface_in_winter() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "winter-snow.png"
+        if not _write_layered_scene(
+            path,
+            sky=(148, 164, 178),
+            water=(67, 102, 124),
+            ground=(229, 237, 244),
+        ):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="zelenogradsk_promenade",
+            target_date="2026-12-17",
+        )
+        assert verdict.reason != "summer_snow_or_ice", verdict
+        assert verdict.valid is True, verdict
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def kld_guard_accepts_green_baltic_coast() -> None:
     root = _tmpdir()
     try:
@@ -180,6 +242,97 @@ def kld_guard_accepts_sand_wood_reeds_and_cloudy_baltic() -> None:
                 target_date="2026-08-09",
             )
             assert verdict.valid is True, (name, verdict)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_accepts_august_pale_sand() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "pale-sand.png"
+        if not _write_layered_scene(
+            path,
+            sky=(151, 181, 199),
+            water=(61, 104, 127),
+            ground=(218, 203, 164),
+        ):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="yantarny_wide_beach",
+            target_date="2026-08-17",
+        )
+        assert verdict.valid is True, verdict
+        assert verdict.reason == "accepted"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_accepts_august_clouds_and_white_foam() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "white-foam.png"
+        if not _write_foamy_baltic_scene(path):
+            return
+        verdict = inspect_kld_provider_image(
+            path,
+            scene_family="stormy_open_baltic",
+            target_date="2026-08-17",
+        )
+        assert verdict.valid is True, verdict
+        assert verdict.reason == "accepted"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_accepts_august_light_and_wet_promenade() -> None:
+    root = _tmpdir()
+    try:
+        cases = (
+            ("light", (191, 196, 200)),
+            ("wet", (118, 129, 136)),
+        )
+        for name, ground in cases:
+            path = root / f"{name}-promenade.png"
+            assert _write_layered_scene(
+                path,
+                sky=(143, 158, 169),
+                water=(69, 102, 120),
+                ground=ground,
+            )
+            verdict = inspect_kld_provider_image(
+                path,
+                scene_family="zelenogradsk_promenade",
+                target_date="2026-08-17",
+            )
+            assert verdict.valid is True, (name, verdict)
+            assert verdict.reason == "accepted"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kld_guard_accepts_august_bright_neutral_paving() -> None:
+    root = _tmpdir()
+    try:
+        cases = (
+            ("neutral-concrete", (236, 236, 236)),
+            ("warm-limestone", (236, 232, 218)),
+        )
+        for name, ground in cases:
+            path = root / f"{name}.png"
+            assert _write_layered_scene(
+                path,
+                sky=(143, 158, 169),
+                water=(69, 102, 120),
+                ground=ground,
+            )
+            verdict = inspect_kld_provider_image(
+                path,
+                scene_family="zelenogradsk_promenade",
+                target_date="2026-08-17",
+            )
+            assert verdict.valid is True, (name, verdict)
+            assert verdict.reason == "accepted"
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -252,6 +405,35 @@ def kld_dedup_gate_propagates_content_rejection() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def kld_dedup_gate_propagates_summer_snow_rejection() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "summer-snow.png"
+        history = root / "history.json"
+        if not _write_layered_scene(
+            path,
+            sky=(148, 164, 178),
+            water=(67, 102, 124),
+            ground=(229, 237, 244),
+        ):
+            return
+        result = evaluate_kld_visual_candidate(
+            path,
+            date_value="2026-08-17",
+            target_date="2026-08-17",
+            post_type="evening",
+            scene_family="zelenogradsk_promenade",
+            composition="promenade railing foreground",
+            prompt_version="test",
+            history_path=history,
+        )
+        assert result.accepted is False
+        assert result.reason == "content_guard:summer_snow_or_ice"
+        assert result.content_guard and result.content_guard["reason"] == "summer_snow_or_ice"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def kld_local_cover_bypasses_provider_content_guard() -> None:
     root = _tmpdir()
     try:
@@ -279,11 +461,18 @@ TESTS = [
     kld_guard_rejects_dense_top_ui_band,
     kld_guard_accepts_simple_landscape,
     kld_guard_rejects_summer_dry_steppe_without_baltic,
+    kld_guard_rejects_august_snow_covered_promenade,
+    kld_guard_allows_same_snow_surface_in_winter,
     kld_guard_accepts_green_baltic_coast,
     kld_guard_accepts_sand_wood_reeds_and_cloudy_baltic,
+    kld_guard_accepts_august_pale_sand,
+    kld_guard_accepts_august_clouds_and_white_foam,
+    kld_guard_accepts_august_light_and_wet_promenade,
+    kld_guard_accepts_august_bright_neutral_paving,
     kld_guard_accepts_autumn_gold_with_baltic,
     kld_guard_rejects_land_only_frame_for_open_baltic_scene,
     kld_dedup_gate_propagates_content_rejection,
+    kld_dedup_gate_propagates_summer_snow_rejection,
     kld_local_cover_bypasses_provider_content_guard,
 ]
 
