@@ -818,6 +818,36 @@ def kld_morning_collector_uses_current_run_city_lists() -> None:
     assert offsets and set(offsets) == {0}
 
 
+def kld_morning_hot_windy_without_uv_does_not_recommend_layer() -> None:
+    no_uv_fixture = HOT_MORNING_FIXTURE.replace(
+        "Погода: 🏙️ Калининград — 38/26 °C",
+        "Погода: 🏙️ Калининград — 30/20 °C",
+    ).replace("☀️ УФ: 7 — высокий\n", "")
+    no_uv_text = build_morning_format_v2("Калининградская область", no_uv_fixture)
+    high_uv_text = build_morning_format_v2("Калининградская область", HOT_MORNING_FIXTURE)
+
+    old = os.environ.get("MORNING_SMART_PLAN")
+    try:
+        os.environ["MORNING_SMART_PLAN"] = "1"
+        no_uv_text = _inject_morning_smart_plan(no_uv_text, "morning")
+        high_uv_text = _inject_morning_smart_plan(high_uv_text, "morning")
+    finally:
+        if old is None:
+            os.environ.pop("MORNING_SMART_PLAN", None)
+        else:
+            os.environ["MORNING_SMART_PLAN"] = old
+
+    no_uv_plan = next(line for line in no_uv_text.splitlines() if line.startswith("✅ План:"))
+    assert "ветровка/слой" not in no_uv_plan
+    assert "утром/вечером" in no_uv_plan
+    assert "у воды учитывать ветер" in no_uv_plan
+    assert "SPF" not in no_uv_plan
+    assert "☀️ УФ" not in no_uv_text
+
+    high_uv_plan = next(line for line in high_uv_text.splitlines() if line.startswith("✅ План:"))
+    assert high_uv_plan == "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
+
+
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     assert "cron: '30 0 * * *'" in workflow
@@ -857,6 +887,7 @@ def main() -> None:
         kld_morning_structured_current_run_temperatures_survive_safe_pipeline,
         kld_morning_structured_daytime_only_uses_short_form,
         kld_morning_collector_uses_current_run_city_lists,
+        kld_morning_hot_windy_without_uv_does_not_recommend_layer,
         kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,

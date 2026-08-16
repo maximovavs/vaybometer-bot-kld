@@ -48,6 +48,24 @@ jobs:
               suite[check]()
           print("OK: Gemini migration offline checks passed")
           PY
+      - name: KLD FORMAT_V2 text regressions (offline)
+        env:
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GROQ_API_KEY: ""
+          TELEGRAM_TOKEN: ""
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_TOKEN_KLG: "test-token"
+          POLLINATIONS_TOKEN: ""
+          POLLINATIONS_API_KEY: ""
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1
+        run: |
+          set -euo pipefail
+          python tools/test_format_v2_evening_kld.py
+          python tools/test_format_v2_morning_kld.py
       - name: Smoke daily (dry-run)
         env:
           TELEGRAM_TOKEN_KLG: "test"

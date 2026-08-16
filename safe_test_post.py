@@ -297,6 +297,8 @@ def _kld_smart_plan_line(v2_text: str) -> str:
         return "✅ План: дождевик и закрытая обувь; у моря выбирать защищённый маршрут."
     if has_rain:
         return "✅ План: зонт или дождевик, закрытая обувь; дела лучше короткими выходами между дождём."
+    if windy and isinstance(tmax, (int, float)) and tmax >= 28:
+        return "✅ План: прогулку лучше утром/вечером; днём — вода и тень, у воды учитывать ветер."
     if windy:
         return "✅ План: ветровка/слой; прогулку лучше в защищённых местах."
     if isinstance(uv, (int, float)) and uv >= 6:
@@ -379,8 +381,10 @@ def _kld_score_line(v2_text: str) -> str:
 def _kld_evening_score_line(v2_text: str) -> str:
     text = _plain(v2_text)
     low = text.lower()
-    temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
-    max_t = max(temps) if temps else None
+    conditions = _kld_conditions(v2_text)
+    max_t = conditions.get("tmax")
+    cold_temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
+    cold_max = max(cold_temps) if cold_temps else None
     # storm gust via the single shared parser: only "порыв …", never avg wind.
     max_gust = extract_max_gust_ms(text)
     visibility = visibility_condition_from_text(text)
@@ -403,9 +407,14 @@ def _kld_evening_score_line(v2_text: str) -> str:
     elif "ветер" in low or "порыв" in low:
         score -= 0.4; reasons.append("ветер у воды")
     if isinstance(max_t, (int, float)):
-        if max_t <= 14:
+        if max_t >= 35:
+            score -= 1.2; reasons.append("жара")
+        elif max_t >= 30:
+            score -= 0.6; reasons.append("жарко")
+    if isinstance(cold_max, (int, float)):
+        if cold_max <= 14:
             score -= 0.9; reasons.append("прохладно")
-        elif max_t <= 17:
+        elif cold_max <= 17:
             score -= 0.5; reasons.append("свежо")
     if "локально" in low or "неравномерно" in low:
         score -= 0.2; reasons.append("локальность прогноза")
@@ -415,11 +424,15 @@ def _kld_evening_score_line(v2_text: str) -> str:
         reasons.append(visibility_reason(visibility))
 
     score = max(1.0, min(10.0, score))
+    if isinstance(max_t, (int, float)) and max_t >= 35:
+        score = min(score, 7.9)
     label = _score_label(score)
     if has_warning or (isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS):
         if has_precip:
             return f"✨ VayboMeter завтра: {score:.1f}/10 — неустойчивый день: локальные осадки и штормовые порывы."
         return f"✨ VayboMeter завтра: {score:.1f}/10 — день с повышенной осторожностью: штормовые порывы."
+    if isinstance(max_t, (int, float)) and max_t >= 35:
+        return f"✨ VayboMeter завтра: {score:.1f}/10 — с оговорками; жара."
     if reasons:
         return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
@@ -1413,7 +1426,20 @@ def _inject_evening_score(v2_text: str, mode: str) -> str:
         return v2_text
     if any("VayboMeter" in line and "/10" in line for line in str(v2_text or "").splitlines()):
         return v2_text
-    return _insert_before_anchor(v2_text, _kld_evening_score_line(v2_text), ("🎯 <b>Уверенность", "🎯"))
+    return _insert_before_anchor(
+        v2_text,
+        _kld_evening_score_line(v2_text),
+        (
+            "🧭 Главное завтра:",
+            "⚠️ Нюанс:",
+            "⚠️ Главный нюанс:",
+            "🎯 <b>Уверенность",
+            "🎯",
+            "🏙️ Калининград",
+            "🏙 Калининград",
+            "#",
+        ),
+    )
 
 
 def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
