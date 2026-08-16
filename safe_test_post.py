@@ -383,6 +383,8 @@ def _kld_evening_score_line(v2_text: str) -> str:
     low = text.lower()
     conditions = _kld_conditions(v2_text)
     max_t = conditions.get("tmax")
+    cold_temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
+    cold_max = max(cold_temps) if cold_temps else None
     # storm gust via the single shared parser: only "порыв …", never avg wind.
     max_gust = extract_max_gust_ms(text)
     visibility = visibility_condition_from_text(text)
@@ -409,9 +411,10 @@ def _kld_evening_score_line(v2_text: str) -> str:
             score -= 1.2; reasons.append("жара")
         elif max_t >= 30:
             score -= 0.6; reasons.append("жарко")
-        if max_t <= 14:
+    if isinstance(cold_max, (int, float)):
+        if cold_max <= 14:
             score -= 0.9; reasons.append("прохладно")
-        elif max_t <= 17:
+        elif cold_max <= 17:
             score -= 0.5; reasons.append("свежо")
     if "локально" in low or "неравномерно" in low:
         score -= 0.2; reasons.append("локальность прогноза")
