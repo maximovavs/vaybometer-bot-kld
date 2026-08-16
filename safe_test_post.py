@@ -297,6 +297,8 @@ def _kld_smart_plan_line(v2_text: str) -> str:
         return "✅ План: дождевик и закрытая обувь; у моря выбирать защищённый маршрут."
     if has_rain:
         return "✅ План: зонт или дождевик, закрытая обувь; дела лучше короткими выходами между дождём."
+    if windy and isinstance(tmax, (int, float)) and tmax >= 28:
+        return "✅ План: прогулку лучше утром/вечером; днём — вода и тень, у воды учитывать ветер."
     if windy:
         return "✅ План: ветровка/слой; прогулку лучше в защищённых местах."
     if isinstance(uv, (int, float)) and uv >= 6:
@@ -1413,7 +1415,20 @@ def _inject_evening_score(v2_text: str, mode: str) -> str:
         return v2_text
     if any("VayboMeter" in line and "/10" in line for line in str(v2_text or "").splitlines()):
         return v2_text
-    return _insert_before_anchor(v2_text, _kld_evening_score_line(v2_text), ("🎯 <b>Уверенность", "🎯"))
+    return _insert_before_anchor(
+        v2_text,
+        _kld_evening_score_line(v2_text),
+        (
+            "🧭 Главное завтра:",
+            "⚠️ Нюанс:",
+            "⚠️ Главный нюанс:",
+            "🎯 <b>Уверенность",
+            "🎯",
+            "🏙️ Калининград",
+            "🏙 Калининград",
+            "#",
+        ),
+    )
 
 
 def _inject_morning_smart_plan(v2_text: str, mode: str) -> str:
@@ -1488,7 +1503,7 @@ class _TodayPatch:
         if self._orig_today:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
-            pendulum.now = self._orig_now      # type: ignore[assignment]
+            pendulum.now = self._orig_now  # type: ignore[assignment]
         return False
 
 
