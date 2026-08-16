@@ -16,6 +16,38 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Gemini migration regressions (offline)
+        env:
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GROQ_API_KEY: ""
+          TELEGRAM_TOKEN: ""
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_TOKEN_KLG: ""
+          POLLINATIONS_TOKEN: ""
+          POLLINATIONS_API_KEY: ""
+          VAYBOMETER_CACHE_DIR: ${{ runner.temp }}/vaybometer-cache
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1
+        run: |
+          python - <<'PY'
+          import runpy
+
+          suite = runpy.run_path("tools/test_groq_model_migration.py", run_name="gemini_migration_offline")
+          for check in (
+              "test_no_deprecated_model_ids_in_runtime_files",
+              "test_default_groq_model_config",
+              "test_default_gemini_model_config",
+              "test_gemini_37_falls_back_without_legacy_sampling_controls",
+              "test_removed_gemini_preview_ids_are_not_runtime_candidates",
+              "test_primary_failure_attempts_fallback_model",
+              "test_total_groq_failure_uses_local_blurb_fallback",
+          ):
+              suite[check]()
+          print("OK: Gemini migration offline checks passed")
+          PY
       - name: Smoke daily (dry-run)
         env:
           TELEGRAM_TOKEN_KLG: "test"
