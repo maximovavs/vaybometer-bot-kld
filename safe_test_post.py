@@ -381,8 +381,8 @@ def _kld_score_line(v2_text: str) -> str:
 def _kld_evening_score_line(v2_text: str) -> str:
     text = _plain(v2_text)
     low = text.lower()
-    temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
-    max_t = max(temps) if temps else None
+    conditions = _kld_conditions(v2_text)
+    max_t = conditions.get("tmax")
     # storm gust via the single shared parser: only "порыв …", never avg wind.
     max_gust = extract_max_gust_ms(text)
     visibility = visibility_condition_from_text(text)
@@ -405,6 +405,10 @@ def _kld_evening_score_line(v2_text: str) -> str:
     elif "ветер" in low or "порыв" in low:
         score -= 0.4; reasons.append("ветер у воды")
     if isinstance(max_t, (int, float)):
+        if max_t >= 35:
+            score -= 1.2; reasons.append("жара")
+        elif max_t >= 30:
+            score -= 0.6; reasons.append("жарко")
         if max_t <= 14:
             score -= 0.9; reasons.append("прохладно")
         elif max_t <= 17:
@@ -417,11 +421,15 @@ def _kld_evening_score_line(v2_text: str) -> str:
         reasons.append(visibility_reason(visibility))
 
     score = max(1.0, min(10.0, score))
+    if isinstance(max_t, (int, float)) and max_t >= 35:
+        score = min(score, 7.9)
     label = _score_label(score)
     if has_warning or (isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS):
         if has_precip:
             return f"✨ VayboMeter завтра: {score:.1f}/10 — неустойчивый день: локальные осадки и штормовые порывы."
         return f"✨ VayboMeter завтра: {score:.1f}/10 — день с повышенной осторожностью: штормовые порывы."
+    if isinstance(max_t, (int, float)) and max_t >= 35:
+        return f"✨ VayboMeter завтра: {score:.1f}/10 — с оговорками; жара."
     if reasons:
         return f"✨ VayboMeter завтра: {score:.1f}/10 — {label}; " + ", ".join(reasons[:3]) + "."
     return f"✨ VayboMeter завтра: {score:.1f}/10 — {label} для обычных дел и прогулок."
@@ -435,7 +443,7 @@ def _translate_shore_notes(text: str) -> str:
             return f"({direction})"
         return match.group(0)
 
-    return re.sub(r"\((N|NE|E|SE|S|SW|W|NW)/(None)\)", repl, str(text or ""), flags=re.I)
+    return re.sub(r"\((N|NE|E|SE|S|SW|W|NW)/(None)\)\", repl, str(text or ""), flags=re.I)
 
 
 def _fmt_num(value: float) -> str:
