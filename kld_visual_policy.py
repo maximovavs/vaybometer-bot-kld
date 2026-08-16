@@ -21,6 +21,23 @@ SUMMER_VEGETATION_CUE = (
     "wood or dry non-living surfaces, not to living summer vegetation."
 )
 
+SUMMER_ANTI_WINTER_TERMS = (
+    "snow",
+    "ice",
+    "frost",
+    "frozen ground",
+    "frozen water",
+    "winter landscape",
+    "snow-covered promenade",
+    "snow-covered beach",
+    "snow-covered coast",
+)
+SUMMER_ANTI_WINTER_CUE = (
+    "Summer season safety: "
+    + "; ".join(f"no {term}" for term in SUMMER_ANTI_WINTER_TERMS)
+    + "."
+)
+
 SCENE_NEUTRAL_PHOTO_CONTRACT = (
     "Scene identity adherence: the selected scene family is authoritative; render one coherent real "
     "Kaliningrad-region scene chosen by that family; preserve it as the dominant geography; include only "
@@ -384,6 +401,7 @@ def build_stable_horde_prompt_parts(
     ]
     if summer:
         negative_parts[1:1] = [
+            *SUMMER_ANTI_WINTER_TERMS,
             "dry yellow living grass",
             "golden grass field",
             "straw-coloured living vegetation",
@@ -507,6 +525,7 @@ def finalize_kld_provider_prompt(
                 "Controlled scene:",
                 "Provider safety:",
                 "Summer vegetation adherence:",
+                "Summer season safety:",
                 "Weather scene route:",
             )
         ):
@@ -531,7 +550,7 @@ def finalize_kld_provider_prompt(
         PROVIDER_NEGATIVE_GUARD,
     ]
     if summer:
-        policy_lines.append(SUMMER_VEGETATION_CUE)
+        policy_lines.extend((SUMMER_VEGETATION_CUE, SUMMER_ANTI_WINTER_CUE))
 
     insert_at = next(
         (index for index, line in enumerate(out) if line.startswith("Text restrictions:")),
@@ -545,6 +564,8 @@ __all__ = [
     "KLD_VISUAL_POLICY_VERSION",
     "PROVIDER_NEGATIVE_GUARD",
     "SCENE_NEUTRAL_PHOTO_CONTRACT",
+    "SUMMER_ANTI_WINTER_CUE",
+    "SUMMER_ANTI_WINTER_TERMS",
     "SUMMER_MONTHS",
     "SUMMER_VEGETATION_CUE",
     "WEATHER_SCENE_ROUTES",
