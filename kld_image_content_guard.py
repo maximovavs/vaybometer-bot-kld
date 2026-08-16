@@ -211,10 +211,7 @@ def _winter_surface_metrics(image: "Image.Image") -> tuple[float, int]:
                 saturation <= 0.12
                 and value >= 0.80
                 and green_channel >= red - 3
-                and (
-                    blue >= red + 4
-                    or value >= 0.90
-                )
+                and blue >= red + 4
             )
             if is_cold_white:
                 cold_white += 1
