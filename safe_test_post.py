@@ -443,7 +443,7 @@ def _translate_shore_notes(text: str) -> str:
             return f"({direction})"
         return match.group(0)
 
-    return re.sub(r"\((N|NE|E|SE|S|SW|W|NW)/(None)\)\", repl, str(text or ""), flags=re.I)
+    return re.sub(r"\((N|NE|E|SE|S|SW|W|NW)/(None)\)", repl, str(text or ""), flags=re.I)
 
 
 def _fmt_num(value: float) -> str:
