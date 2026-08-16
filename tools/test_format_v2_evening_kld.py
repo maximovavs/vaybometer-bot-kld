@@ -875,6 +875,118 @@ def kld_evening_safe_postprocess_keeps_hashtags_final_and_dedupes_nuance() -> No
     assert not any(line.startswith("⚠️ Главный нюанс:") for line in lines[tag_index + 1:])
 
 
+def kld_evening_score_injection_survives_hashtag_finalizer() -> None:
+    source = NORMAL_EVENING.replace(
+        "✨ VayboMeter завтра: 8.1/10 — хороший день; берег свежее, восток теплее.\n",
+        "",
+    )
+    text = build_evening_format_v2("Калининградская область", source)
+    assert not any("VayboMeter" in line and "/10" in line for line in text.splitlines())
+
+    old = os.environ.get("EVENING_VAYBOMETER_SCORE")
+    try:
+        os.environ["EVENING_VAYBOMETER_SCORE"] = "1"
+        polished = _apply_format_v2_safe_postprocess(text, "", "", "evening")
+    finally:
+        if old is None:
+            os.environ.pop("EVENING_VAYBOMETER_SCORE", None)
+        else:
+            os.environ["EVENING_VAYBOMETER_SCORE"] = old
+
+    lines = [line.strip() for line in polished.splitlines() if line.strip()]
+    scores = [line for line in lines if "VayboMeter" in line and "/10" in line]
+    assert len(scores) == 1, scores
+    tag_index = lines.index("#Калининград #погода #здоровье #море")
+    assert lines.index(scores[0]) < tag_index
+    assert tag_index == len(lines) - 1
+
+
+def kld_evening_production_ranks_coolest_nights_by_tmin() -> None:
+    post_common = importlib.import_module("post_common")
+    original_day_offset = post_common.DAY_OFFSET
+    original_astro_offset = post_common.ASTRO_OFFSET
+    patched_names = (
+        "pendulum",
+        "get_sunrise_sunset",
+        "get_weather",
+        "day_night_stats",
+        "pick_tomorrow_header_metrics",
+        "storm_flags_for_tomorrow",
+        "fetch_tomorrow_temps",
+        "build_astro_section",
+        "get_air",
+        "get_schumann_with_fallback",
+        "_kld_visibility_for_post",
+        "_kld_quake_line_24h",
+        "safe_tips",
+    )
+    originals = {name: getattr(post_common, name) for name in patched_names}
+    temps_by_lat = {
+        1.0: (24.0, 15.0),
+        2.0: (23.0, 9.0),
+        3.0: (22.0, 12.0),
+        4.0: (21.0, 8.0),
+    }
+
+    class _FakeTZ:
+        name = "Europe/Kaliningrad"
+
+    class _FakeDate:
+        def add(self, *, days: int = 0):
+            return self
+
+        def format(self, _pattern: str) -> str:
+            return "20.06.2026"
+
+        def to_date_string(self) -> str:
+            return "2026-06-20"
+
+    try:
+        post_common.DAY_OFFSET = 1
+        post_common.ASTRO_OFFSET = 1
+        post_common.pendulum = types.SimpleNamespace(
+            timezone=lambda _tz: _FakeTZ(),
+            today=lambda _tz=None: _FakeDate(),
+        )
+        post_common.get_sunrise_sunset = lambda *_args, **_kwargs: ("04:08", "21:33")
+        post_common.get_weather = lambda *_args, **_kwargs: {}
+        post_common.day_night_stats = lambda *_args, **_kwargs: {}
+        post_common.pick_tomorrow_header_metrics = lambda *_args, **_kwargs: (None, None, None, "→")
+        post_common.storm_flags_for_tomorrow = lambda *_args, **_kwargs: {"warning": False}
+        post_common.fetch_tomorrow_temps = lambda lat, _lon, tz=None: temps_by_lat[float(lat)]
+        post_common.build_astro_section = lambda *_args, **_kwargs: "📻 <b>Астрособытия</b>"
+        post_common.get_air = lambda *_args, **_kwargs: {}
+        post_common.get_schumann_with_fallback = lambda: {}
+        post_common._kld_visibility_for_post = lambda *_args, **_kwargs: (None, None)
+        post_common._kld_quake_line_24h = lambda: None
+        post_common.safe_tips = lambda _theme: []
+
+        text = post_common.build_message_legacy_evening(
+            "Калининградская область",
+            "Морские города",
+            [],
+            "Другие города",
+            [
+                ("A", (1.0, 1.0)),
+                ("B", (2.0, 2.0)),
+                ("C", (3.0, 3.0)),
+                ("D", (4.0, 4.0)),
+            ],
+            "Europe/Kaliningrad",
+        )
+    finally:
+        post_common.DAY_OFFSET = original_day_offset
+        post_common.ASTRO_OFFSET = original_astro_offset
+        for name, value in originals.items():
+            setattr(post_common, name, value)
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    warm_index = lines.index("🔥 <b>Тёплые города, °C (топ-3)</b>")
+    cold_index = lines.index("❄️ <b>Холодные города, °C (топ-3)</b>")
+    assert [line.split(":", 1)[0] for line in lines[warm_index + 1:warm_index + 4]] == ["• A", "• B", "• C"]
+    assert [line.split(":", 1)[0] for line in lines[cold_index + 1:cold_index + 4]] == ["• D", "• B", "• C"]
+
+
 def main() -> None:
     checks = (
         kld_evening_normal_no_generic_confidence,
@@ -914,6 +1026,8 @@ def main() -> None:
         kld_evening_fully_populated_astro_preserves_voc,
         kld_evening_safe_postprocess_preserves_storm_astro,
         kld_evening_safe_postprocess_keeps_hashtags_final_and_dedupes_nuance,
+        kld_evening_score_injection_survives_hashtag_finalizer,
+        kld_evening_production_ranks_coolest_nights_by_tmin,
     )
     for check in checks:
         check()
