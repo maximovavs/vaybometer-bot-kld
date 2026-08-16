@@ -3,11 +3,12 @@
 """Conservative offline content guard for provider-generated KLD images.
 
 This gate is deliberately conservative. It rejects high-confidence screen/UI
-outputs plus two narrow geographic failures that can be established from image
-structure without an external vision service: a dry golden steppe replacing
-living summer vegetation, and a land-only frame for a scene whose defining
-feature is open Baltic water. Sand, wood, reeds and autumn colour are protected
-by season, scene and water-context checks rather than colour alone.
+outputs plus narrow geographic/seasonal failures that can be established from
+image structure without an external vision service: a dry golden steppe
+replacing living summer vegetation, a land-only frame for a scene whose
+defining feature is open Baltic water, and a broad snow/ice-like lower-ground
+surface during Baltic summer. Sand, wood, reeds, sea foam, light stone and
+autumn colour are protected by season, geometry and colour-context checks.
 """
 from __future__ import annotations
 
@@ -72,6 +73,8 @@ class KldImageContentVerdict:
     water_band_fraction: float
     water_rows: int
     dense_gold_rows: int
+    lower_cold_white_fraction: float
+    dense_cold_white_rows: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -176,6 +179,52 @@ def _semantic_colour_metrics(image: "Image.Image") -> tuple[float, float, float,
     )
 
 
+def _winter_surface_metrics(image: "Image.Image") -> tuple[float, int]:
+    """Measure only broad bright neutral/cool surfaces at the bottom of frame.
+
+    The lower-ground crop intentionally avoids cloud-dominant sky and almost all
+    shoreline foam. Warm pale sand is excluded by saturation/colour balance;
+    ordinary concrete and wet stone remain below the deliberately high value
+    threshold. The signal is therefore narrow rather than a generic white-pixel
+    detector.
+    """
+    sample_size = 160
+    sample = image.convert("RGB").resize(
+        (sample_size, sample_size), Image.Resampling.BILINEAR
+    )
+    ground_start = int(sample_size * 0.70)
+    ground_end = int(sample_size * 0.98)
+    cold_white = 0
+    ground_total = max(1, (ground_end - ground_start) * sample_size)
+    dense_rows = 0
+
+    for y in range(ground_start, ground_end):
+        row = list(sample.crop((0, y, sample_size, y + 1)).getdata())
+        row_cold_white = 0
+        for red, green_channel, blue in row:
+            _hue, saturation, value = colorsys.rgb_to_hsv(
+                red / 255.0,
+                green_channel / 255.0,
+                blue / 255.0,
+            )
+            is_cold_white = (
+                saturation <= 0.12
+                and value >= 0.80
+                and green_channel >= red - 3
+                and (
+                    blue >= red + 4
+                    or value >= 0.90
+                )
+            )
+            if is_cold_white:
+                cold_white += 1
+                row_cold_white += 1
+        if row_cold_white / sample_size >= 0.60:
+            dense_rows += 1
+
+    return cold_white / ground_total, dense_rows
+
+
 def _is_summer(value: str | dt.date | None) -> bool:
     if isinstance(value, dt.date):
         return value.month in {6, 7, 8}
@@ -205,6 +254,8 @@ def inspect_kld_provider_image(
             water_band_fraction=0.0,
             water_rows=0,
             dense_gold_rows=0,
+            lower_cold_white_fraction=0.0,
+            dense_cold_white_rows=0,
         )
 
     try:
@@ -212,6 +263,7 @@ def inspect_kld_provider_image(
             image = opened.convert("RGB")
             top, body, ratio, dense_top_rows = _edge_metrics(image)
             gold, green, water, water_rows, dense_gold_rows = _semantic_colour_metrics(image)
+            cold_white, dense_cold_white_rows = _winter_surface_metrics(image)
     except Exception as exc:
         LOG.warning("KLD provider content inspection failed: %s", exc)
         return KldImageContentVerdict(
@@ -226,6 +278,8 @@ def inspect_kld_provider_image(
             water_band_fraction=0.0,
             water_rows=0,
             dense_gold_rows=0,
+            lower_cold_white_fraction=0.0,
+            dense_cold_white_rows=0,
         )
 
     screenshot_chrome = (
@@ -235,6 +289,11 @@ def inspect_kld_provider_image(
         and dense_top_rows >= 5
     )
     scene = str(scene_family or "").strip()
+    summer_snow_or_ice = (
+        _is_summer(target_date)
+        and cold_white >= 0.58
+        and dense_cold_white_rows >= 18
+    )
     summer_dry_steppe = (
         _is_summer(target_date)
         and scene in _LIVING_VEGETATION_SCENES
@@ -251,6 +310,8 @@ def inspect_kld_provider_image(
     )
     if screenshot_chrome:
         reason = "screen_or_ui_chrome"
+    elif summer_snow_or_ice:
+        reason = "summer_snow_or_ice"
     elif summer_dry_steppe:
         reason = "summer_dry_steppe"
     elif required_baltic_missing:
@@ -269,6 +330,8 @@ def inspect_kld_provider_image(
         water_band_fraction=round(water, 6),
         water_rows=water_rows,
         dense_gold_rows=dense_gold_rows,
+        lower_cold_white_fraction=round(cold_white, 6),
+        dense_cold_white_rows=dense_cold_white_rows,
     )
 
 
