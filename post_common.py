@@ -2294,7 +2294,7 @@ def build_message_legacy_evening(
             P.append(f"   • {city}: {d:.0f}/{n:.0f}{NBSP}°C" + (f" • {descx}" if descx else ""))
 
         P.append("❄️ <b>Холодные города, °C (топ-3)</b>")
-        for city, (d, n, wcx) in sorted(temps_oth.items(), key=lambda kv: kv[1][0])[:3]:
+        for city, (d, n, wcx) in sorted(temps_oth.items(), key=lambda kv: kv[1][1])[:3]:
             descx = code_desc(wcx)
             P.append(f"   • {city}: {d:.0f}/{n:.0f}{NBSP}°C" + (f" • {descx}" if descx else ""))
 
