@@ -311,6 +311,32 @@ def kld_guard_accepts_august_light_and_wet_promenade() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def kld_guard_accepts_august_bright_neutral_paving() -> None:
+    root = _tmpdir()
+    try:
+        cases = (
+            ("neutral-concrete", (236, 236, 236)),
+            ("warm-limestone", (236, 232, 218)),
+        )
+        for name, ground in cases:
+            path = root / f"{name}.png"
+            assert _write_layered_scene(
+                path,
+                sky=(143, 158, 169),
+                water=(69, 102, 120),
+                ground=ground,
+            )
+            verdict = inspect_kld_provider_image(
+                path,
+                scene_family="zelenogradsk_promenade",
+                target_date="2026-08-17",
+            )
+            assert verdict.valid is True, (name, verdict)
+            assert verdict.reason == "accepted"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def kld_guard_accepts_autumn_gold_with_baltic() -> None:
     root = _tmpdir()
     try:
@@ -442,6 +468,7 @@ TESTS = [
     kld_guard_accepts_august_pale_sand,
     kld_guard_accepts_august_clouds_and_white_foam,
     kld_guard_accepts_august_light_and_wet_promenade,
+    kld_guard_accepts_august_bright_neutral_paving,
     kld_guard_accepts_autumn_gold_with_baltic,
     kld_guard_rejects_land_only_frame_for_open_baltic_scene,
     kld_dedup_gate_propagates_content_rejection,
