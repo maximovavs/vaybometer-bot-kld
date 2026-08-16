@@ -901,6 +901,58 @@ def kld_evening_score_injection_survives_hashtag_finalizer() -> None:
     assert tag_index == len(lines) - 1
 
 
+def kld_evening_injected_score_accounts_for_daytime_extreme_heat_without_uv() -> None:
+    source = NORMAL_EVENING.replace(
+        "✨ VayboMeter завтра: 8.1/10 — хороший день; берег свежее, восток теплее.\n",
+        "",
+    ).replace(
+        "Погода: 🏙️ Калининград — 21/13 °C",
+        "Погода: 🏙️ Калининград — 38/26 °C",
+    )
+    text = build_evening_format_v2("Калининградская область", source)
+    assert not any("VayboMeter" in line and "/10" in line for line in text.splitlines())
+
+    old = os.environ.get("EVENING_VAYBOMETER_SCORE")
+    try:
+        os.environ["EVENING_VAYBOMETER_SCORE"] = "1"
+        polished = _apply_format_v2_safe_postprocess(text, "", "", "evening")
+    finally:
+        if old is None:
+            os.environ.pop("EVENING_VAYBOMETER_SCORE", None)
+        else:
+            os.environ["EVENING_VAYBOMETER_SCORE"] = old
+
+    lines = [line.strip() for line in polished.splitlines() if line.strip()]
+    scores = [line for line in lines if "VayboMeter" in line and "/10" in line]
+    assert len(scores) == 1, scores
+    score_line = scores[0]
+    score_value = float(score_line.split(":", 1)[1].split("/10", 1)[0].strip())
+    assert score_value < 8.0, score_line
+    assert "очень хороший" not in score_line
+    assert "жара" in score_line
+    assert "высокий УФ" not in score_line
+    tag_index = lines.index("#Калининград #погода #здоровье #море")
+    assert lines.index(score_line) < tag_index
+    assert tag_index == len(lines) - 1
+
+
+def kld_evening_score_accounts_for_daytime_heat_from_30_c() -> None:
+    warm29 = "🏙 Калининград — 29/20 °C."
+    hot32 = "🏙 Калининград — 32/20 °C."
+    score29 = safe_test_post._kld_evening_score_line(warm29)
+    score32 = safe_test_post._kld_evening_score_line(hot32)
+    value29 = float(score29.split(":", 1)[1].split("/10", 1)[0].strip())
+    value32 = float(score32.split(":", 1)[1].split("/10", 1)[0].strip())
+    assert round(value29 - value32, 1) == 0.6, (score29, score32)
+    assert "жарко" not in score29
+    assert "жарко" in score32
+
+
+def kld_evening_score_preserves_moderate_non_heat_contract() -> None:
+    score = safe_test_post._kld_evening_score_line("🏙 Калининград — 21/13 °C.")
+    assert score == "✨ VayboMeter завтра: 9.1/10 — очень хороший; прохладно."
+
+
 def kld_evening_production_ranks_coolest_nights_by_tmin() -> None:
     post_common = importlib.import_module("post_common")
     original_day_offset = post_common.DAY_OFFSET
@@ -1027,6 +1079,9 @@ def main() -> None:
         kld_evening_safe_postprocess_preserves_storm_astro,
         kld_evening_safe_postprocess_keeps_hashtags_final_and_dedupes_nuance,
         kld_evening_score_injection_survives_hashtag_finalizer,
+        kld_evening_injected_score_accounts_for_daytime_extreme_heat_without_uv,
+        kld_evening_score_accounts_for_daytime_heat_from_30_c,
+        kld_evening_score_preserves_moderate_non_heat_contract,
         kld_evening_production_ranks_coolest_nights_by_tmin,
     )
     for check in checks:
