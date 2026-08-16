@@ -1503,7 +1503,7 @@ class _TodayPatch:
         if self._orig_today:
             pendulum.today = self._orig_today  # type: ignore[assignment]
         if self._orig_now:
-            pendulum.now = self._orig_now  # type: ignore[assignment]
+            pendulum.now = self._orig_now      # type: ignore[assignment]
         return False
 
 
