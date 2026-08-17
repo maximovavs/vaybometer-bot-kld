@@ -177,6 +177,77 @@ def _orchestrate(
     return outcome, events
 
 
+def visual_target_date_propagates_through_provider_and_fallback() -> None:
+    visibility = {
+        "visibility_condition": "reduced_visibility",
+        "morning_min_visibility_m": 5500,
+        "reported_visibility_threshold_m": 6000,
+    }
+    payload = build_payload(MESSAGE, "test", post_type="evening", visibility_context=visibility)
+    metadata = payload["metadata"]
+    assert metadata["forecast_date"] == "2026-07-20"
+    assert metadata["target_date"] == "2026-07-20"
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        evaluated: list[tuple[str, str, str]] = []
+        recorded: list[tuple[str, str, str]] = []
+
+        def evaluate(path, **kwargs):
+            evaluated.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return _duplicate(accepted=True, reason="accepted", distance=20)
+
+        def record(**kwargs):
+            recorded.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return {"sha256": "b" * 64, "scene_family": kwargs["scene_family"]}
+
+        provider_outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: _image(root / "provider.png"),
+            evaluate=evaluate,
+            cover_renderer=_cover_renderer([]),
+            send_photo=lambda *args, **kwargs: 201,
+            record=record,
+        )
+        assert provider_outcome["backend"] == "pollinations"
+        assert evaluated == [("2026-07-20", "2026-07-20", provider_outcome["selected_scene_family"])]
+        assert recorded == [("2026-07-20", "2026-07-20", provider_outcome["selected_scene_family"])]
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        evaluated = []
+        recorded = []
+        events: list[str] = []
+
+        def evaluate_fallback(path, **kwargs):
+            evaluated.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return _duplicate(accepted=True, reason="accepted", distance=20)
+
+        def record_fallback(**kwargs):
+            recorded.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return {"sha256": "b" * 64, "scene_family": kwargs["scene_family"]}
+
+        fallback_outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=evaluate_fallback,
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: 202,
+            record=record_fallback,
+        )
+        assert fallback_outcome["backend"] == "local_informative_cover"
+        assert evaluated == [("2026-07-20", "2026-07-20", "local_informative_cover")]
+        assert recorded == [("2026-07-20", "2026-07-20", "local_informative_cover")]
+
+
 def pollinations_failure_uses_cover_and_text_once() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -419,8 +490,6 @@ def storm_and_precipitation_truth_are_independent() -> None:
              "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
         ),
         "thunderstorm_without_rain": (
-            # ⛈/гроза is NOT "шторм": explicit_storm and storm_badge stay False,
-            # thunderstorm is True, and the derived severe_weather umbrella is True.
             base + "⛈ Гроза, без осадков.\n",
             {"explicit_storm": False, "actual_precipitation": False, "rain": False,
              "thunderstorm": True, "storm_gust": False, "storm_badge": False, "severe_weather": True},
@@ -463,10 +532,6 @@ def storm_and_precipitation_truth_are_independent() -> None:
              "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
         ),
         "dry_severe_wind": (
-            # 17.5 м/с gusts are at/above the storm threshold, so this is a
-            # gust-driven storm even without the word "шторм": storm_gust and
-            # storm_badge and severe_weather are True, but explicit_storm and
-            # thunderstorm stay False (no lightning).
             base.replace("💨 5 м/с", "💨 9 м/с • порывы до 17.5 м/с") + "Преимущественно сухо.\n",
             {"explicit_storm": False, "actual_precipitation": False, "rain": False,
              "thunderstorm": False, "storm_gust": True, "storm_badge": True, "severe_weather": True},
@@ -505,8 +570,6 @@ def storm_and_precipitation_truth_are_independent() -> None:
 
             rain_expected = expected["rain"]
             storm_expected = expected["explicit_storm"]
-            # Lightning graphics follow the thunderstorm flag, not explicit_storm:
-            # a storm-only day draws no lightning; a thunderstorm-only day does.
             thunderstorm_expected = expected["thunderstorm"]
             assert metadata["rain_graphics"] is rain_expected, name
             assert metadata["lightning_graphics"] is thunderstorm_expected, name
@@ -596,9 +659,6 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
             {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
         ),
         "negated_snow_will_not_be": (
-            # Regression: "снега не будет" was not covered by the old negation
-            # list (only "снег не ожидается" / "без снега" / etc.), so a July
-            # rain-only day picked up a phantom "снег" fact from this phrasing.
             base + "Снега не будет.\n",
             {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
         ),
@@ -663,10 +723,6 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
 
 
 def july_rain_day_with_hedged_snow_mention_has_no_snow_fact() -> None:
-    # Regression for the reported 21.07 (+17/+13 °C) cover: the text post said
-    # only "🌧 дождь" for the day, but an editorial line hedging that snow was
-    # not expected ("снега точно не будет") slipped past the old negation list
-    # and got rendered as "СНЕГ И ДОЖДЬ МЕСТАМИ" on the cover.
     message = """<b>🌅 Калининградская область завтра (21.07.2026)</b>
 ✨ VayboMeter завтра: 7.4/10 — тёплый летний день; днём дождь местами.
 🏙 Калининград — 17/13 °C • 🌧 дождь • 💨 5 м/с
@@ -683,12 +739,6 @@ def july_rain_day_with_hedged_snow_mention_has_no_snow_fact() -> None:
 
 
 def precipitation_negation_handles_modifiers_between_term_and_negation() -> None:
-    # Regression: the negation regex required the negation suffix to sit
-    # immediately after the term (single whitespace, no filler words), so
-    # hedged phrasings like "снега точно не будет" or "снега, скорее всего,
-    # не будет" slipped through as positive mentions. These lines are plain
-    # factual sentences (not "Нюанс:"-prefixed), so they exercise the negation
-    # regex itself rather than the editorial-line skip.
     cases = {
         "snow_certainly_not": ("Снега точно не будет.", {"snow": False, "actual_precipitation": False}),
         "snow_probably_not": (
@@ -707,20 +757,12 @@ def precipitation_negation_handles_modifiers_between_term_and_negation() -> None
         for flag, value in expected.items():
             assert facts[flag] is value, (name, flag, facts)
 
-    # A negation in one clause must not cancel a genuine confirmation in a
-    # different clause on the same line.
     two_clause = _factual_weather_truth("Снега не будет утром. Вечером ожидается снег.")
     assert two_clause["snow"] is True, two_clause
     assert two_clause["actual_precipitation"] is True, two_clause
 
 
 def mixed_precipitation_statements_keep_types_independent() -> None:
-    # Regression: _factual_weather_truth used a single global
-    # "precipitation_negated or precipitation_uncertain -> drop the whole
-    # clause" gate, so "Дождь будет, снега не будет." lost the real rain
-    # along with the negated snow. Each type (rain, drizzle, snow, generic
-    # precipitation) must now be evaluated independently: a negation of one
-    # type must not cancel evidence of a different type in the same clause.
     cases = {
         "rain_confirmed_snow_negated": (
             "Дождь будет, снега не будет.",
@@ -754,10 +796,6 @@ def mixed_precipitation_statements_keep_types_independent() -> None:
 
 
 def precipitation_uncertainty_binds_to_nearest_type() -> None:
-    # Regression: an uncertainty cue preceding a type ("возможна морось",
-    # "Дождь возможен") used to reach across a comma to a *following* type,
-    # so "Дождь возможен, снег ожидается." wrongly marked snow uncertain too.
-    # The cue must bind to the nearest type only.
     cases = {
         "rain_uncertain_snow_confirmed": (
             "Дождь возможен, снег ожидается.",
@@ -783,9 +821,6 @@ def precipitation_uncertainty_binds_to_nearest_type() -> None:
 
 
 def precipitation_active_exclusion_verb_is_not_negation() -> None:
-    # Regression: a bare "исключ\w*" treated "Снег исключил движение." (snow
-    # is the actor) as a negation. Only the passive participle "исключён/
-    # исключена" (the fact was removed from the forecast) denies precipitation.
     cases = {
         "rain_actor_excluded_walk": ("Дождь исключил прогулку.", {"rain": True, "actual_precipitation": True}),
         "snow_actor_excluded_traffic": ("Снег исключил движение.", {"snow": True, "actual_precipitation": True}),
@@ -801,33 +836,23 @@ def precipitation_active_exclusion_verb_is_not_negation() -> None:
 
 
 def storm_and_thunderstorm_are_independent_per_clause() -> None:
-    # explicit_storm means a confirmed "шторм" word ONLY; thunderstorm means a
-    # confirmed "гроза"/⛈ ONLY. Neither flag raises the other — a confirmed
-    # thunderstorm no longer sets explicit_storm, and a confirmed storm no
-    # longer sets thunderstorm. The umbrella "either severe phenomenon" case
-    # is the separate derived severe_weather flag.
     cases = {
-        # 1
         "storm_negated_thunderstorm_confirmed": (
             "Шторма не будет, гроза ожидается.",
             {"explicit_storm": False, "thunderstorm": True, "severe_weather": True},
         ),
-        # 2
         "thunderstorm_negated_storm_confirmed": (
             "Грозы не будет, шторм ожидается.",
             {"explicit_storm": True, "thunderstorm": False, "severe_weather": True},
         ),
-        # 3
         "storm_uncertain_thunderstorm_confirmed": (
             "Шторм возможен, гроза ожидается.",
             {"explicit_storm": False, "thunderstorm": True, "severe_weather": True},
         ),
-        # 4
         "storm_confirmed_thunderstorm_uncertain": (
             "Шторм ожидается, гроза возможна.",
             {"explicit_storm": True, "thunderstorm": False, "severe_weather": True},
         ),
-        # 5
         "storm_and_thunderstorm_both_confirmed": (
             "Шторм и гроза ожидаются.",
             {"explicit_storm": True, "thunderstorm": True, "severe_weather": True},
@@ -840,9 +865,6 @@ def storm_and_thunderstorm_are_independent_per_clause() -> None:
 
 
 def storm_and_thunderstorm_flags_drive_graphics_independently() -> None:
-    # End-to-end: metadata stores explicit_storm and thunderstorm as separate
-    # booleans, and neither raises the other's graphic — a storm-only day draws
-    # no lightning, a thunderstorm-only day does.
     from PIL import Image
 
     base = """<b>🌅 Калининградская область завтра (21.07.2026)</b>
@@ -868,7 +890,6 @@ def storm_and_thunderstorm_flags_drive_graphics_independently() -> None:
             assert weather["explicit_storm"] is expected["explicit_storm"], name
             assert weather["thunderstorm"] is expected["thunderstorm"], name
             assert weather["severe_weather"] is expected["severe_weather"], name
-            # Lightning is present iff thunderstorm, regardless of explicit_storm.
             assert metadata["lightning_graphics"] is expected["thunderstorm"], name
             with Image.open(output) as image:
                 embedded = json.loads(image.info["weather_flags"])
@@ -881,11 +902,6 @@ def storm_and_thunderstorm_flags_drive_graphics_independently() -> None:
 
 
 def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
-    # The "ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ" cover badge must fire on a confirmed storm
-    # word OR a gust at/above STORM_GUST_MS, matching format_v2 /
-    # safe_test_post / post_kld. It must NOT rely on strong_wind, which starts
-    # at 12 м/с — below the storm threshold. thunderstorm drives lightning
-    # only, never the storm badge.
     import importlib
 
     import weather_text
@@ -913,18 +929,16 @@ def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
             )
             return bool(meta["lightning_graphics"])
 
-    # A. 14 м/с, no storm word: not a storm at all, but strong_wind may be True.
     a = _facts(_wind_message(14))["weather"]
     assert a["explicit_storm"] is False
     assert a["thunderstorm"] is False
     assert a["storm_gust"] is False
     assert a["storm_badge"] is False
     assert a["severe_weather"] is False
-    assert a["strong_wind"] is True  # 14 >= 12, but below the storm threshold
+    assert a["strong_wind"] is True
     assert _has_storm_badge(_wind_message(14)) is False
     assert _lightning(_wind_message(14)) is False
 
-    # B. 15 м/с at the default threshold of 15: gust-driven storm, no lightning.
     b = _facts(_wind_message(15))["weather"]
     assert b["explicit_storm"] is False
     assert b["thunderstorm"] is False
@@ -934,9 +948,6 @@ def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
     assert _has_storm_badge(_wind_message(15)) is True
     assert _lightning(_wind_message(15)) is False
 
-    # C/D. Raise the threshold to 16 and reload the shared module: 15 м/с is no
-    # longer a storm, 16 м/с is. The cover reads the threshold live from
-    # weather_text, so no reload of kld_informative_cover is required.
     old_value = os.environ.get("STORM_GUST_MS")
     try:
         os.environ["STORM_GUST_MS"] = "16"
@@ -960,8 +971,6 @@ def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
         importlib.reload(weather_text)
         assert weather_text.STORM_GUST_MS == (float(old_value) if old_value is not None else 15.0)
 
-    # E. Thunderstorm, weak wind: thunderstorm + severe_weather + lightning, but
-    # no storm word and no storm badge.
     thunder_msg = (
         "<b>🌅 Калининградская область завтра (21.07.2026)</b>\n"
         "🏙 Калининград — 20/14 °C • 💨 4 м/с\n"
@@ -977,7 +986,6 @@ def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
     assert _has_storm_badge(thunder_msg) is False
     assert _lightning(thunder_msg) is True
 
-    # F. Storm word, weak wind, no thunderstorm: storm badge, no lightning.
     storm_msg = (
         "<b>🌅 Калининградская область завтра (21.07.2026)</b>\n"
         "🏙 Калининград — 20/14 °C • 💨 4 м/с\n"
@@ -1578,6 +1586,7 @@ def stable_horde_backend_has_offline_success_and_url_safety() -> None:
 
 
 TESTS = [
+    visual_target_date_propagates_through_provider_and_fallback,
     pollinations_failure_uses_cover_and_text_once,
     exact_duplicates_are_nonfatal_and_text_once,
     send_photo_failure_does_not_record_history_and_text_once,
