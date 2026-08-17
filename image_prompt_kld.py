@@ -738,8 +738,6 @@ def _target_date_for(date_key: str, post_type: str) -> str:
     base = _date_from_key(date_key)
     if not base:
         return date_key
-    if (post_type or "").strip().lower() == "evening":
-        return (base + dt.timedelta(days=1)).isoformat()
     return base.isoformat()
 
 
