@@ -39,12 +39,14 @@ sys.modules.setdefault("pendulum", pendulum_stub)
 
 from image_prompt_kld import (  # noqa: E402
     KLD_SCENE_FAMILIES,
+    _extract_prompt_date,
     build_kld_evening_prompt,
     kld_lunar_prompt_diagnostics,
     kld_scene_metadata,
     kld_visual_cache_key,
 )
 from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
+from kld_visual_policy import SUMMER_VEGETATION_CUE, finalize_kld_provider_prompt  # noqa: E402
 from post_kld import _extract_storm_warning  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues  # noqa: E402
@@ -1196,7 +1198,7 @@ def run_scene_retry_and_cache_key_cases() -> None:
     for field in (
         "region=kld",
         "forecast_date=2026-07-05",
-        "target_date=2026-07-06",
+        "target_date=2026-07-05",
         "post_type=evening",
         "prompt_version=",
         "scene_family=",
@@ -1213,6 +1215,73 @@ def run_scene_retry_and_cache_key_cases() -> None:
         "variation_attempt=1",
     ):
         _assert_contains(name, key, field)
+
+    production_evening = "\n".join(
+        [
+            "<b>🌅 Калининградская область завтра (20.07.2026)</b>",
+            CASES[0]["message"],
+        ]
+    )
+    evening_date_key = _extract_prompt_date(production_evening, dt.date(2026, 7, 19))
+    _assert_equal(name, "evening extracted date", evening_date_key, "2026-07-20")
+    evening_ctx = build_visual_context(production_evening, post_type="evening")
+    evening_meta = kld_scene_metadata(
+        evening_ctx,
+        date_key=evening_date_key,
+        post_type="evening",
+        source_text=production_evening,
+    )
+    _assert_equal(name, "evening forecast date", evening_meta["forecast_date"], "2026-07-20")
+    _assert_equal(name, "evening target date", evening_meta["target_date"], "2026-07-20")
+
+    production_morning = "\n".join(
+        [
+            "<b>🌅 Калининградская область сегодня (20.07.2026)</b>",
+            CASES[0]["message"],
+        ]
+    )
+    morning_date_key = _extract_prompt_date(production_morning, dt.date(2026, 7, 20))
+    _assert_equal(name, "morning extracted date", morning_date_key, "2026-07-20")
+    morning_ctx = build_visual_context(production_morning, post_type="morning")
+    morning_meta = kld_scene_metadata(
+        morning_ctx,
+        date_key=morning_date_key,
+        post_type="morning",
+        source_text=production_morning,
+    )
+    _assert_equal(name, "morning forecast date", morning_meta["forecast_date"], "2026-07-20")
+    _assert_equal(name, "morning target date", morning_meta["target_date"], "2026-07-20")
+
+    boundary_prompt = "\n".join(
+        [
+            "Create a photorealistic KLD weather scene.",
+            "Palette: cool Baltic grey-blue.",
+            "Text restrictions: no text.",
+        ]
+    )
+    for display_date, summer_expected in (("31.08.2026", True), ("01.09.2026", False)):
+        boundary_message = display_date + "\n" + CASES[0]["message"]
+        boundary_date_key = _extract_prompt_date(boundary_message)
+        boundary_ctx = build_visual_context(boundary_message, post_type="evening")
+        boundary_meta = kld_scene_metadata(
+            boundary_ctx,
+            date_key=boundary_date_key,
+            post_type="evening",
+            source_text=boundary_message,
+        )
+        _assert_equal(name, f"{display_date} forecast date", boundary_meta["forecast_date"], boundary_date_key)
+        _assert_equal(name, f"{display_date} target date", boundary_meta["target_date"], boundary_date_key)
+        finalized = finalize_kld_provider_prompt(
+            boundary_prompt,
+            metadata=boundary_meta,
+            date_key=boundary_date_key,
+        )
+        _assert_equal(
+            name,
+            f"{display_date} summer policy",
+            SUMMER_VEGETATION_CUE in finalized,
+            summer_expected,
+        )
 
     prompt0, style0 = build_kld_evening_prompt(
         dt.date(2026, 7, 5),

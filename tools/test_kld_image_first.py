@@ -177,6 +177,77 @@ def _orchestrate(
     return outcome, events
 
 
+def visual_target_date_propagates_through_provider_and_fallback() -> None:
+    visibility = {
+        "visibility_condition": "reduced_visibility",
+        "morning_min_visibility_m": 5500,
+        "reported_visibility_threshold_m": 6000,
+    }
+    payload = build_payload(MESSAGE, "test", post_type="evening", visibility_context=visibility)
+    metadata = payload["metadata"]
+    assert metadata["forecast_date"] == "2026-07-20"
+    assert metadata["target_date"] == "2026-07-20"
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        evaluated: list[tuple[str, str, str]] = []
+        recorded: list[tuple[str, str, str]] = []
+
+        def evaluate(path, **kwargs):
+            evaluated.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return _duplicate(accepted=True, reason="accepted", distance=20)
+
+        def record(**kwargs):
+            recorded.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return {"sha256": "b" * 64, "scene_family": kwargs["scene_family"]}
+
+        provider_outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: _image(root / "provider.png"),
+            evaluate=evaluate,
+            cover_renderer=_cover_renderer([]),
+            send_photo=lambda *args, **kwargs: 201,
+            record=record,
+        )
+        assert provider_outcome["backend"] == "pollinations"
+        assert evaluated == [("2026-07-20", "2026-07-20", provider_outcome["selected_scene_family"])]
+        assert recorded == [("2026-07-20", "2026-07-20", provider_outcome["selected_scene_family"])]
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        evaluated = []
+        recorded = []
+        events: list[str] = []
+
+        def evaluate_fallback(path, **kwargs):
+            evaluated.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return _duplicate(accepted=True, reason="accepted", distance=20)
+
+        def record_fallback(**kwargs):
+            recorded.append(
+                (str(kwargs["date_value"]), str(kwargs["target_date"]), str(kwargs["scene_family"]))
+            )
+            return {"sha256": "b" * 64, "scene_family": kwargs["scene_family"]}
+
+        fallback_outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=evaluate_fallback,
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: 202,
+            record=record_fallback,
+        )
+        assert fallback_outcome["backend"] == "local_informative_cover"
+        assert evaluated == [("2026-07-20", "2026-07-20", "local_informative_cover")]
+        assert recorded == [("2026-07-20", "2026-07-20", "local_informative_cover")]
+
+
 def pollinations_failure_uses_cover_and_text_once() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1578,6 +1649,7 @@ def stable_horde_backend_has_offline_success_and_url_safety() -> None:
 
 
 TESTS = [
+    visual_target_date_propagates_through_provider_and_fallback,
     pollinations_failure_uses_cover_and_text_once,
     exact_duplicates_are_nonfatal_and_text_once,
     send_photo_failure_does_not_record_history_and_text_once,
