@@ -41,5 +41,12 @@ Read only the smallest source needed for the task.
 - Weather/AQI/sea/pollen/astro/FX/radiation/Schumann issues: open only the corresponding collector/module and targeted tests.
 - Large generated data, old branches, old PRs, historical Telegram snapshots, and unrelated workflows are on-demand evidence, not startup context.
 
+## AI execution routing
+
+- Use ordinary ChatGPT with direct repository tools by default.
+- Do not use ChatGPT Work for ordinary code review, CI diagnosis, PR handling, or repository writes when direct tools already support the required action.
+- Use Work only for substantial external UI/browser execution that direct tools cannot perform.
+- Use another model only for a defined independent review of a non-trivial safety, weather, publication, or architecture decision; do not duplicate routine tasks across models.
+
 ## Sibling-repository rule
 Do not assume Kaliningrad and Cyprus implementations are identical. When a task spans both regions, read the sibling repo's own `AGENTS.md` and `PROJECT_STATE.md` and verify parity explicitly.
