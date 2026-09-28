@@ -1100,6 +1100,44 @@ def kld_evening_production_ranks_coolest_nights_by_tmin() -> None:
     assert [line.split(":", 1)[0] for line in lines[cold_index + 1:cold_index + 4]] == ["• D", "• B", "• C"]
 
 
+
+def kld_numeric_wind_parser_keeps_average_and_gust_separate() -> None:
+    text = "Погода: 🏙️ Калининград — 21/16 °C • 💨 1 м/с • порывы до 5 м/с."
+    assert weather_text.extract_max_average_wind_ms(text) == 1
+    assert weather_text.extract_max_gust_ms(text) == 5
+    assert weather_text.extract_max_wind_ms(text) == 5
+
+    ranged = "💨 Ветер: 3–5 м/с, порывы до 7 м/с"
+    assert weather_text.extract_max_average_wind_ms(ranged) == 5
+    assert weather_text.extract_max_gust_ms(ranged) == 7
+
+
+def kld_evening_weak_wind_and_gust_are_not_promoted() -> None:
+    source = _wind_gust_evening(1, 5)
+    text = build_evening_format_v2("Калининградская область", source)
+    low = text.lower()
+
+    flags = format_v2._evening_flags(source.splitlines(), storm="")
+    assert flags["wind"] is False
+    assert flags["max_wind"] == 1
+    assert flags["max_gust"] == 5
+    assert "главный фактор — ветер и порывы" not in low
+    assert "⚠️ нюанс: на побережье ощущение меняют порывы" not in low
+    plan = next(line for line in text.splitlines() if line.startswith("✅ План завтра:"))
+    assert "ветр" not in plan.lower()
+    assert "порыв" not in plan.lower()
+
+
+def kld_evening_meaningful_gust_remains_actionable() -> None:
+    source = _wind_gust_evening(2, 10)
+    text = build_evening_format_v2("Калининградская область", source)
+    flags = format_v2._evening_flags(source.splitlines(), storm="")
+    assert flags["wind"] is True
+    assert flags["storm"] is False
+    assert "ветер" in text.lower() or "порыв" in text.lower()
+    assert "защищён" in next(line for line in text.splitlines() if line.startswith("✅ План завтра:")).lower()
+
+
 def main() -> None:
     checks = (
         kld_evening_normal_no_generic_confidence,
@@ -1145,6 +1183,9 @@ def main() -> None:
         kld_astro_cleanup_drops_long_synthetic_ellipsis_line,
         kld_evening_score_accounts_for_daytime_heat_from_30_c,
         kld_evening_score_preserves_moderate_non_heat_contract,
+        kld_numeric_wind_parser_keeps_average_and_gust_separate,
+        kld_evening_weak_wind_and_gust_are_not_promoted,
+        kld_evening_meaningful_gust_remains_actionable,
         kld_evening_production_ranks_coolest_nights_by_tmin,
     )
     for check in checks:

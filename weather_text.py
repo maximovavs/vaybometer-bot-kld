@@ -28,6 +28,7 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 # gust, never on average wind. WIND is any "N м/с" number (average or gust),
 # used for the softer windy / water-caution / comfort cues.
 _GUST_MS_RE = re.compile(r"порыв\w*\s*(?:до\s*)?(-?\d+(?:[.,]\d+)?)\s*м\s*/?\s*с", re.IGNORECASE)
+_GUST_SPAN_RE = re.compile(r"порыв\w*\s*(?:до\s*)?-?\d+(?:[.,]\d+)?\s*м\s*/?\s*с", re.IGNORECASE)
 _WIND_MS_RE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*м\s*/?\s*с", re.IGNORECASE)
 
 
@@ -47,6 +48,15 @@ def extract_max_gust_ms(text: str) -> float | None:
     Plain average wind ("ветер 16 м/с", "💨 16 м/с", "16 м/с") returns None
     here — it is never a gust, so it never drives the storm threshold."""
     return _max_ms(_GUST_MS_RE, text)
+
+
+def extract_max_average_wind_ms(text: str) -> float | None:
+    """Max non-gust wind in m/s.
+
+    Explicit "порыв … N м/с" spans are removed before scanning, so factual
+    average wind and explicit gust remain separate signals."""
+    without_gusts = _GUST_SPAN_RE.sub("", str(text or ""))
+    return _max_ms(_WIND_MS_RE, without_gusts)
 
 
 def extract_max_wind_ms(text: str) -> float | None:
@@ -155,6 +165,7 @@ def has_confirmed_storm_word(text: str) -> bool:
 __all__ = [
     "STORM_GUST_MS",
     "extract_max_gust_ms",
+    "extract_max_average_wind_ms",
     "extract_max_wind_ms",
     "split_clauses",
     "STORM_WORD_RE",

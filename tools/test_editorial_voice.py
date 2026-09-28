@@ -209,6 +209,34 @@ def test_safe_dry_uncertainty_text_selects_warm_uv_not_rain() -> None:
     assert "ветер/осадки лучше проверить утром" in text
 
 
+
+def test_safe_weak_wind_no_uv_does_not_select_windy_or_uv_voice() -> None:
+    source = SAFE_WINDY.replace(
+        "Погода: 🏙️ Калининград — 23/17 °C • ясно • 💨 4 м/с • порывы до 10 м/с.",
+        "Погода: 🏙️ Калининград — 23/17 °C • ясно • 💨 1 м/с • порывы до 5 м/с.",
+    ).replace("☀️ УФ 4 — умеренный.\n", "")
+    text = _apply_editorial_voice(source, "morning")
+    line = _voice_line(text, "💬 По-человечески:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(KLD_VARIANTS, "WARM")
+    assert phrase not in _phrases(KLD_VARIANTS, "WINDY_BALTIC")
+    assert "уф" not in phrase.lower()
+    assert "защит" not in phrase.lower()
+
+
+def test_safe_warm_without_uv_never_emits_high_uv_voice() -> None:
+    source = SAFE_WARM_UV.replace("☀️ УФ 7 — высокий.\n", "").replace(
+        "✨ VayboMeter: 7.9/10 — с оговорками; тёплый день и высокий УФ.",
+        "✨ VayboMeter: 8.2/10 — хороший тёплый день.",
+    )
+    text = _apply_editorial_voice(source, "morning")
+    line = _voice_line(text, "💬 По-человечески:")
+    phrase = line.split(": ", 1)[1]
+    assert phrase in _phrases(KLD_VARIANTS, "WARM")
+    assert "уф" not in phrase.lower()
+    assert "защит" not in phrase.lower()
+
+
 def test_safe_actual_rain_selects_rain_windows() -> None:
     text = _apply_editorial_voice(SAFE_ACTUAL_RAIN_EVENING, "evening")
     line = _voice_line(text, "💬 Настрой на завтра:")
@@ -259,6 +287,8 @@ def main() -> None:
         test_safe_low_wind_high_uv_selects_warm_uv,
         test_safe_gust_10_selects_windy_baltic,
         test_safe_dry_uncertainty_text_selects_warm_uv_not_rain,
+        test_safe_weak_wind_no_uv_does_not_select_windy_or_uv_voice,
+        test_safe_warm_without_uv_never_emits_high_uv_voice,
         test_safe_actual_rain_selects_rain_windows,
         test_evening_output_has_one_human_line_and_keeps_facts,
         test_weekly_output_contains_meaning_block_and_keeps_facts,

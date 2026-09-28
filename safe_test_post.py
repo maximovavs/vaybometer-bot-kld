@@ -292,14 +292,18 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     if visibility in {"dust_haze", "mixed_visibility"}:
         return "✅ План: утром проверить воздух и дальность обзора; прогулку скорректировать по факту."
 
-    if (isinstance(tmax, (int, float)) and tmax >= 35) or (
-        isinstance(tmax, (int, float)) and tmax >= 28 and isinstance(uv, (int, float)) and uv >= 6
-    ):
+    if isinstance(tmax, (int, float)) and tmax >= 35 and isinstance(uv, (int, float)) and uv >= 6:
+        return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
+    if isinstance(tmax, (int, float)) and tmax >= 35:
+        return "✅ План: дела и прогулка утром/вечером; днём — вода, тень и короткие выходы."
+    if isinstance(tmax, (int, float)) and tmax >= 28 and isinstance(uv, (int, float)) and uv >= 6:
         return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
     if isinstance(tmax, (int, float)) and 25 <= tmax < 28 and isinstance(uv, (int, float)) and uv >= 6:
         return "✅ План: дела и прогулка утром/вечером; днём — SPF, вода, тень и паузы."
     if isinstance(uv, (int, float)) and uv >= 6:
-        return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер."
+        if windy:
+            return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка, у воды учитывать ветер."
+        return "✅ План: прогулка в удобное окно; днём — SPF, очки/кепка и короткие паузы в тени."
     if has_rain and windy:
         return "✅ План: дождевик и закрытая обувь; у моря выбирать защищённый маршрут."
     if has_rain:
@@ -308,8 +312,6 @@ def _kld_smart_plan_line(v2_text: str) -> str:
         return "✅ План: прогулку лучше утром/вечером; днём — вода и тень, у воды учитывать ветер."
     if windy:
         return "✅ План: ветровка/слой; прогулку лучше в защищённых местах."
-    if isinstance(uv, (int, float)) and uv >= 6:
-        return "✅ План: очки/кепка и SPF; прогулка в лучшее окно; вечером взять лёгкий слой."
     return ""
 
 
@@ -368,7 +370,9 @@ def _kld_score_line(v2_text: str) -> str:
     score = max(1.0, min(10.0, score))
     if isinstance(tmax, (int, float)) and tmax >= 35:
         score = min(score, 7.9)
-        return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
+        if isinstance(uv, (int, float)) and uv >= 6:
+            return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара и высокий УФ."
+        return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; жара."
     if isinstance(uv, (int, float)) and uv >= 6:
         score = min(score, 7.9)
         if isinstance(tmax, (int, float)) and tmax >= 28:
@@ -377,7 +381,14 @@ def _kld_score_line(v2_text: str) -> str:
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; тёплый день и высокий УФ."
         if visibility != "clear":
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и {visibility_reason(visibility)}."
-        return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
+        windy = (
+            isinstance(gust, (int, float)) and gust >= 7
+        ) or (
+            isinstance(wind, (int, float)) and wind >= 3
+        )
+        if windy:
+            return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
+        return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ."
     label = _score_label(score)
     if has_rain and isinstance(gust, (int, float)) and gust >= 8:
         return f"✨ VayboMeter: {score:.1f}/10 — {label}; дождь и порывы снижают комфорт."
@@ -392,6 +403,7 @@ def _kld_evening_score_line(v2_text: str) -> str:
     low = text.lower()
     conditions = _kld_conditions(v2_text)
     max_t = conditions.get("tmax")
+    wind = conditions.get("wind")
     cold_temps = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*°", text)
     cold_max = max(cold_temps) if cold_temps else None
     # storm gust via the single shared parser: only "порыв …", never avg wind.
@@ -413,7 +425,9 @@ def _kld_evening_score_line(v2_text: str) -> str:
             score -= 1.0; reasons.append("порывы")
         elif max_gust >= 7:
             score -= 0.6; reasons.append("ветер у воды")
-    elif "ветер" in low or "порыв" in low:
+    elif isinstance(wind, (int, float)) and wind >= 6:
+        score -= 0.8; reasons.append("ветер у воды")
+    elif isinstance(wind, (int, float)) and wind >= 3:
         score -= 0.4; reasons.append("ветер у воды")
     if isinstance(max_t, (int, float)):
         if max_t >= 35:
@@ -621,6 +635,7 @@ def _apply_score_conclusion(v2_text: str) -> str:
 
 def _kld_main_nuance(v2_text: str) -> str:
     v2_text = _weather_only_text(v2_text)
+    c = _kld_conditions(v2_text)
     low = (_score_reasons(v2_text) + " " + _plain(v2_text)).lower()
     visibility = visibility_condition_from_text(v2_text)
     if visibility in {"dense_fog", "fog"}:
@@ -629,9 +644,15 @@ def _kld_main_nuance(v2_text: str) -> str:
         return "⚠️ Главный нюанс: утром обзор местами короче обычного; на дорогах держать запас дистанции."
     if visibility in {"dust_haze", "mixed_visibility"}:
         return "⚠️ Главный нюанс: утром воздух и дальняя видимость могут быть хуже обычного."
-    precip = any(x in low for x in ("осадки", "морось", "дожд"))
+    precip = _has_actual_precipitation(v2_text)
     cool = any(x in low for x in ("прохлад", "свеж"))
-    wind = any(x in low for x in ("порыв", "ветер"))
+    gust = c.get("gust")
+    wind_ms = c.get("wind")
+    wind = (
+        isinstance(gust, (int, float)) and gust >= 7
+    ) or (
+        isinstance(wind_ms, (int, float)) and wind_ms >= 3
+    )
     if precip and cool and wind:
         return "⚠️ Главный нюанс: морось, свежий ветер и прохладное побережье."
     if precip and cool:
@@ -679,14 +700,13 @@ def _kld_voice_conditions(v2_text: str) -> dict[str, object]:
         winds.append(float(c["wind"]))
     max_gust = max(gusts) if gusts else None
     max_wind = max(winds) if winds else None
-    explicit_strong_wind = bool(re.search(r"сильный ветер|шторм|резкие порывы", text, flags=re.I))
     return {
         "max_temp": c.get("tmax"),
         "uv": c.get("uv"),
         "uv_high": isinstance(c.get("uv"), (int, float)) and c["uv"] >= 6,
-        "wind": explicit_strong_wind
-        or isinstance(max_gust, (int, float)) and max_gust >= 8
+        "wind": isinstance(max_gust, (int, float)) and max_gust >= 8
         or isinstance(max_wind, (int, float)) and max_wind >= 6,
+        "wind_ms": max_wind,
         "gust": max_gust,
         "rain": _has_actual_precipitation(plain),
         "warm": isinstance(c.get("tmax"), (int, float)) and c["tmax"] >= 20,

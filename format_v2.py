@@ -13,6 +13,7 @@ from visibility_context import (
 )
 from weather_text import STORM_GUST_MS as _STORM_GUST_MS
 from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_storm
+from weather_text import extract_max_average_wind_ms as _max_average_wind_ms
 from weather_text import extract_max_gust_ms as _max_gust_ms
 from weather_text import extract_max_wind_ms as _max_wind_ms
 from weather_text import has_confirmed_storm_word as _has_explicit_storm_text
@@ -718,14 +719,21 @@ def _morning_score_reason(flags: dict[str, object], score: float) -> str:
         return "морось и порывы снижают комфорт."
     if visibility != "clear":
         return visibility_reason(visibility) + "."
-    if flags.get("heat") or (flags.get("uv_high") and flags.get("heat_word_ok")):
+    if flags.get("heat") and flags.get("uv_high"):
+        return "с оговорками; жара и высокий УФ."
+    if flags.get("heat"):
+        return "с оговорками; жара."
+    if flags.get("uv_high") and flags.get("heat_word_ok"):
         return "с оговорками; жара и высокий УФ."
     if flags.get("uv_high") and flags.get("warm_uv_day"):
         return "с оговорками; тёплый день и высокий УФ."
     if flags.get("uv_high"):
         return "с оговорками; высокий УФ."
     if flags.get("windy"):
-        return "порывы требуют поправки на маршрут."
+        gust = flags.get("gust")
+        if isinstance(gust, (int, float)) and gust >= 7:
+            return "порывы требуют поправки на маршрут."
+        return "ветер требует поправки на маршрут."
     return _morning_score_label(score) + "."
 
 
@@ -752,7 +760,7 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
         effective_lines.append(line)
     text = "\n".join(effective_lines)
     max_temp = _max_temperature_c(text)
-    max_wind = _max_wind_ms(text)
+    max_wind = _max_average_wind_ms(text)
     # storm_gust keys on the actual gust ("порыв …"), never on average wind:
     # "ветер 16 м/с, порывы до 14 м/с" is NOT a storm (gust 14 < threshold).
     max_gust = _max_gust_ms(text)
@@ -768,7 +776,11 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
         "max_wind": max_wind,
         "max_gust": max_gust,
         "storm_gust": storm_gust,
-        "wind": _has_any(text, ("порыв", "сильный ветер", "шторм")) or (isinstance(max_wind, (int, float)) and max_wind >= 8),
+        "wind": (
+            isinstance(max_gust, (int, float)) and max_gust >= 7
+        ) or (
+            isinstance(max_wind, (int, float)) and max_wind >= 3
+        ),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
         "contrast": _has_any(text, ("тёплые города", "холодные города", "восток", "внутри области", "контраст")) or (isinstance(max_temp, (int, float)) and max_temp >= 25),
         "local": _has_any(text, ("локаль", "местами", "неравномер", "по области", "проверить утром")),
@@ -801,7 +813,7 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
         return "🧭 Главное завтра: день ощущается свежим, особенно у открытой воды."
     if score_line:
         reason = re.sub(r"^.*?—\s*", "", score_line).strip(" .")
-        if reason:
+        if reason and not (_has_wind_claim(reason) and not flags.get("wind")):
             return "🧭 Главное завтра: " + reason[0].lower() + reason[1:] + "."
     return "🧭 Главное завтра: спокойный областной день без резких погодных акцентов."
 
@@ -868,7 +880,7 @@ def _evening_plan(flags: dict[str, bool]) -> str:
         return "✅ План завтра: у моря выбирать защищённые променады и сверить порывы утром."
     if flags["contrast"]:
         return "✅ План завтра: не усреднять область — берег, город и восток проверить отдельно."
-    return "✅ План завтра: обычные дела и прогулки, с короткой проверкой ветра у воды утром."
+    return "✅ План завтра: обычные дела и прогулки без специальных погодных ограничений."
 
 
 def _limit_warm_cold(lines: list[str], per_group: int = 3) -> list[str]:
@@ -1041,6 +1053,10 @@ def _clean_morning_weather_line(line: str) -> str:
     return s
 
 
+def _has_wind_claim(text: str) -> bool:
+    return bool(re.search(r"\bветер\w*|\bпорыв\w*", _plain(text), flags=re.I))
+
+
 def _clean_evening_score_line(line: str, flags: dict[str, bool]) -> str:
     s = str(line or "").strip()
     if flags.get("storm"):
@@ -1058,6 +1074,11 @@ def _clean_evening_score_line(line: str, flags: dict[str, bool]) -> str:
         s = re.sub(r"—\s*хорошо\b[^.\n]*\.?", "— жарко; у моря порывы.", s, flags=re.I)
     elif flags.get("heat"):
         s = re.sub(r"—\s*отлично\b[^.\n]*\.?", "— днём жарко; активность лучше утром/вечером.", s, flags=re.I)
+    if not flags.get("wind") and _has_wind_claim(s):
+        m = re.search(r"(\d+(?:[\.,]\d+)?)/10", s)
+        if m:
+            score = float(m.group(1).replace(",", "."))
+            s = re.sub(r"—\s*[^.\n]*\.?", f"— {_morning_score_label(score)}.", s, flags=re.I)
     return s
 
 
@@ -1092,7 +1113,8 @@ def _morning_core_weather_available(weather_line: str) -> bool:
 def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
     text = "\n".join(lines)
     max_temp = _max_temperature_c(text)
-    max_wind = _max_wind_ms(text)
+    max_average_wind = _max_average_wind_ms(text)
+    max_gust = _max_gust_ms(text)
     uv = _uv_value(uv_line)
     kal_tmax, kal_tmin = _morning_kaliningrad_temps(lines)
     rain = _has_actual_precipitation(text)
@@ -1105,8 +1127,10 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
             wind_avg = float(m_wind.group(1).replace(",", "."))
         except Exception:
             wind_avg = None
-    windy = _has_any(text, ("порыв", "сильный ветер", "шторм")) or (
-        isinstance(max_wind, (int, float)) and max_wind >= 8
+    windy = (
+        isinstance(max_gust, (int, float)) and max_gust >= 7
+    ) or (
+        isinstance(max_average_wind, (int, float)) and max_average_wind >= 3
     )
     visibility_condition = visibility_condition_from_text(text)
     aqi_match = re.search(r"\bAQI\s*(\d+(?:[\.,]\d+)?)", _plain(text), flags=re.I)
@@ -1128,7 +1152,7 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
         "drizzle": drizzle and not rain,
         "max_temp": kal_tmax if isinstance(kal_tmax, (int, float)) else max_temp,
         "min_temp": kal_tmin,
-        "gust": max_wind,
+        "gust": max_gust,
         "wind_ms": wind_avg,
         "uv": uv,
         "visibility_condition": visibility_condition,
@@ -1140,16 +1164,24 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
 def _kld_voice_conditions(lines: list[str], *, flags: dict[str, bool] | None = None, uv_line: str = "") -> dict[str, object]:
     text = "\n".join(lines)
     max_temp = _max_temperature_c(text)
-    max_wind = _max_wind_ms(text)
+    max_wind = _max_average_wind_ms(text)
+    max_gust = _max_gust_ms(text)
     source_flags = flags or {}
-    uv = _uv_value(uv_line or text)
+    source_uv = source_flags.get("uv")
+    uv = float(source_uv) if isinstance(source_uv, (int, float)) else _uv_value(uv_line)
+    wind_signal = bool(source_flags.get("wind")) or (
+        isinstance(max_gust, (int, float)) and max_gust >= 7
+    ) or (
+        isinstance(max_wind, (int, float)) and max_wind >= 3
+    )
     return {
         "max_temp": source_flags.get("max_temp", max_temp),
         "uv": uv,
         "uv_high": bool(source_flags.get("uv_high")) or isinstance(uv, (int, float)) and uv >= 6,
         "warm": bool(source_flags.get("warm") or source_flags.get("warm_uv_day") or source_flags.get("temp_high")),
-        "wind": bool(source_flags.get("wind")) or isinstance(max_wind, (int, float)) and max_wind >= 8,
-        "gust": max_wind,
+        "wind": wind_signal,
+        "wind_ms": max_wind,
+        "gust": max_gust,
         "rain": bool(source_flags.get("rain")) or _has_actual_precipitation(text),
     }
 
@@ -1160,6 +1192,13 @@ def _morning_score_line(source: str, flags: dict[str, bool]) -> str:
     if source:
         s = source.strip()
         s = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", s, flags=re.I)
+        if not flags.get("windy") and _has_wind_claim(s):
+            s = re.sub(
+                r"—\s*[^.\n]*\.?",
+                f"— {_morning_score_label(score)}.",
+                s,
+                flags=re.I,
+            )
         if flags.get("rain") or flags.get("drizzle") or flags.get("visibility_alert") or (
             flags.get("windy") and not (flags.get("heat") or flags.get("uv_high"))
         ):
@@ -1169,7 +1208,21 @@ def _morning_score_line(source: str, flags: dict[str, bool]) -> str:
                 s,
                 flags=re.I,
             )
-        elif flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
+        elif flags["heat"] and flags["uv_high"]:
+            s = re.sub(
+                r"—\s*[^.\n]*\.?",
+                "— с оговорками; жара и высокий УФ.",
+                s,
+                flags=re.I,
+            )
+        elif flags["heat"]:
+            s = re.sub(
+                r"—\s*[^.\n]*\.?",
+                "— с оговорками; жара.",
+                s,
+                flags=re.I,
+            )
+        elif flags["uv_high"] and flags.get("heat_word_ok"):
             s = re.sub(
                 r"—\s*[^.\n]*\.?",
                 "— с оговорками; жара и высокий УФ.",
@@ -1208,6 +1261,13 @@ def _morning_best_window_line(source: str, flags: dict[str, bool]) -> str:
     return _valid_best_window_line(source)
 
 
+def _ground_morning_source_wind_line(source: str, flags: dict[str, bool]) -> str:
+    s = str(source or "").strip()
+    if s and _has_wind_claim(s) and not flags.get("windy"):
+        return ""
+    return s
+
+
 def _morning_main_nuance_line(source: str, warning: str, flags: dict[str, bool]) -> str:
     visibility = str(flags.get("visibility_condition") or "clear")
     if visibility in {"dense_fog", "fog"}:
@@ -1216,8 +1276,9 @@ def _morning_main_nuance_line(source: str, warning: str, flags: dict[str, bool])
         return "⚠️ Главный нюанс: утром обзор местами короче обычного; на дорогах держать запас дистанции."
     if visibility in {"dust_haze", "mixed_visibility"}:
         return "⚠️ Главный нюанс: утром воздух и дальняя видимость могут быть хуже обычного."
-    if source:
-        return source.strip()
+    grounded_source = _ground_morning_source_wind_line(source, flags)
+    if grounded_source:
+        return grounded_source
     if flags.get("windy"):
         return "⚠️ Главный нюанс: у воды порывы ощущаются сильнее, чем в городе."
     if flags["heat"] and flags["uv_high"]:
@@ -1241,7 +1302,11 @@ def _morning_plan_line(lines: list[str], flags: dict[str, bool], has_warning: bo
         return "✅ План: дождевик и закрытая обувь; у моря выбирать защищённый маршрут."
     if flags.get("rain") or flags.get("drizzle"):
         return "✅ План: дождевик или зонт, закрытая обувь; дела лучше короткими выходами."
-    if flags["heat"] or (flags["uv_high"] and flags.get("heat_word_ok")):
+    if flags["heat"] and flags["uv_high"]:
+        return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
+    if flags["heat"]:
+        return "✅ План: дела и прогулка утром/вечером; днём — вода, тень и короткие выходы."
+    if flags["uv_high"] and flags.get("heat_word_ok"):
         return "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
     if flags["uv_high"] and flags.get("warm_uv_day"):
         return "✅ План: дела и прогулка утром/вечером; днём — SPF, вода, тень и паузы."
@@ -1367,6 +1432,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
     flags = _morning_flags(weather_lines, uv_line)
+    scenario = _ground_morning_source_wind_line(scenario, flags)
 
     has_warning = bool(warning)
     has_rain = _has_actual_precipitation("\n".join(weather_lines))
