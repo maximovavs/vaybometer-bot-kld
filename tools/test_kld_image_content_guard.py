@@ -45,6 +45,31 @@ def _write_screen_like(path: Path) -> bool:
     return True
 
 
+
+def _write_provider_branding(path: Path) -> bool:
+    Image, ImageDraw = _require_pillow()
+    if Image is None:
+        return False
+    image = Image.new("RGB", (512, 512), color=(70, 110, 140))
+    draw = ImageDraw.Draw(image)
+    icon_x = 335
+    for dx, dy, width, height in (
+        (0, 2, 5, 5),
+        (7, -3, 5, 5),
+        (7, 7, 5, 5),
+        (14, 2, 5, 5),
+    ):
+        draw.rectangle(
+            (icon_x + dx, 487 + dy, icon_x + dx + width, 487 + dy + height),
+            fill=(245, 245, 245),
+        )
+    x = 365
+    for width in (3, 5, 4, 5, 3, 5, 4, 5, 3, 5, 4, 5, 3, 5, 4, 5):
+        draw.rectangle((x, 490, x + width, 499), fill=(245, 245, 245))
+        x += width + 3
+    image.save(path)
+    return True
+
 def _write_landscape_like(path: Path) -> bool:
     Image, ImageDraw = _require_pillow()
     if Image is None:
@@ -116,6 +141,19 @@ def kld_guard_rejects_dense_top_ui_band() -> None:
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
+
+
+def kld_guard_rejects_provider_branding_watermark() -> None:
+    root = _tmpdir()
+    try:
+        path = root / "provider-branding.png"
+        if not _write_provider_branding(path):
+            return
+        verdict = inspect_kld_provider_image(path)
+        assert verdict.valid is False
+        assert verdict.reason == "provider_branding_watermark"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 def kld_guard_accepts_simple_landscape() -> None:
     root = _tmpdir()
@@ -459,6 +497,7 @@ def kld_local_cover_bypasses_provider_content_guard() -> None:
 
 TESTS = [
     kld_guard_rejects_dense_top_ui_band,
+    kld_guard_rejects_provider_branding_watermark,
     kld_guard_accepts_simple_landscape,
     kld_guard_rejects_summer_dry_steppe_without_baltic,
     kld_guard_rejects_august_snow_covered_promenade,

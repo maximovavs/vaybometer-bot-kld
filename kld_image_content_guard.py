@@ -7,7 +7,8 @@ outputs plus narrow geographic/seasonal failures that can be established from
 image structure without an external vision service: a dry golden steppe
 replacing living summer vegetation, a land-only frame for a scene whose
 defining feature is open Baltic water, and a broad snow/ice-like lower-ground
-surface during Baltic summer. Sand, wood, reeds, sea foam, light stone and
+surface during Baltic summer, and high-confidence bottom-right provider
+branding/watermark geometry. Sand, wood, reeds, sea foam, light stone and
 autumn colour are protected by season, geometry and colour-context checks.
 """
 from __future__ import annotations
@@ -231,6 +232,114 @@ def _is_summer(value: str | dt.date | None) -> bool:
         return False
 
 
+
+_BRANDING_SAMPLE_WIDTH = 344
+_BRANDING_SAMPLE_HEIGHT = 83
+_BRANDING_MIN_COMPONENTS = 12
+_BRANDING_MIN_BRIGHT_AREA = 500
+_BRANDING_MIN_HORIZONTAL_SPAN = 120
+
+
+def _provider_branding_watermark(image: "Image.Image") -> bool:
+    """Detect high-confidence bottom-right provider-branding geometry.
+
+    This deliberately is not OCR. Provider prompts already prohibit visible
+    text, logos and watermarks. The gate only matches a dense horizontal cluster
+    of many small neutral-bright glyph/logo components in the lower-right corner,
+    which is the fixed production defect class observed on Pollinations output.
+    """
+    width, height = image.size
+    if width < 128 or height < 128:
+        return False
+
+    left = int(width * 0.55)
+    top = int(height * 0.89)
+    right = max(left + 1, width - 2)
+    bottom = max(top + 1, height - 2)
+    sample = image.convert("RGB").crop((left, top, right, bottom)).resize(
+        (_BRANDING_SAMPLE_WIDTH, _BRANDING_SAMPLE_HEIGHT),
+        Image.Resampling.BILINEAR,
+    )
+    pixels = sample.load()
+    width = _BRANDING_SAMPLE_WIDTH
+    height = _BRANDING_SAMPLE_HEIGHT
+    mask = bytearray(width * height)
+
+    for y in range(height):
+        for x in range(width):
+            red, green, blue = pixels[x, y]
+            luminance = (299 * red + 587 * green + 114 * blue) // 1000
+            if luminance >= 200 and max(red, green, blue) - min(red, green, blue) <= 70:
+                mask[y * width + x] = 1
+
+    seen = bytearray(width * height)
+    qualifying: list[tuple[int, int, int]] = []
+    lower_start = int(height * 0.55)
+
+    for y in range(height):
+        for x in range(width):
+            start = y * width + x
+            if not mask[start] or seen[start]:
+                continue
+
+            stack = [start]
+            seen[start] = 1
+            area = 0
+            min_x = max_x = x
+            min_y = max_y = y
+
+            while stack:
+                index = stack.pop()
+                cy, cx = divmod(index, width)
+                area += 1
+                min_x = min(min_x, cx)
+                max_x = max(max_x, cx)
+                min_y = min(min_y, cy)
+                max_y = max(max_y, cy)
+
+                if cx > 0:
+                    neighbour = index - 1
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+                if cx + 1 < width:
+                    neighbour = index + 1
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+                if cy > 0:
+                    neighbour = index - width
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+                if cy + 1 < height:
+                    neighbour = index + width
+                    if mask[neighbour] and not seen[neighbour]:
+                        seen[neighbour] = 1
+                        stack.append(neighbour)
+
+            component_width = max_x - min_x + 1
+            component_height = max_y - min_y + 1
+            if (
+                min_y >= lower_start
+                and 8 <= area <= 220
+                and 2 <= component_width <= 20
+                and 3 <= component_height <= 20
+            ):
+                qualifying.append((area, min_x, max_x + 1))
+
+    if len(qualifying) < _BRANDING_MIN_COMPONENTS:
+        return False
+
+    bright_area = sum(area for area, _left, _right in qualifying)
+    horizontal_span = max(right for _area, _left, right in qualifying) - min(
+        left for _area, left, _right in qualifying
+    )
+    return (
+        bright_area >= _BRANDING_MIN_BRIGHT_AREA
+        and horizontal_span >= _BRANDING_MIN_HORIZONTAL_SPAN
+    )
+
 def inspect_kld_provider_image(
     path: str | Path,
     *,
@@ -261,6 +370,7 @@ def inspect_kld_provider_image(
             top, body, ratio, dense_top_rows = _edge_metrics(image)
             gold, green, water, water_rows, dense_gold_rows = _semantic_colour_metrics(image)
             cold_white, dense_cold_white_rows = _winter_surface_metrics(image)
+            provider_branding = _provider_branding_watermark(image)
     except Exception as exc:
         LOG.warning("KLD provider content inspection failed: %s", exc)
         return KldImageContentVerdict(
@@ -305,7 +415,9 @@ def inspect_kld_provider_image(
         and water_rows == 0
         and (green >= 0.25 or gold >= 0.25)
     )
-    if screenshot_chrome:
+    if provider_branding:
+        reason = "provider_branding_watermark"
+    elif screenshot_chrome:
         reason = "screen_or_ui_chrome"
     elif summer_snow_or_ice:
         reason = "summer_snow_or_ice"
