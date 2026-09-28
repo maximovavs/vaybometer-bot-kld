@@ -936,6 +936,67 @@ def kld_evening_injected_score_accounts_for_daytime_extreme_heat_without_uv() ->
     assert tag_index == len(lines) - 1
 
 
+
+def kld_evening_astro_weather_words_do_not_change_factual_decision() -> None:
+    noisy = NORMAL_EVENING.replace(
+        "💚 В плюсе: баланс, прогулки, договорённости.",
+        "💚 В плюсе: ветер, порыв, дождь, прохладно и локально — только астроритм.",
+    )
+    clean_text = build_evening_format_v2("Калининградская область", NORMAL_EVENING)
+    noisy_text = build_evening_format_v2("Калининградская область", noisy)
+
+    def decision(text: str) -> tuple[str, ...]:
+        return tuple(
+            line.strip()
+            for line in text.splitlines()
+            if line.strip().startswith(
+                (
+                    "✨ VayboMeter",
+                    "🧭 Главное завтра:",
+                    "⚠️ Нюанс:",
+                    "⚠️ Главный нюанс:",
+                    "✅ План завтра:",
+                )
+            )
+        )
+
+    assert decision(clean_text) == decision(noisy_text)
+    assert safe_test_post._kld_evening_score_line(clean_text) == safe_test_post._kld_evening_score_line(noisy_text)
+    assert "ветер, порыв, дождь, прохладно и локально — только астроритм" in noisy_text
+
+    rainy = NORMAL_EVENING.replace(
+        "Погода: 🏙️ Калининград — 21/13 °C • облачно • 💨 4.0 м/с • 🔹 1014 гПа.",
+        "Погода: 🏙️ Калининград — 21/13 °C • 🌧 дождь • 💨 4.0 м/с • 🔹 1014 гПа.",
+    )
+    rainy_text = build_evening_format_v2("Калининградская область", rainy)
+    assert decision(rainy_text) != decision(clean_text)
+    assert "дожд" in "\n".join(decision(rainy_text)).lower()
+
+
+def kld_astro_cleanup_drops_long_synthetic_ellipsis_line() -> None:
+    text = build_evening_format_v2("Калининградская область", NORMAL_EVENING)
+    long_line = (
+        "💚 В плюсе: это намеренно длинная оборванная астрологическая строка "
+        "для проверки финального cleanup, которая не должна попасть в публикацию…"
+    )
+    text = text.replace(
+        "🌒 Растущий серп в ♎ Весы — 34% освещённости.",
+        "🌒 Растущий серп в ♎ Весы — 34% освещённости.\n" + long_line,
+    )
+    old = os.environ.get("FORMAT_V2_ASTRO_CLEANUP")
+    try:
+        os.environ["FORMAT_V2_ASTRO_CLEANUP"] = "1"
+        polished = _apply_format_v2_safe_postprocess(text, "", "", "evening")
+    finally:
+        if old is None:
+            os.environ.pop("FORMAT_V2_ASTRO_CLEANUP", None)
+        else:
+            os.environ["FORMAT_V2_ASTRO_CLEANUP"] = old
+
+    assert long_line not in polished
+    assert "🌒 Растущий серп в ♎ Весы — 34% освещённости." in polished
+
+
 def kld_evening_score_accounts_for_daytime_heat_from_30_c() -> None:
     warm29 = "🏙 Калининград — 29/20 °C."
     hot32 = "🏙 Калининград — 32/20 °C."
@@ -1080,6 +1141,8 @@ def main() -> None:
         kld_evening_safe_postprocess_keeps_hashtags_final_and_dedupes_nuance,
         kld_evening_score_injection_survives_hashtag_finalizer,
         kld_evening_injected_score_accounts_for_daytime_extreme_heat_without_uv,
+        kld_evening_astro_weather_words_do_not_change_factual_decision,
+        kld_astro_cleanup_drops_long_synthetic_ellipsis_line,
         kld_evening_score_accounts_for_daytime_heat_from_30_c,
         kld_evening_score_preserves_moderate_non_heat_contract,
         kld_evening_production_ranks_coolest_nights_by_tmin,

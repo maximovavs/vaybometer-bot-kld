@@ -210,6 +210,12 @@ def _kld_weather_line(v2_text: str) -> str:
     )
 
 
+def _weather_only_text(text: str) -> str:
+    from format_v2 import _weather_only_lines
+
+    return "\n".join(_weather_only_lines(str(text or "").splitlines()))
+
+
 def _kld_conditions(v2_text: str) -> dict[str, float | bool | str | None]:
     weather = _kld_weather_line(v2_text)
     p = _plain(weather)
@@ -269,6 +275,7 @@ def _kld_best_window_line(v2_text: str) -> str:
 
 
 def _kld_smart_plan_line(v2_text: str) -> str:
+    v2_text = _weather_only_text(v2_text)
     c = _kld_conditions(v2_text)
     wind = c.get("wind")
     gust = c.get("gust")
@@ -307,6 +314,7 @@ def _kld_smart_plan_line(v2_text: str) -> str:
 
 
 def _kld_score_line(v2_text: str) -> str:
+    v2_text = _weather_only_text(v2_text)
     c = _kld_conditions(v2_text)
     tmax = c.get("tmax")
     wind = c.get("wind")
@@ -379,6 +387,7 @@ def _kld_score_line(v2_text: str) -> str:
 
 
 def _kld_evening_score_line(v2_text: str) -> str:
+    v2_text = _weather_only_text(v2_text)
     text = _plain(v2_text)
     low = text.lower()
     conditions = _kld_conditions(v2_text)
@@ -601,15 +610,17 @@ def _replace_conclusion(v2_text: str, conclusion: str) -> str:
 def _apply_score_conclusion(v2_text: str) -> str:
     if not _env_any("FORMAT_V2_SCORE_CONCLUSION", "FORMAT_V2_TEST_CONCLUSION"):
         return v2_text
-    score = _score_value(v2_text)
+    factual_text = _weather_only_text(v2_text)
+    score = _score_value(factual_text)
     if score is None:
         return v2_text
     if _env_on("FORMAT_V2_REASON_CONCLUSION"):
-        return _replace_conclusion(v2_text, _kld_reason_conclusion(score, _score_reasons(v2_text), v2_text))
+        return _replace_conclusion(v2_text, _kld_reason_conclusion(score, _score_reasons(factual_text), factual_text))
     return _replace_conclusion(v2_text, _kld_score_conclusion(score))
 
 
 def _kld_main_nuance(v2_text: str) -> str:
+    v2_text = _weather_only_text(v2_text)
     low = (_score_reasons(v2_text) + " " + _plain(v2_text)).lower()
     visibility = visibility_condition_from_text(v2_text)
     if visibility in {"dense_fog", "fog"}:
@@ -656,6 +667,7 @@ def _without_editorial_voice(v2_text: str) -> list[str]:
 
 
 def _kld_voice_conditions(v2_text: str) -> dict[str, object]:
+    v2_text = _weather_only_text(v2_text)
     c = _kld_conditions(v2_text)
     plain = _plain(v2_text)
     text = plain.lower()
@@ -755,7 +767,7 @@ def _line_signals_confirmed_storm(line: str) -> bool:
 def _storm_score_replacement(line: str, full_text: str) -> str:
     if "VayboMeter" not in line or "/10" not in line:
         return line
-    plain = _plain(full_text)
+    plain = _plain(_weather_only_text(full_text))
     max_gust = extract_max_gust_ms(plain)
     if not (_has_confirmed_storm_word(plain) or (isinstance(max_gust, (int, float)) and max_gust >= STORM_GUST_MS)):
         return line
@@ -783,7 +795,8 @@ def _finalize_kld_evening_safe_text(v2_text: str, mode: str) -> str:
     if mode.startswith("morn"):
         return v2_text
 
-    max_temp_values = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°C", v2_text)
+    factual_text = _weather_only_text(v2_text)
+    max_temp_values = _numbers(r"(-?\d+(?:[\.,]\d+)?)\s*/\s*-?\d+(?:[\.,]\d+)?\s*°C", factual_text)
     max_temp = max(max_temp_values) if max_temp_values else None
     if isinstance(max_temp, (int, float)) and max_temp >= 28:
         temp_part = "температура высокая"
@@ -1204,7 +1217,7 @@ def _apply_astro_cleanup(v2_text: str) -> str:
     astro_details = 0
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith(("🌙 <b>Астроритм", "☀️ <b>Солнце", "🌅 <b>Солнце и ритм")):
+        if stripped.startswith(("🌙 <b>Астроритм", "☀️ <b>Солнце", "🌅 <b>Солнце и ритм", "🌇 <b>Солнце")):
             in_astro = True
             astro_details = 0
             out.append(line)
@@ -1365,7 +1378,7 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
     lines = str(v2_text or "").splitlines()
     score_indexes = [idx for idx, line in enumerate(lines) if "VayboMeter" in line]
     if score_indexes:
-        c = _kld_conditions(v2_text)
+        c = _kld_conditions(_weather_only_text(v2_text))
         tmax = c.get("tmax")
         uv = c.get("uv")
         heat = isinstance(tmax, (int, float)) and tmax >= 35

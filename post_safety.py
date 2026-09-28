@@ -147,16 +147,19 @@ def _score_label(score: float) -> str:
 
 def _cap_kld_morning_score(text: str) -> str:
     s = str(text or "")
-    if "Калининград сегодня" not in s or "завтра" in s.lower():
+    from format_v2 import _weather_only_lines
+
+    factual = "\n".join(_weather_only_lines(s.splitlines()))
+    if "Калининград сегодня" not in factual or "завтра" in factual.lower():
         return s
-    line = next((x.strip() for x in s.splitlines() if x.strip().startswith("✨ VayboMeter:") and "/10" in x), "")
+    line = next((x.strip() for x in factual.splitlines() if x.strip().startswith("✨ VayboMeter:") and "/10" in x), "")
     m = re.search(r"VayboMeter:\s*(\d+(?:[\.,]\d+)?)\s*/\s*10", line)
     if not m:
         return s
     score = float(m.group(1).replace(",", "."))
-    low = s.lower()
+    low = factual.lower()
     gusts: list[float] = []
-    for raw in re.findall(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", s, flags=re.I):
+    for raw in re.findall(r"порывы\s+до\s*(\d+(?:[\.,]\d+)?)", factual, flags=re.I):
         try:
             gusts.append(float(raw.replace(",", ".")))
         except Exception:
