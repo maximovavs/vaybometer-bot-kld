@@ -818,6 +818,64 @@ def kld_morning_collector_uses_current_run_city_lists() -> None:
     assert offsets and set(offsets) == {0}
 
 
+
+def kld_morning_astro_weather_words_do_not_change_factual_decision() -> None:
+    noisy = LEGACY_FIXTURE.replace(
+        "💚 В плюсе: порядок, здоровье, аккуратность.",
+        "💚 В плюсе: ветер, порыв, дождь, прохладно и локально — только астроритм.",
+    )
+    env_names = (
+        "MORNING_VAYBOMETER_SCORE",
+        "MORNING_SMART_PLAN",
+        "FORMAT_V2_ASTRO_CLEANUP",
+    )
+    old = {name: os.environ.get(name) for name in env_names}
+
+    def render(source: str) -> str:
+        v2 = build_morning_format_v2("Калининградская область", source)
+        text = _apply_format_v2_safe_postprocess(v2, source, source, "morning")
+        text = sanitize_post_text(text).text
+        return _finalize_kld_morning_safe_text(text, source, source, "morning")
+
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        clean_text = render(LEGACY_FIXTURE)
+        noisy_text = render(noisy)
+        rainy_text = render(
+            LEGACY_FIXTURE.replace(
+                "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 4.0 м/с • 🔹 1014 гПа.",
+                "Погода: 🏙️ Калининград — 22/14 °C • 🌧 дождь • 💨 4.0 м/с • 🔹 1014 гПа.",
+            )
+        )
+    finally:
+        for name, value in old.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def decision(text: str) -> tuple[str, ...]:
+        return tuple(
+            line.strip()
+            for line in text.splitlines()
+            if line.strip().startswith(
+                (
+                    "✨ VayboMeter",
+                    "🧭",
+                    "⚠️ Главный нюанс:",
+                    "⚠️ Нюанс:",
+                    "✅ План:",
+                )
+            )
+        )
+
+    assert decision(clean_text) == decision(noisy_text)
+    assert "ветер, порыв, дождь, прохладно и локально — только астроритм" in noisy_text
+    assert decision(rainy_text) != decision(clean_text)
+    assert "дожд" in "\n".join(decision(rainy_text)).lower()
+
+
 def kld_morning_hot_windy_without_uv_does_not_recommend_layer() -> None:
     no_uv_fixture = HOT_MORNING_FIXTURE.replace(
         "Погода: 🏙️ Калининград — 38/26 °C",
@@ -887,6 +945,7 @@ def main() -> None:
         kld_morning_structured_current_run_temperatures_survive_safe_pipeline,
         kld_morning_structured_daytime_only_uses_short_form,
         kld_morning_collector_uses_current_run_city_lists,
+        kld_morning_astro_weather_words_do_not_change_factual_decision,
         kld_morning_hot_windy_without_uv_does_not_recommend_layer,
         kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,

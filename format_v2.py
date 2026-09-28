@@ -138,6 +138,43 @@ def _astro(lines: list[str]) -> list[str]:
     return out
 
 
+_ASTRO_SECTION_HEADERS = (
+    "📻 <b>Астрособытия",
+    "🌇 <b>Солнце, Луна и ритм",
+    "☀️ <b>Солнце, Луна и ритм",
+    "🌙 <b>Астроритм",
+)
+_ASTRO_SECTION_END_PREFIXES = (
+    "🧲",
+    "🧪",
+    "🌍",
+    "💱",
+    "✅ Сегодня",
+    "✅ План:",
+    "✅ <b>Рекомендации",
+    "📌 <b>Вывод",
+    "#",
+)
+
+
+def _weather_only_lines(lines: list[str]) -> list[str]:
+    """Project source text to factual non-astro lines for weather decisions."""
+    out: list[str] = []
+    in_astro = False
+    for line in lines:
+        s = line.strip()
+        if "Астрособытия" in s or s.startswith(_ASTRO_SECTION_HEADERS):
+            in_astro = True
+            continue
+        if in_astro:
+            if _is_sep(s) or s.startswith(_ASTRO_SECTION_END_PREFIXES):
+                in_astro = False
+            else:
+                continue
+        out.append(line)
+    return out
+
+
 def _is_moon_phase_line(line: str) -> bool:
     s = _plain(line)
     if not s.startswith(("🌙", "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘")):
@@ -1306,21 +1343,22 @@ def _final_plan_line(lines: list[str], has_warning: bool, has_rain: bool) -> str
 def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     """Compact morning post: current weather + FX + air + UV + space weather + 2 practical tips."""
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines() if x.strip()]
+    weather_lines = _weather_only_lines(lines)
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
 
-    weather = _city_line(lines, "Калининград")
-    warning = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
-    score = _first_morning_pick(lines, ("✨ VayboMeter", "✨"))
-    scenario = _first_morning_pick(lines, ("🧭",))
-    feels = _first_morning_pick(lines, ("🌡 Ощущается", "🌡️ Ощущается"))
-    best_window = _first_morning_pick(lines, ("🕘 Лучшее окно",))
-    main_nuance = _first_morning_pick(lines, ("⚠️ Главный нюанс",))
+    weather = _city_line(weather_lines, "Калининград")
+    warning = _first_line_contains(weather_lines, "Шторм") or _first_line_contains(weather_lines, "шторм")
+    score = _first_morning_pick(weather_lines, ("✨ VayboMeter", "✨"))
+    scenario = _first_morning_pick(weather_lines, ("🧭",))
+    feels = _first_morning_pick(weather_lines, ("🌡 Ощущается", "🌡️ Ощущается"))
+    best_window = _first_morning_pick(weather_lines, ("🕘 Лучшее окно",))
+    main_nuance = _first_morning_pick(weather_lines, ("⚠️ Главный нюанс",))
     fx = _morning_pick(lines, ("💱",))
     air = [x for x in _morning_pick(lines, ("🏭", "🌬", "🌿", "🫁", "💨", "🟢", "🟡", "🔴", "ℹ️")) if "Safecast" not in x]
-    visibility = _morning_pick(lines, ("🌫 Видимость:",))
+    visibility = _morning_pick(weather_lines, ("🌫 Видимость:",))
     quakes = _morning_pick(lines, ("🌍 Сейсмика",))
-    uv = _morning_pick(lines, ("☀️", "🌞", "🔥"))
+    uv = _morning_pick(weather_lines, ("☀️", "🌞", "🔥"))
     uv_line = _clean_uv_line(uv[0]) if uv else ""
     sunset = _morning_pick(lines, ("🌇",))
     astro = _astro_block(lines, morning=True)
@@ -1328,10 +1366,10 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     sea = _morning_sea_lines(lines)
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
     tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
-    flags = _morning_flags(lines, uv_line)
+    flags = _morning_flags(weather_lines, uv_line)
 
     has_warning = bool(warning)
-    has_rain = _has_actual_precipitation(safe_legacy_text)
+    has_rain = _has_actual_precipitation("\n".join(weather_lines))
 
     out: list[str] = [f"<b>🌅 Калининград сегодня{title_date}</b>"]
 
@@ -1400,19 +1438,20 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
 def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     lines = [x.rstrip() for x in str(safe_legacy_text or "").splitlines()]
+    weather_lines = _weather_only_lines(lines)
     date_s = _date_from_title(safe_legacy_text)
     title_date = f" ({date_s})" if date_s else ""
 
-    kal = _city_line(lines, "Калининград")
-    storm = _first_line_contains(lines, "Шторм") or _first_line_contains(lines, "шторм")
-    raw_sea = _section_after(lines, "Морские города")
+    kal = _city_line(weather_lines, "Калининград")
+    storm = _first_line_contains(weather_lines, "Шторм") or _first_line_contains(weather_lines, "шторм")
+    raw_sea = _section_after(weather_lines, "Морские города")
     sea = _soften_sea_lines(raw_sea)
-    warm_cold = _section_between(lines, "Тёплые города", ("🌅 Рассвет", "🌇 Закат", "Астрособытия", "Рекомендации"))
+    warm_cold = _section_between(weather_lines, "Тёплые города", ("🌅 Рассвет", "🌇 Закат", "Астрособытия", "Рекомендации"))
     astro = _astro_block(lines, morning=False, date_s=date_s)
     quakes = _morning_pick(lines, ("🌍 Сейсмика",))
-    visibility = _morning_pick(lines, ("🌫 Видимость:",))
-    score = _first_line_starts(lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
-    flags = _evening_flags(lines, storm=storm)
+    visibility = _morning_pick(weather_lines, ("🌫 Видимость:",))
+    score = _first_line_starts(weather_lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
+    flags = _evening_flags(weather_lines, storm=storm)
     sup_water = _common_sup_water_line(raw_sea, has_storm=bool(flags.get("storm")))
     nuance = _evening_nuance(flags, bool(sea), bool(warm_cold))
     confidence = _evening_confidence_line(flags)
