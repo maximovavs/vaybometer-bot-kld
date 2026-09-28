@@ -906,6 +906,155 @@ def kld_morning_hot_windy_without_uv_does_not_recommend_layer() -> None:
     assert high_uv_plan == "✅ План: дела и прогулка утром/вечером; днём — вода, тень, SPF и короткие выходы."
 
 
+
+def kld_morning_weak_wind_and_gust_are_not_promoted() -> None:
+    source = LEGACY_FIXTURE.replace(
+        "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 4.0 м/с • 🔹 1014 гПа.",
+        "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 1.0 м/с • порывы до 5 м/с • 🔹 1014 гПа.",
+    ).replace(
+        "🧭 Главный сценарий: мягко, облачно, у воды свежее.",
+        "🧭 Главное завтра: у воды главный фактор — ветер и порывы.",
+    ).replace(
+        "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
+        "⚠️ Главный нюанс: у моря ветер ощущается сильнее, чем в городе.",
+    ).replace("☀️ УФ: 4 — умеренный\n", "")
+
+    env_names = ("MORNING_VAYBOMETER_SCORE", "MORNING_SMART_PLAN", "FORMAT_V2_MAIN_NUANCE", "FORMAT_V2_ASTRO_CLEANUP")
+    old = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        text = build_morning_format_v2("Калининградская область", source)
+        text = _apply_format_v2_safe_postprocess(text, source, source, "morning")
+        text = sanitize_post_text(text).text
+        text = _finalize_kld_morning_safe_text(text, source, source, "morning")
+    finally:
+        for name, value in old.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    low = text.lower()
+    assert "главный фактор — ветер и порывы" not in low
+    assert "главный нюанс: у моря ветер" not in low
+    assert "ветровка/слой" not in low
+    assert "защищённых местах" not in low
+
+
+def kld_morning_extreme_heat_without_uv_keeps_heat_but_no_uv_claims() -> None:
+    calm_source = HOT_MORNING_FIXTURE.replace(
+        "Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🔷 1015 гПа ↓.",
+        "Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 1 м/с • порывы до 5 м/с • 🔷 1015 гПа ↓.",
+    ).replace(
+        "Балтийск: 31/22 °C • ясно • 💨 7 м/с",
+        "Балтийск: 31/22 °C • ясно • 💨 1 м/с",
+    )
+    no_uv_source = calm_source.replace("☀️ УФ: 7 — высокий\n", "")
+
+    env_names = ("MORNING_VAYBOMETER_SCORE", "MORNING_SMART_PLAN")
+    old = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        no_uv_text = build_morning_format_v2("Калининградская область", no_uv_source)
+        no_uv_text = _apply_format_v2_safe_postprocess(no_uv_text, no_uv_source, no_uv_source, "morning")
+        high_uv_text = build_morning_format_v2("Калининградская область", calm_source)
+        high_uv_text = _apply_format_v2_safe_postprocess(high_uv_text, calm_source, calm_source, "morning")
+    finally:
+        for name, value in old.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    no_uv_score = next(line for line in no_uv_text.splitlines() if line.startswith("✨ VayboMeter"))
+    assert "жара" in no_uv_score.lower()
+    assert "высокий уф" not in no_uv_score.lower()
+    assert "☀️ УФ" not in no_uv_text
+    no_uv_plan = next(line for line in no_uv_text.splitlines() if line.startswith("✅ План:"))
+    assert "SPF" not in no_uv_plan
+    assert "вода" in no_uv_plan and "тень" in no_uv_plan
+
+    high_uv_score = next(line for line in high_uv_text.splitlines() if line.startswith("✨ VayboMeter"))
+    assert "жара и высокий УФ" in high_uv_score
+    high_uv_plan = next(line for line in high_uv_text.splitlines() if line.startswith("✅ План:"))
+    assert "SPF" in high_uv_plan
+
+
+def kld_morning_valid_uv_with_weak_wind_does_not_invent_wind() -> None:
+    source = MILD_UV_MORNING_FIXTURE.replace(
+        "Погода: 🏙️ Калининград — 22/15 °C • переменная облачность • 💨 5 м/с.",
+        "Погода: 🏙️ Калининград — 22/15 °C • переменная облачность • 💨 1 м/с • порывы до 5 м/с.",
+    )
+    env_names = ("MORNING_VAYBOMETER_SCORE", "MORNING_SMART_PLAN")
+    old = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        text = build_morning_format_v2("Калининградская область", source)
+        text = _apply_format_v2_safe_postprocess(text, source, source, "morning")
+    finally:
+        for name, value in old.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    assert "высокий УФ" in text
+    plan = next(line for line in text.splitlines() if line.startswith("✅ План:"))
+    assert "SPF" in plan
+    assert "у воды учитывать ветер" not in plan
+    score = next(line for line in text.splitlines() if line.startswith("✨ VayboMeter"))
+    assert "ветер у воды" not in score
+
+
+def kld_morning_smart_plan_replaces_legacy_wellness_plan() -> None:
+    source = MILD_UV_MORNING_FIXTURE.replace(
+        "✅ План: прогулка днём, вечером взять лёгкий слой.",
+        "✅ План: 🧘 медитация, спокойные решения и лунный ритм.",
+    )
+    old = os.environ.get("MORNING_SMART_PLAN")
+    try:
+        os.environ["MORNING_SMART_PLAN"] = "1"
+        text = build_morning_format_v2("Калининградская область", source)
+        text = _apply_format_v2_safe_postprocess(text, source, source, "morning")
+    finally:
+        if old is None:
+            os.environ.pop("MORNING_SMART_PLAN", None)
+        else:
+            os.environ["MORNING_SMART_PLAN"] = old
+
+    assert "медитац" not in text.lower()
+    assert "лунный ритм" not in text.lower()
+    plans = [line for line in text.splitlines() if line.startswith("✅ План:")]
+    assert len(plans) == 1
+    assert "SPF" in plans[0]
+
+
+def kld_morning_astro_cleanup_drops_long_synthetic_ellipsis_line() -> None:
+    text = build_morning_format_v2("Калининградская область", MILD_UV_MORNING_FIXTURE)
+    long_line = (
+        "💚 В плюсе: это намеренно длинная оборванная астрологическая строка "
+        "для утренней проверки cleanup, которая не должна попасть в публикацию…"
+    )
+    moon_line = next(line for line in text.splitlines() if line.startswith(("🌙", "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘")) and "86%" in line)
+    text = text.replace(moon_line, moon_line + "\n" + long_line)
+    old = os.environ.get("FORMAT_V2_ASTRO_CLEANUP")
+    try:
+        os.environ["FORMAT_V2_ASTRO_CLEANUP"] = "1"
+        polished = _apply_format_v2_safe_postprocess(text, "", "", "morning")
+    finally:
+        if old is None:
+            os.environ.pop("FORMAT_V2_ASTRO_CLEANUP", None)
+        else:
+            os.environ["FORMAT_V2_ASTRO_CLEANUP"] = old
+
+    assert long_line not in polished
+    assert "86%" in polished
+    assert "VoC: 08:20–10:10." in polished
+
+
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     assert "cron: '30 0 * * *'" in workflow
@@ -947,6 +1096,11 @@ def main() -> None:
         kld_morning_collector_uses_current_run_city_lists,
         kld_morning_astro_weather_words_do_not_change_factual_decision,
         kld_morning_hot_windy_without_uv_does_not_recommend_layer,
+        kld_morning_weak_wind_and_gust_are_not_promoted,
+        kld_morning_extreme_heat_without_uv_keeps_heat_but_no_uv_claims,
+        kld_morning_valid_uv_with_weak_wind_does_not_invent_wind,
+        kld_morning_smart_plan_replaces_legacy_wellness_plan,
+        kld_morning_astro_cleanup_drops_long_synthetic_ellipsis_line,
         kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,

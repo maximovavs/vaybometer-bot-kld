@@ -14,6 +14,11 @@ KLD_VARIANTS = {
         "тепло настоящее, но не тяжёлое — хороший день для обычных дел и прогулок.",
         "в городе будет комфортно, но высокий УФ всё равно потребует летней внимательности.",
     ],
+    "WARM": [
+        "день мягкий и тёплый — обычные дела и прогулки можно планировать свободно.",
+        "температура комфортная; достаточно обычного балтийского запаса по одежде.",
+        "в городе будет тепло без отдельного погодного ограничения.",
+    ],
     "WINDY_BALTIC": [
         "день с балтийским характером: в городе спокойно, а у воды всё ощущается сильнее.",
         "планы лучше держать гибкими — ветер может немного изменить настроение маршрута.",
@@ -35,6 +40,11 @@ KLD_EVENING_VARIANTS = {
         "день будет скорее летним, чем жарким; Балтика сохранит прохладную поправку.",
         "в городе будет тепло, но высокий УФ потребует обычной летней внимательности.",
         "завтра достаточно выбрать удобное окно и не забыть про защиту от солнца.",
+    ],
+    "WARM": [
+        "день будет мягким и тёплым; обычные планы не требуют специальной погодной поправки.",
+        "в городе будет комфортно, а у Балтики достаточно обычного запаса по одежде.",
+        "завтра тепло без отдельного погодного ограничения; маршрут можно выбирать по делам.",
     ],
     "WINDY_BALTIC": [
         "у воды всё будет ощущаться сильнее, поэтому поездку к Балтике лучше решить утром.",
@@ -78,16 +88,21 @@ def _num(value: Any) -> float | None:
 
 def _scenario(conditions: dict[str, Any]) -> str:
     gust = _num(conditions.get("gust"))
-    wind = _num(conditions.get("wind"))
+    raw_wind = conditions.get("wind")
+    wind = _num(conditions.get("wind_ms"))
+    if wind is None and not isinstance(raw_wind, bool):
+        wind = _num(raw_wind)
     max_temp = _num(conditions.get("max_temp"))
     uv = _num(conditions.get("uv"))
 
     if conditions.get("rain") or conditions.get("precipitation"):
         return "RAIN_WINDOWS"
-    if conditions.get("wind") or isinstance(gust, (int, float)) and gust >= 8 or isinstance(wind, (int, float)) and wind >= 6:
+    if raw_wind is True or isinstance(gust, (int, float)) and gust >= 8 or isinstance(wind, (int, float)) and wind >= 6:
         return "WINDY_BALTIC"
-    if conditions.get("uv_high") or conditions.get("warm") or isinstance(uv, (int, float)) and uv >= 6 or isinstance(max_temp, (int, float)) and max_temp >= 20:
+    if conditions.get("uv_high") or isinstance(uv, (int, float)) and uv >= 6:
         return "WARM_UV"
+    if conditions.get("warm") or isinstance(max_temp, (int, float)) and max_temp >= 20:
+        return "WARM"
     return "CALM"
 
 
