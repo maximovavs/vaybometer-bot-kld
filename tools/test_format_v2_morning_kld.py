@@ -943,14 +943,24 @@ def kld_morning_weak_wind_and_gust_are_not_promoted() -> None:
 
 
 def kld_morning_extreme_heat_without_uv_keeps_heat_but_no_uv_claims() -> None:
-    source = HOT_MORNING_FIXTURE.replace("☀️ УФ: 7 — высокий\n", "")
-    env_names = ("MORNING_VAYBOMETER_SCORE", "MORNING_SMART_PLAN", "FORMAT_V2_ASTRO_CLEANUP")
+    calm_source = HOT_MORNING_FIXTURE.replace(
+        "Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 6 м/с • порывы до 10 м/с • 🔷 1015 гПа ↓.",
+        "Погода: 🏙️ Калининград — 38/26 °C • ясно • 💨 1 м/с • порывы до 5 м/с • 🔷 1015 гПа ↓.",
+    ).replace(
+        "Балтийск: 31/22 °C • ясно • 💨 7 м/с",
+        "Балтийск: 31/22 °C • ясно • 💨 1 м/с",
+    )
+    no_uv_source = calm_source.replace("☀️ УФ: 7 — высокий\n", "")
+
+    env_names = ("MORNING_VAYBOMETER_SCORE", "MORNING_SMART_PLAN")
     old = {name: os.environ.get(name) for name in env_names}
     try:
         for name in env_names:
             os.environ[name] = "1"
-        text = build_morning_format_v2("Калининградская область", source)
-        text = _apply_format_v2_safe_postprocess(text, source, source, "morning")
+        no_uv_text = build_morning_format_v2("Калининградская область", no_uv_source)
+        no_uv_text = _apply_format_v2_safe_postprocess(no_uv_text, no_uv_source, no_uv_source, "morning")
+        high_uv_text = build_morning_format_v2("Калининградская область", calm_source)
+        high_uv_text = _apply_format_v2_safe_postprocess(high_uv_text, calm_source, calm_source, "morning")
     finally:
         for name, value in old.items():
             if value is None:
@@ -958,12 +968,18 @@ def kld_morning_extreme_heat_without_uv_keeps_heat_but_no_uv_claims() -> None:
             else:
                 os.environ[name] = value
 
-    assert "жара" in text.lower()
-    assert "высокий уф" not in text.lower()
-    assert "☀️ УФ" not in text
-    plan = next(line for line in text.splitlines() if line.startswith("✅ План:"))
-    assert "SPF" not in plan
-    assert "вода" in plan and "тень" in plan
+    no_uv_score = next(line for line in no_uv_text.splitlines() if line.startswith("✨ VayboMeter"))
+    assert "жара" in no_uv_score.lower()
+    assert "высокий уф" not in no_uv_score.lower()
+    assert "☀️ УФ" not in no_uv_text
+    no_uv_plan = next(line for line in no_uv_text.splitlines() if line.startswith("✅ План:"))
+    assert "SPF" not in no_uv_plan
+    assert "вода" in no_uv_plan and "тень" in no_uv_plan
+
+    high_uv_score = next(line for line in high_uv_text.splitlines() if line.startswith("✨ VayboMeter"))
+    assert "жара и высокий УФ" in high_uv_score
+    high_uv_plan = next(line for line in high_uv_text.splitlines() if line.startswith("✅ План:"))
+    assert "SPF" in high_uv_plan
 
 
 def kld_morning_valid_uv_with_weak_wind_does_not_invent_wind() -> None:

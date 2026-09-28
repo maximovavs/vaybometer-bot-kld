@@ -1419,7 +1419,21 @@ def _inject_morning_score(v2_text: str, mode: str) -> str:
                         cleaned = re.sub(r"^✨\s*VayboMeter\s+сегодня\s*:", "✨ VayboMeter:", line.strip(), flags=re.I)
                         if rain_or_gust:
                             cleaned = score
-                        elif heat or (uv_high and heat_word_ok):
+                        elif heat and uv_high:
+                            cleaned = re.sub(
+                                r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
+                                r"\1с оговорками; жара и высокий УФ.",
+                                cleaned,
+                                flags=re.I,
+                            )
+                        elif heat:
+                            cleaned = re.sub(
+                                r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
+                                r"\1с оговорками; жара.",
+                                cleaned,
+                                flags=re.I,
+                            )
+                        elif uv_high and heat_word_ok:
                             cleaned = re.sub(
                                 r"(VayboMeter:\s*\d+(?:[\.,]\d+)?/10\s+—\s*).*$",
                                 r"\1с оговорками; жара и высокий УФ.",
