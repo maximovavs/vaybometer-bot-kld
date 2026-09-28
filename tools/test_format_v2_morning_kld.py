@@ -1055,6 +1055,38 @@ def kld_morning_astro_cleanup_drops_long_synthetic_ellipsis_line() -> None:
     assert "VoC: 08:20–10:10." in polished
 
 
+
+def kld_morning_generic_source_nuance_is_omitted() -> None:
+    source = LEGACY_FIXTURE.replace(
+        "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
+        "⚠️ Главный нюанс: день требует внимания.",
+    )
+    text = build_morning_format_v2("Калининградская область", source)
+    assert "день требует внимания" not in text
+
+
+def kld_morning_source_nuance_that_only_restates_score_is_omitted() -> None:
+    source = LEGACY_FIXTURE.replace(
+        "✨ VayboMeter сегодня: 7.4/10 — нормальный день с морской поправкой.",
+        "✨ VayboMeter сегодня: 7.4/10 — ветер и порывы снижают комфорт.",
+    ).replace(
+        "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
+        "⚠️ Главный нюанс: ветер и порывы снижают комфорт.",
+    )
+    text = build_morning_format_v2("Калининградская область", source)
+    assert "⚠️ Главный нюанс: ветер и порывы снижают комфорт." not in text
+    assert "⚠️ Главный нюанс: у воды порывы ощущаются сильнее, чем в городе." in text
+
+
+def kld_morning_supported_specific_source_nuance_is_preserved() -> None:
+    source = LEGACY_FIXTURE.replace(
+        "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
+        "⚠️ Главный нюанс: на побережье ветер ощущается сильнее, чем в городе.",
+    )
+    text = build_morning_format_v2("Калининградская область", source)
+    assert "⚠️ Главный нюанс: на побережье ветер ощущается сильнее, чем в городе." in text
+
+
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     assert "cron: '30 0 * * *'" in workflow
@@ -1101,6 +1133,9 @@ def main() -> None:
         kld_morning_valid_uv_with_weak_wind_does_not_invent_wind,
         kld_morning_smart_plan_replaces_legacy_wellness_plan,
         kld_morning_astro_cleanup_drops_long_synthetic_ellipsis_line,
+        kld_morning_generic_source_nuance_is_omitted,
+        kld_morning_source_nuance_that_only_restates_score_is_omitted,
+        kld_morning_supported_specific_source_nuance_is_preserved,
         kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
