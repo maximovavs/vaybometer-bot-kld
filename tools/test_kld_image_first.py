@@ -1402,7 +1402,7 @@ def semantic_rejection_rotates_to_next_candidate() -> None:
         assert events == ["photo", "history"]
 
 
-def semantic_rejections_exhaust_to_local_cover() -> None:
+def provider_branding_rejections_exhaust_to_local_cover() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         events: list[str] = []
@@ -1418,7 +1418,7 @@ def semantic_rejections_exhaust_to_local_cover() -> None:
                 return _duplicate(accepted=True, reason="accepted", distance=20)
             return _duplicate(
                 accepted=False,
-                reason="content_guard:required_baltic_missing",
+                reason="content_guard:provider_branding_watermark",
                 distance=20,
             )
 
@@ -1432,7 +1432,7 @@ def semantic_rejections_exhaust_to_local_cover() -> None:
         )
         assert len(outcome["provider_attempts"]) == 3
         assert all(
-            item["dedup_reason"] == "content_guard:required_baltic_missing"
+            item["dedup_reason"] == "content_guard:provider_branding_watermark"
             for item in outcome["provider_attempts"]
         )
         assert outcome["fallback_reason"] == "semantic_mismatch"
@@ -1676,7 +1676,7 @@ TESTS = [
     invalid_local_cover_is_not_sent_and_text_remains_nonblocking,
     second_backend_runs_after_pollinations_exhaustion_with_diagnostics,
     semantic_rejection_rotates_to_next_candidate,
-    semantic_rejections_exhaust_to_local_cover,
+    provider_branding_rejections_exhaust_to_local_cover,
     near_duplicate_candidates_are_hard_rejected_and_rotate_scene,
     near_duplicate_local_cover_is_not_published,
     recent_scene_and_composition_cooldown_is_applied,
