@@ -17,7 +17,11 @@ from typing import Union
 import pendulum
 from telegram import Bot, constants
 
-from editorial_voice import build_evening_human_line, build_morning_human_line
+from editorial_voice import (
+    build_evening_human_line,
+    build_morning_human_line,
+    is_editorial_wind_significant,
+)
 from post_common import build_message
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
 from visibility_context import (
@@ -280,7 +284,10 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     wind = c.get("wind")
     gust = c.get("gust")
     has_rain = bool(c.get("rain"))
-    windy = (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)
+    windy = is_editorial_wind_significant(
+        wind_ms=wind,
+        gust_ms=gust,
+    )
     uv = c.get("uv")
     tmax = c.get("tmax")
     visibility = str(c.get("visibility_condition") or "clear")
@@ -341,8 +348,6 @@ def _kld_score_line(v2_text: str) -> str:
             score -= 0.4; reasons.append("ветер")
     elif isinstance(wind, (int, float)) and wind >= 6:
         score -= 0.8; reasons.append("ветер")
-    elif isinstance(wind, (int, float)) and wind >= 3:
-        score -= 0.5; reasons.append("ветер")
     if isinstance(tmax, (int, float)):
         if tmax >= 35:
             score -= 1.2; reasons.append("жара")
@@ -381,12 +386,10 @@ def _kld_score_line(v2_text: str) -> str:
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; тёплый день и высокий УФ."
         if visibility != "clear":
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и {visibility_reason(visibility)}."
-        windy = (
-            isinstance(gust, (int, float)) and gust >= 7
-        ) or (
-            isinstance(wind, (int, float)) and wind >= 3
-        )
-        if windy:
+        if is_editorial_wind_significant(
+            wind_ms=wind,
+            gust_ms=gust,
+        ):
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
         return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ."
     label = _score_label(score)
@@ -648,10 +651,9 @@ def _kld_main_nuance(v2_text: str) -> str:
     cool = any(x in low for x in ("прохлад", "свеж"))
     gust = c.get("gust")
     wind_ms = c.get("wind")
-    wind = (
-        isinstance(gust, (int, float)) and gust >= 7
-    ) or (
-        isinstance(wind_ms, (int, float)) and wind_ms >= 3
+    wind = is_editorial_wind_significant(
+        wind_ms=wind_ms,
+        gust_ms=gust,
     )
     if precip and cool and wind:
         return "⚠️ Главный нюанс: морось, свежий ветер и прохладное побережье."
@@ -704,8 +706,10 @@ def _kld_voice_conditions(v2_text: str) -> dict[str, object]:
         "max_temp": c.get("tmax"),
         "uv": c.get("uv"),
         "uv_high": isinstance(c.get("uv"), (int, float)) and c["uv"] >= 6,
-        "wind": isinstance(max_gust, (int, float)) and max_gust >= 8
-        or isinstance(max_wind, (int, float)) and max_wind >= 6,
+        "wind": is_editorial_wind_significant(
+            wind_ms=max_wind,
+            gust_ms=max_gust,
+        ),
         "wind_ms": max_wind,
         "gust": max_gust,
         "rain": _has_actual_precipitation(plain),

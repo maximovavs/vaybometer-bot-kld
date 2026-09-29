@@ -1009,6 +1009,61 @@ def kld_morning_valid_uv_with_weak_wind_does_not_invent_wind() -> None:
     assert "ветер у воды" not in score
 
 
+
+def kld_morning_production_3ms_gust6_keeps_editorial_layers_consistent() -> None:
+    source = (
+        LEGACY_FIXTURE
+        .replace("(19.06.2026)", "(29.09.2026)")
+        .replace(
+            "✨ VayboMeter сегодня: 7.4/10 — нормальный день с морской поправкой.",
+            "✨ VayboMeter сегодня: 8.6/10 — хорошо.",
+        )
+        .replace(
+            "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 4.0 м/с • 🔹 1014 гПа.",
+            "Погода: 🏙️ Калининград — 20/12 °C • облачно • 💨 3.0 м/с • порывы до 6 м/с • 🔹 1014 гПа.",
+        )
+        .replace("⚠️ Главный нюанс: у моря ветер ощущается сильнее.\n", "")
+    )
+    env_names = (
+        "MORNING_VAYBOMETER_SCORE",
+        "MORNING_SMART_PLAN",
+        "FORMAT_V2_MAIN_NUANCE",
+    )
+    old = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        text = build_morning_format_v2("Калининградская область", source)
+        text = _apply_format_v2_safe_postprocess(text, source, source, "morning")
+    finally:
+        for name, value in old.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    low = text.lower()
+    assert "обычные дела и прогулки можно планировать свободно" in low
+    assert "поправки на маршрут" not in low
+    assert "ветер требует поправки" not in low
+    assert "порывы требуют поправки" not in low
+    assert "главный нюанс: у воды порывы" not in low
+    assert "главный нюанс: у моря ветер" not in low
+    assert "ветровка/слой" not in low
+    assert "защищённых местах" not in low
+    assert not (
+        "планировать свободно" in low
+        and any(
+            marker in low
+            for marker in (
+                "поправки на маршрут",
+                "главный нюанс: у воды порывы",
+                "главный нюанс: у моря ветер",
+                "защищённых местах",
+            )
+        )
+    )
+
 def kld_morning_smart_plan_replaces_legacy_wellness_plan() -> None:
     source = MILD_UV_MORNING_FIXTURE.replace(
         "✅ План: прогулка днём, вечером взять лёгкий слой.",
@@ -1066,12 +1121,20 @@ def kld_morning_generic_source_nuance_is_omitted() -> None:
 
 
 def kld_morning_source_nuance_that_only_restates_score_is_omitted() -> None:
-    source = LEGACY_FIXTURE.replace(
-        "✨ VayboMeter сегодня: 7.4/10 — нормальный день с морской поправкой.",
-        "✨ VayboMeter сегодня: 7.4/10 — ветер и порывы снижают комфорт.",
-    ).replace(
-        "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
-        "⚠️ Главный нюанс: ветер и порывы снижают комфорт.",
+    source = (
+        LEGACY_FIXTURE
+        .replace(
+            "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 4.0 м/с • 🔹 1014 гПа.",
+            "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 6.0 м/с • порывы до 8 м/с • 🔹 1014 гПа.",
+        )
+        .replace(
+            "✨ VayboMeter сегодня: 7.4/10 — нормальный день с морской поправкой.",
+            "✨ VayboMeter сегодня: 7.4/10 — ветер и порывы снижают комфорт.",
+        )
+        .replace(
+            "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
+            "⚠️ Главный нюанс: ветер и порывы снижают комфорт.",
+        )
     )
     text = build_morning_format_v2("Калининградская область", source)
     assert "⚠️ Главный нюанс: ветер и порывы снижают комфорт." not in text
@@ -1079,9 +1142,16 @@ def kld_morning_source_nuance_that_only_restates_score_is_omitted() -> None:
 
 
 def kld_morning_supported_specific_source_nuance_is_preserved() -> None:
-    source = LEGACY_FIXTURE.replace(
-        "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
-        "⚠️ Главный нюанс: на побережье ветер ощущается сильнее, чем в городе.",
+    source = (
+        LEGACY_FIXTURE
+        .replace(
+            "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 4.0 м/с • 🔹 1014 гПа.",
+            "Погода: 🏙️ Калининград — 22/14 °C • облачно • 💨 6.0 м/с • порывы до 8 м/с • 🔹 1014 гПа.",
+        )
+        .replace(
+            "⚠️ Главный нюанс: у моря ветер ощущается сильнее.",
+            "⚠️ Главный нюанс: на побережье ветер ощущается сильнее, чем в городе.",
+        )
     )
     text = build_morning_format_v2("Калининградская область", source)
     assert "⚠️ Главный нюанс: на побережье ветер ощущается сильнее, чем в городе." in text
@@ -1131,6 +1201,7 @@ def main() -> None:
         kld_morning_weak_wind_and_gust_are_not_promoted,
         kld_morning_extreme_heat_without_uv_keeps_heat_but_no_uv_claims,
         kld_morning_valid_uv_with_weak_wind_does_not_invent_wind,
+        kld_morning_production_3ms_gust6_keeps_editorial_layers_consistent,
         kld_morning_smart_plan_replaces_legacy_wellness_plan,
         kld_morning_astro_cleanup_drops_long_synthetic_ellipsis_line,
         kld_morning_generic_source_nuance_is_omitted,
