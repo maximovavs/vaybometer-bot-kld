@@ -86,6 +86,26 @@ def _num(value: Any) -> float | None:
         return None
 
 
+EDITORIAL_WIND_MIN_MS = 6.0
+EDITORIAL_GUST_MIN_MS = 8.0
+
+
+def is_editorial_wind_significant(
+    *,
+    wind_ms: Any = None,
+    gust_ms: Any = None,
+    explicit: bool = False,
+) -> bool:
+    """Shared threshold for user-facing KLD wind cautions."""
+    wind = _num(wind_ms)
+    gust = _num(gust_ms)
+    return bool(explicit) or (
+        isinstance(gust, (int, float)) and gust >= EDITORIAL_GUST_MIN_MS
+    ) or (
+        isinstance(wind, (int, float)) and wind >= EDITORIAL_WIND_MIN_MS
+    )
+
+
 def _scenario(conditions: dict[str, Any]) -> str:
     gust = _num(conditions.get("gust"))
     raw_wind = conditions.get("wind")
@@ -97,7 +117,11 @@ def _scenario(conditions: dict[str, Any]) -> str:
 
     if conditions.get("rain") or conditions.get("precipitation"):
         return "RAIN_WINDOWS"
-    if raw_wind is True or isinstance(gust, (int, float)) and gust >= 8 or isinstance(wind, (int, float)) and wind >= 6:
+    if is_editorial_wind_significant(
+        wind_ms=wind,
+        gust_ms=gust,
+        explicit=raw_wind is True,
+    ):
         return "WINDY_BALTIC"
     if conditions.get("uv_high") or isinstance(uv, (int, float)) and uv >= 6:
         return "WARM_UV"

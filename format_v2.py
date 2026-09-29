@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import re
 
-from editorial_voice import build_evening_human_line, build_morning_human_line
+from editorial_voice import (
+    build_evening_human_line,
+    build_morning_human_line,
+    is_editorial_wind_significant,
+)
 from visibility_context import (
     visibility_air_penalty,
     visibility_condition_from_text,
@@ -1126,10 +1130,9 @@ def _morning_flags(lines: list[str], uv_line: str) -> dict[str, bool]:
             wind_avg = float(m_wind.group(1).replace(",", "."))
         except Exception:
             wind_avg = None
-    windy = (
-        isinstance(max_gust, (int, float)) and max_gust >= 7
-    ) or (
-        isinstance(max_average_wind, (int, float)) and max_average_wind >= 3
+    windy = is_editorial_wind_significant(
+        wind_ms=max_average_wind,
+        gust_ms=max_gust,
     )
     visibility_condition = visibility_condition_from_text(text)
     aqi_match = re.search(r"\bAQI\s*(\d+(?:[\.,]\d+)?)", _plain(text), flags=re.I)
@@ -1168,10 +1171,10 @@ def _kld_voice_conditions(lines: list[str], *, flags: dict[str, bool] | None = N
     source_flags = flags or {}
     source_uv = source_flags.get("uv")
     uv = float(source_uv) if isinstance(source_uv, (int, float)) else _uv_value(uv_line)
-    wind_signal = bool(source_flags.get("wind")) or (
-        isinstance(max_gust, (int, float)) and max_gust >= 7
-    ) or (
-        isinstance(max_wind, (int, float)) and max_wind >= 3
+    wind_signal = is_editorial_wind_significant(
+        wind_ms=max_wind,
+        gust_ms=max_gust,
+        explicit=bool(source_flags.get("wind")),
     )
     return {
         "max_temp": source_flags.get("max_temp", max_temp),

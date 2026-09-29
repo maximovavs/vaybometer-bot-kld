@@ -17,7 +17,11 @@ from typing import Union
 import pendulum
 from telegram import Bot, constants
 
-from editorial_voice import build_evening_human_line, build_morning_human_line
+from editorial_voice import (
+    build_evening_human_line,
+    build_morning_human_line,
+    is_editorial_wind_significant,
+)
 from post_common import build_message
 from post_safety import sanitize_post_text, split_telegram_text, validation_summary
 from visibility_context import (
@@ -280,7 +284,10 @@ def _kld_smart_plan_line(v2_text: str) -> str:
     wind = c.get("wind")
     gust = c.get("gust")
     has_rain = bool(c.get("rain"))
-    windy = (isinstance(gust, (int, float)) and gust >= 7) or (isinstance(wind, (int, float)) and wind >= 3)
+    windy = is_editorial_wind_significant(
+        wind_ms=wind,
+        gust_ms=gust,
+    )
     uv = c.get("uv")
     tmax = c.get("tmax")
     visibility = str(c.get("visibility_condition") or "clear")
@@ -704,8 +711,10 @@ def _kld_voice_conditions(v2_text: str) -> dict[str, object]:
         "max_temp": c.get("tmax"),
         "uv": c.get("uv"),
         "uv_high": isinstance(c.get("uv"), (int, float)) and c["uv"] >= 6,
-        "wind": isinstance(max_gust, (int, float)) and max_gust >= 8
-        or isinstance(max_wind, (int, float)) and max_wind >= 6,
+        "wind": is_editorial_wind_significant(
+            wind_ms=max_wind,
+            gust_ms=max_gust,
+        ),
         "wind_ms": max_wind,
         "gust": max_gust,
         "rain": _has_actual_precipitation(plain),
