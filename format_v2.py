@@ -766,6 +766,12 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
     max_gust = _max_gust_ms(text)
     storm_gust = isinstance(max_gust, (int, float)) and max_gust >= _STORM_GUST_MS
     visibility_condition = visibility_condition_from_text(text)
+    region_pairs = _city_temperature_pairs(effective_lines)
+    region_highs = [item[1] for item in region_pairs]
+    has_day_contrast = (
+        len(region_highs) >= 2
+        and abs(max(region_highs) - min(region_highs)) >= 0.1
+    )
     return {
         "storm": bool(storm) or _has_explicit_storm_text(text) or storm_gust,
         "rain": _has_any(text, ("дожд", "морось", "ливн", "осад")),
@@ -782,7 +788,7 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
             isinstance(max_wind, (int, float)) and max_wind >= 3
         ),
         "waves": _has_any(text, ("волна", "волн", "🌊")) and _has_any(text, ("0.8 м", "0.9 м", "1.0 м", "1 м", "1.1 м", "1.2 м")),
-        "contrast": _has_any(text, ("тёплые города", "холодные города", "восток", "внутри области", "контраст")) or (isinstance(max_temp, (int, float)) and max_temp >= 25),
+        "contrast": has_day_contrast,
         "local": _has_any(text, ("локаль", "местами", "неравномер", "по области", "проверить утром")),
         "chill": _has_any(text, ("свеже", "холод", "прохлад", "ветровка")),
         "visibility_condition": visibility_condition,
@@ -791,6 +797,7 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
 
 
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
+    del score_line
     if flags["storm"]:
         return "🧭 Главное завтра: неустойчивое погодное окно; береговые планы лучше держать гибкими."
     if flags.get("visibility_condition") in {"dense_fog", "fog"}:
@@ -811,10 +818,6 @@ def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
         return "🧭 Главное завтра: заметен контраст побережья, Калининграда и востока области."
     if flags["chill"]:
         return "🧭 Главное завтра: день ощущается свежим, особенно у открытой воды."
-    if score_line:
-        reason = re.sub(r"^.*?—\s*", "", score_line).strip(" .")
-        if reason and not (_has_wind_claim(reason) and not flags.get("wind")):
-            return "🧭 Главное завтра: " + reason[0].lower() + reason[1:] + "."
     return "🧭 Главное завтра: спокойный областной день без резких погодных акцентов."
 
 
@@ -841,8 +844,6 @@ def _evening_nuance(flags: dict[str, bool], has_sea: bool, has_region: bool) -> 
         return "⚠️ Нюанс: на побережье ощущение меняют порывы, а не только градусы."
     if flags["waves"]:
         return "⚠️ Нюанс: волна и холодная вода важнее формальной температуры воздуха."
-    if flags["contrast"] and has_region:
-        return "⚠️ Нюанс: восток области может быть заметно теплее/холоднее берега."
     return ""
 
 
@@ -878,8 +879,6 @@ def _evening_plan(flags: dict[str, bool]) -> str:
         return "✅ План завтра: зонт/дождевик и гибкое окно для прогулки."
     if flags["wind"]:
         return "✅ План завтра: у моря выбирать защищённые променады и сверить порывы утром."
-    if flags["contrast"]:
-        return "✅ План завтра: не усреднять область — берег, город и восток проверить отдельно."
     return "✅ План завтра: обычные дела и прогулки без специальных погодных ограничений."
 
 
@@ -1268,7 +1267,53 @@ def _ground_morning_source_wind_line(source: str, flags: dict[str, bool]) -> str
     return s
 
 
-def _morning_main_nuance_line(source: str, warning: str, flags: dict[str, bool]) -> str:
+def _nuance_signal_categories(text: str) -> set[str]:
+    low = _plain(text).lower()
+    out: set[str] = set()
+    if re.search(r"\b(?:дожд|морос|ливн|осад)\w*", low, flags=re.I):
+        out.add("rain")
+    if _has_wind_claim(low):
+        out.add("wind")
+    if re.search(r"\b(?:жар|зно|пекл)\w*", low, flags=re.I):
+        out.add("heat")
+    if re.search(r"\b(?:уф|uv)\b|\bspf\b", low, flags=re.I):
+        out.add("uv")
+    return out
+
+
+def _ground_morning_source_nuance(source: str, flags: dict[str, bool], score_line: str = "") -> str:
+    s = str(source or "").strip()
+    if not s:
+        return ""
+    source_signals = _nuance_signal_categories(s)
+    supported: set[str] = set()
+    if "rain" in source_signals and (flags.get("rain") or flags.get("drizzle")):
+        supported.add("rain")
+    if "wind" in source_signals and flags.get("windy"):
+        supported.add("wind")
+    if "heat" in source_signals and flags.get("heat"):
+        supported.add("heat")
+    if "uv" in source_signals and flags.get("uv_high"):
+        supported.add("uv")
+    if not supported:
+        return ""
+    score_signals = _nuance_signal_categories(score_line)
+    if supported - score_signals:
+        return s
+    low = _plain(s).lower()
+    detail_markers = (
+        "у воды", "у моря", "побереж", "открыт", "местами",
+        "локаль", "по области", "в калининград", "утром", "днём",
+    )
+    return s if any(marker in low for marker in detail_markers) else ""
+
+
+def _morning_main_nuance_line(
+    source: str,
+    warning: str,
+    flags: dict[str, bool],
+    score_line: str = "",
+) -> str:
     visibility = str(flags.get("visibility_condition") or "clear")
     if visibility in {"dense_fog", "fog"}:
         return "⚠️ Главный нюанс: утром осторожнее на дорогах, развязках, мостах и открытых участках."
@@ -1276,7 +1321,7 @@ def _morning_main_nuance_line(source: str, warning: str, flags: dict[str, bool])
         return "⚠️ Главный нюанс: утром обзор местами короче обычного; на дорогах держать запас дистанции."
     if visibility in {"dust_haze", "mixed_visibility"}:
         return "⚠️ Главный нюанс: утром воздух и дальняя видимость могут быть хуже обычного."
-    grounded_source = _ground_morning_source_wind_line(source, flags)
+    grounded_source = _ground_morning_source_nuance(source, flags, score_line)
     if grounded_source:
         return grounded_source
     if flags.get("windy"):
@@ -1450,7 +1495,8 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
         out.append(tags)
         return "\n".join(out).strip()
 
-    for line in (_morning_score_line(score, flags), scenario):
+    score_line = _morning_score_line(score, flags)
+    for line in (score_line, scenario):
         if line and line not in out:
             out.append(line)
     human_line = _morning_human_line(lines, flags, date_s)
@@ -1465,7 +1511,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     best_line = _morning_best_window_line(best_window, flags)
     if best_line:
         out.append(best_line)
-    nuance = _morning_main_nuance_line(main_nuance, warning, flags)
+    nuance = _morning_main_nuance_line(main_nuance, warning, flags, score_line)
     if nuance:
         out.append(nuance)
     if uv_line:

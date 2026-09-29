@@ -1138,6 +1138,51 @@ def kld_evening_meaningful_gust_remains_actionable() -> None:
     assert "защищён" in next(line for line in text.splitlines() if line.startswith("✅ План завтра:")).lower()
 
 
+
+def _regional_spread_evening(kaliningrad_high: float, baltiysk_high: float) -> str:
+    return (
+        "<b>🌅 Калининградская область: погода на завтра (03.07.2026)</b>\n"
+        "✨ VayboMeter завтра: 8.3/10 — хороший день для обычных дел.\n"
+        f"Погода: 🏙️ Калининград — {kaliningrad_high:g}/16 °C • ясно • 💨 1 м/с.\n"
+        "🌊 <b>Морские города</b>\n"
+        f"Балтийск: {baltiysk_high:g}/15 °C • ясно • 💨 1 м/с\n"
+        "🌡 <b>Тёплые города</b>\n"
+        f"• Гвардейск: {kaliningrad_high:g}/14 °C • ясно\n"
+        "#Калининград #погода #здоровье #море\n"
+    )
+
+
+def kld_evening_structural_headings_do_not_create_contrast() -> None:
+    source = _regional_spread_evening(21.0, 21.0)
+    flags = format_v2._evening_flags(source.splitlines(), storm="")
+    text = build_evening_format_v2("Калининградская область", source)
+    assert flags["contrast"] is False
+    assert "заметен контраст" not in text
+    assert "восток области может быть заметно" not in text
+    assert "не усреднять область" not in text
+
+
+def kld_evening_real_regional_spread_owns_only_scenario_role() -> None:
+    source = _regional_spread_evening(21.0, 18.0)
+    flags = format_v2._evening_flags(source.splitlines(), storm="")
+    text = build_evening_format_v2("Калининградская область", source)
+    assert flags["contrast"] is True
+    assert "🧭 Главное завтра: заметен контраст побережья, Калининграда и востока области." in text
+    assert "⚠️ Нюанс: восток области может быть заметно теплее/холоднее берега." not in text
+    assert "✅ План завтра: обычные дела и прогулки без специальных погодных ограничений." in text
+    assert text.lower().count("контраст") == 1
+
+
+def kld_evening_calm_scenario_does_not_echo_score_reason() -> None:
+    source = _regional_spread_evening(21.0, 21.0).replace(
+        "✨ VayboMeter завтра: 8.3/10 — хороший день для обычных дел.",
+        "✨ VayboMeter завтра: 8.3/10 — мягкий спокойный день.",
+    )
+    text = build_evening_format_v2("Калининградская область", source)
+    assert "🧭 Главное завтра: мягкий спокойный день." not in text
+    assert "🧭 Главное завтра: спокойный областной день без резких погодных акцентов." in text
+
+
 def main() -> None:
     checks = (
         kld_evening_normal_no_generic_confidence,
@@ -1186,6 +1231,9 @@ def main() -> None:
         kld_numeric_wind_parser_keeps_average_and_gust_separate,
         kld_evening_weak_wind_and_gust_are_not_promoted,
         kld_evening_meaningful_gust_remains_actionable,
+        kld_evening_structural_headings_do_not_create_contrast,
+        kld_evening_real_regional_spread_owns_only_scenario_role,
+        kld_evening_calm_scenario_does_not_echo_score_reason,
         kld_evening_production_ranks_coolest_nights_by_tmin,
     )
     for check in checks:
