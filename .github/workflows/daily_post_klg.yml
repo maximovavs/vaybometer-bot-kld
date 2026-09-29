@@ -1,0 +1,579 @@
+name: Daily VayboMeter (KLD)
+
+on:
+  schedule:
+    - cron: '30 0 * * *'
+    - cron: '0 14 * * *'
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      run_morning:
+        description: "Запустить утренний пост"
+        type: boolean
+        default: false
+        required: false
+      run_evening:
+        description: "Запустить вечерний пост"
+        type: boolean
+        default: true
+        required: false
+      run_noon_fx:
+        description: "Запустить пост только с курсами"
+        type: boolean
+        default: false
+        required: false
+      format_v2:
+        description: "FORMAT_V2 для ручного теста/override; расписание morning/evening уже включает V2"
+        type: boolean
+        default: true
+        required: false
+      kld_image_enabled:
+        description: "Отправить FORMAT_V2 image перед вечерним KLD постом (для ручного запуска; по расписанию включено)"
+        type: boolean
+        default: false
+        required: false
+      kld_morning_image_enabled:
+        description: "Отправить FORMAT_V2 image перед утренним KLD постом (для ручного запуска; по расписанию включено)"
+        type: boolean
+        default: false
+        required: false
+      publish_to_prod:
+        description: "Публиковать в основной канал?"
+        type: boolean
+        default: false
+        required: false
+      work_date:
+        description: "Переопределить дату (YYYY-MM-DD)"
+        required: false
+      to_test:
+        description: "Публиковать в тестовый канал?"
+        type: boolean
+        default: false
+        required: false
+      channel_override:
+        description: "Явный chat_id канала (перебивает параметры выше)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-post-kld-${{ github.workflow }}-${{ github.job }}
+  cancel-in-progress: false
+
+env:
+  TELEGRAM_TOKEN_KLG:  ${{ secrets.TELEGRAM_TOKEN_KLG }}
+  CHANNEL_ID_KLG:      ${{ secrets.CHANNEL_ID_KLG }}
+  CHANNEL_ID_TEST:     ${{ secrets.CHANNEL_ID_TEST }}
+  CHANNEL_ID_OVERRIDE: ${{ github.event.inputs.channel_override }}
+  TZ: Europe/Kaliningrad
+  WORK_DATE: ${{ github.event.inputs.work_date }}
+  DISABLE_LLM_DAILY: "0"
+  DEBUG_WATER: "0"
+  GEN_SKIP_SHORT: "1"
+  PYTHONUNBUFFERED: "1"
+  FORMAT_V2: ${{ github.event.inputs.format_v2 == 'true' && '1' || '0' }}
+  KLD_IMG_ENABLED: ${{ github.event.inputs.kld_image_enabled == 'true' && '1' || '0' }}
+  KLD_MORNING_IMG_ENABLED: ${{ github.event.inputs.kld_morning_image_enabled == 'true' && '1' || '0' }}
+  PUBLISH_TO_PROD: ${{ github.event.inputs.publish_to_prod || 'false' }}
+  FORMAT_V2_MORNING_SPACING: "1"
+  MORNING_FEELS_LIKE: "1"
+  MORNING_BEST_WINDOW: "1"
+  MORNING_SMART_PLAN: "1"
+  MORNING_VAYBOMETER_SCORE: "1"
+  EVENING_VAYBOMETER_SCORE: "1"
+  FORMAT_V2_POLISH: "1"
+  FORMAT_V2_SCORE_CONCLUSION: "1"
+  FORMAT_V2_SENSOR_LINE: "1"
+  FORMAT_V2_REASON_CONCLUSION: "1"
+  FORMAT_V2_MAIN_NUANCE: "1"
+  FORMAT_V2_ASTRO_CLEANUP: "1"
+  FORMAT_V2_CONFIDENCE_POLISH: "1"
+  KLD_QUAKES_24H: "1"
+  KLD_QUAKE_SHOW_CALM: "0"
+  KLD_QUAKE_HOURS: "24"
+  KLD_QUAKE_RADIUS_KM: "500"
+  KLD_QUAKE_MIN_MAG: "0.9"
+  KLD_VISUAL_HISTORY_PATH: ".cache/kld_visual_history_prod.json"
+  KLD_VISUAL_HISTORY_PROD_PATH: ".cache/kld_visual_history_prod.json"
+  KLD_VISUAL_HISTORY_TEST_PATH: ".cache/kld_visual_history_test.json"
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+  GROQ_MODEL: "openai/gpt-oss-120b"
+  GROQ_FALLBACK_MODEL: "openai/gpt-oss-20b"
+  TO_TEST: ${{ github.event.inputs.to_test }}
+
+jobs:
+  morning:
+    name: Morning post (for today)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '30 0 * * *') ||
+      (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_morning))
+    env:
+      POST_MODE: "morning"
+      DAY_OFFSET: "0"
+      ASTRO_OFFSET: "0"
+      SHOW_AIR: "1"
+      SHOW_SPACE: "1"
+      SHOW_SCHUMANN: "1"
+      DISABLE_SCHUMANN: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore KLD visual history (prod)
+        id: kld-visual-history-prod-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_visual_history_prod.json
+          key: kld-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-visual-history-prod-
+      - name: Restore KLD visual history (test)
+        id: kld-visual-history-test-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_visual_history_test.json
+          key: kld-visual-history-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-visual-history-test-
+      - name: Inspect KLD visual history
+        shell: bash
+        run: |
+          mkdir -p .cache
+          echo "KLD visual history prod exact-key hit: ${{ steps.kld-visual-history-prod-cache.outputs.cache-hit }}"
+          echo "KLD visual history test exact-key hit: ${{ steps.kld-visual-history-test-cache.outputs.cache-hit }}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          for label, env_name in (
+              ("prod", "KLD_VISUAL_HISTORY_PROD_PATH"),
+              ("test", "KLD_VISUAL_HISTORY_TEST_PATH"),
+          ):
+              path = Path(os.environ[env_name])
+              try:
+                  data = json.loads(path.read_text("utf-8"))
+                  count = len(data) if isinstance(data, list) else 0
+              except Exception as exc:
+                  print(f"KLD visual history {label} read issue before generation: {exc}")
+                  count = 0
+              print(f"KLD visual history {label} path: {path}")
+              print(f"KLD visual history {label} entries before generation: {count}")
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Post morning (for today)
+        shell: bash
+        run: |
+          python <<'PY'
+          import asyncio, os, runpy, sys, pendulum, subprocess
+          from pathlib import Path
+          from telegram import Bot, constants
+          from kld_image_first import run_image_first_publication
+          from post_safety import split_telegram_text
+
+          async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):
+              text = Path(text_path).read_text(encoding="utf-8").strip()
+              chunks = split_telegram_text(text)
+              if not chunks:
+                  raise SystemExit("Extracted FORMAT_V2 text is empty")
+              message_ids = []
+              async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:
+                  for idx, chunk in enumerate(chunks, start=1):
+                      if add_test_label:
+                          prefix = (
+                              f"<b>Test safe post {idx}/{len(chunks)}</b>\n"
+                              if len(chunks) > 1
+                              else "<b>Test safe post</b>\n"
+                          )
+                          chunk = prefix + chunk
+                      message = await bot.send_message(
+                          chat_id=int(chat_id),
+                          text=chunk,
+                          parse_mode=constants.ParseMode.HTML,
+                          disable_web_page_preview=True,
+                      )
+                      if getattr(message, "message_id", None) is not None:
+                          message_ids.append(int(message.message_id))
+              return message_ids
+
+          print("Morning post (for today)")
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
+          scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
+          format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
+          to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
+          publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
+          image_enabled = scheduled_run or (
+              os.getenv("KLD_MORNING_IMG_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+          )
+
+          if format_v2:
+              args = ["safe_test_post.py", "--mode", "morning", "--format-v2"]
+              if wd:
+                  args += ["--date", wd]
+
+              send_chat = ""
+              if chat_override:
+                  args += ["--chat-id", chat_override, "--send", "--no-test-label"]
+                  send_chat = chat_override
+              elif to_test:
+                  args += ["--to-test", "--send"]
+                  send_chat = (os.getenv("CHANNEL_ID_TEST") or "").strip()
+              elif scheduled_run and production_chat:
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  send_chat = production_chat
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  send_chat = production_chat
+              else:
+                  print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
+
+              if image_enabled and send_chat:
+                  preview_args = [
+                      "safe_test_post.py", "--mode", "morning", "--format-v2",
+                      "--visibility-context-out", "format_v2_visibility_context.json",
+                  ]
+                  if wd:
+                      preview_args += ["--date", wd]
+                  preview_cmd = [sys.executable] + preview_args
+
+                  caption = "Визуальный вайб сегодняшнего утра над Балтикой 🌊"
+                  if to_test:
+                      caption = "🧪 " + caption
+                  history_namespace = "test" if to_test else "prod"
+
+                  img_cmd = [
+                      sys.executable,
+                      "tools/kld_visual_fixture_image.py",
+                      "--message-file", "format_v2_message.txt",
+                      "--visibility-context-file", "format_v2_visibility_context.json",
+                      "--post-type", "morning",
+                      "--send-to-test",
+                      "--chat-id", send_chat,
+                      "--caption", caption,
+                      "--history-namespace", history_namespace,
+                      "--result-file", "image_result.json",
+                      "--prompt-metadata-file", "image_prompt_metadata.json",
+                  ]
+                  add_test_label = to_test and not chat_override and not scheduled_run
+                  run_image_first_publication(
+                      mode="morning",
+                      preview_cmd=preview_cmd,
+                      image_cmd=img_cmd,
+                      send_text=lambda text_path: asyncio.run(
+                          send_extracted_text(send_chat, text_path, add_test_label)
+                      ),
+                  )
+              else:
+                  if image_enabled and not send_chat:
+                      print("KLD_MORNING_IMG_ENABLED=1, но нет целевого chat_id — утренняя картинка пропущена.")
+                  sys.argv = args
+                  runpy.run_path("safe_test_post.py", run_name="__main__")
+              raise SystemExit(0)
+
+          args = ["post_kld.py", "--mode", "morning"]
+          if chat_override:
+              args += ["--chat-id", chat_override]
+          elif to_test:
+              args.append("--to-test")
+          elif publish_to_prod:
+              if not production_chat:
+                  raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+              args += ["--chat-id", production_chat]
+          sys.argv = args
+          runpy.run_path("post_kld.py", run_name="__main__")
+          PY
+      - name: Upload KLD morning publication diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kld-morning-publication-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            image_result.json
+            image_prompt_metadata.json
+            safe_test_post_preview.log
+            format_v2_message.txt
+            format_v2_visibility_context.json
+            outputs/kld_local_informative_cover.png
+
+  evening:
+    name: Evening post (for tomorrow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: morning
+    if: >
+      always() &&
+      (
+        (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *') ||
+        (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_evening))
+      )
+    env:
+      POST_MODE: "evening"
+      DAY_OFFSET: "1"
+      ASTRO_OFFSET: "1"
+      SHOW_AIR: "0"
+      SHOW_SPACE: "0"
+      SHOW_SCHUMANN: "0"
+      DISABLE_SCHUMANN: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore KLD visual history (prod)
+        id: kld-visual-history-prod-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_visual_history_prod.json
+          key: kld-visual-history-prod-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-visual-history-prod-
+      - name: Restore KLD visual history (test)
+        id: kld-visual-history-test-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_visual_history_test.json
+          key: kld-visual-history-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-visual-history-test-
+      - name: Inspect KLD visual history
+        shell: bash
+        run: |
+          mkdir -p .cache
+          echo "KLD visual history prod exact-key hit: ${{ steps.kld-visual-history-prod-cache.outputs.cache-hit }}"
+          echo "KLD visual history test exact-key hit: ${{ steps.kld-visual-history-test-cache.outputs.cache-hit }}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          for label, env_name in (
+              ("prod", "KLD_VISUAL_HISTORY_PROD_PATH"),
+              ("test", "KLD_VISUAL_HISTORY_TEST_PATH"),
+          ):
+              path = Path(os.environ[env_name])
+              try:
+                  data = json.loads(path.read_text("utf-8"))
+                  count = len(data) if isinstance(data, list) else 0
+              except Exception as exc:
+                  print(f"KLD visual history {label} read issue before generation: {exc}")
+                  count = 0
+              print(f"KLD visual history {label} path: {path}")
+              print(f"KLD visual history {label} entries before generation: {count}")
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Post evening (announce tomorrow)
+        shell: bash
+        run: |
+          python <<'PY'
+          import asyncio, os, runpy, sys, pendulum, subprocess
+          from pathlib import Path
+          from telegram import Bot, constants
+          from kld_image_first import run_image_first_publication
+          from post_safety import split_telegram_text
+
+          async def send_extracted_text(chat_id: str, text_path: str, add_test_label: bool):
+              text = Path(text_path).read_text(encoding="utf-8").strip()
+              chunks = split_telegram_text(text)
+              if not chunks:
+                  raise SystemExit("Extracted FORMAT_V2 text is empty")
+              message_ids = []
+              async with Bot(token=os.environ["TELEGRAM_TOKEN_KLG"]) as bot:
+                  for idx, chunk in enumerate(chunks, start=1):
+                      if add_test_label:
+                          prefix = (
+                              f"<b>Test safe post {idx}/{len(chunks)}</b>\n"
+                              if len(chunks) > 1
+                              else "<b>Test safe post</b>\n"
+                          )
+                          chunk = prefix + chunk
+                      message = await bot.send_message(
+                          chat_id=int(chat_id),
+                          text=chunk,
+                          parse_mode=constants.ParseMode.HTML,
+                          disable_web_page_preview=True,
+                      )
+                      if getattr(message, "message_id", None) is not None:
+                          message_ids.append(int(message.message_id))
+              return message_ids
+
+          print("Evening post (for tomorrow)")
+          wd = os.getenv("WORK_DATE")
+          if wd:
+              def _fake_today(tz=None):
+                  dt = pendulum.parse(wd)
+                  return dt.in_tz(tz) if tz else dt
+              pendulum.today = _fake_today
+          scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
+          format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
+          to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
+          publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
+          chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
+          production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
+          image_enabled = scheduled_run or (
+              os.getenv("KLD_IMG_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+          )
+
+          if format_v2:
+              args = ["safe_test_post.py", "--mode", "evening", "--format-v2"]
+              if wd:
+                  args += ["--date", wd]
+
+              send_chat = ""
+              if chat_override:
+                  args += ["--chat-id", chat_override, "--send", "--no-test-label"]
+                  send_chat = chat_override
+              elif to_test:
+                  args += ["--to-test", "--send"]
+                  send_chat = (os.getenv("CHANNEL_ID_TEST") or "").strip()
+              elif scheduled_run and production_chat:
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  send_chat = production_chat
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+                  args += ["--chat-id", production_chat, "--send", "--no-test-label"]
+                  send_chat = production_chat
+              else:
+                  print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
+
+              if image_enabled and send_chat:
+                  preview_args = [
+                      "safe_test_post.py", "--mode", "evening", "--format-v2",
+                      "--visibility-context-out", "format_v2_visibility_context.json",
+                  ]
+                  if wd:
+                      preview_args += ["--date", wd]
+                  preview_cmd = [sys.executable] + preview_args
+
+                  caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
+                  if to_test:
+                      caption = "🧪 " + caption
+                  history_namespace = "test" if to_test else "prod"
+
+                  img_cmd = [
+                      sys.executable,
+                      "tools/kld_visual_fixture_image.py",
+                      "--message-file", "format_v2_message.txt",
+                      "--visibility-context-file", "format_v2_visibility_context.json",
+                      "--send-to-test",
+                      "--chat-id", send_chat,
+                      "--caption", caption,
+                      "--history-namespace", history_namespace,
+                      "--result-file", "image_result.json",
+                      "--prompt-metadata-file", "image_prompt_metadata.json",
+                  ]
+                  add_test_label = to_test and not chat_override and not scheduled_run
+                  run_image_first_publication(
+                      mode="evening",
+                      preview_cmd=preview_cmd,
+                      image_cmd=img_cmd,
+                      send_text=lambda text_path: asyncio.run(
+                          send_extracted_text(send_chat, text_path, add_test_label)
+                      ),
+                  )
+              else:
+                  if image_enabled and not send_chat:
+                      print("KLD_IMG_ENABLED=1, но нет целевого chat_id — картинка пропущена.")
+                  sys.argv = args
+                  runpy.run_path("safe_test_post.py", run_name="__main__")
+              raise SystemExit(0)
+
+          args = ["post_kld.py", "--mode", "evening"]
+          if chat_override:
+              args += ["--chat-id", chat_override]
+          elif to_test:
+              args.append("--to-test")
+          elif publish_to_prod:
+              if not production_chat:
+                  raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+              args += ["--chat-id", production_chat]
+          sys.argv = args
+          runpy.run_path("post_kld.py", run_name="__main__")
+          PY
+      - name: Upload KLD evening publication diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kld-evening-publication-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            image_result.json
+            image_prompt_metadata.json
+            safe_test_post_preview.log
+            format_v2_message.txt
+            format_v2_visibility_context.json
+            outputs/kld_local_informative_cover.png
+
+  noon_fx:
+    name: Noon FX only (12:00 MSK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 8 * * *') ||
+      (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_noon_fx))
+    env:
+      DISABLE_LLM_DAILY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Post FX Market Pulse only (12:00 MSK)
+        shell: bash
+        run: |
+          python <<'PY'
+          import os, runpy, sys, pendulum
+          wd = os.getenv("WORK_DATE")
+          args = ["post_kld_fx_market_pulse.py"]
+          if wd:
+              args += ["--date", wd]
+          chat_override = os.getenv("CHANNEL_ID_OVERRIDE") or ""
+          if chat_override.strip():
+              args += ["--chat-id", chat_override.strip()]
+          else:
+              to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
+              publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
+              production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
+              if to_test:
+                  args.append("--to-test")
+              elif publish_to_prod:
+                  if not production_chat:
+                      raise SystemExit("PUBLISH_TO_PROD=1, но CHANNEL_ID_KLG не определён")
+                  args += ["--chat-id", production_chat]
+          sys.argv = args
+          runpy.run_path("post_kld_fx_market_pulse.py", run_name="__main__")
+          PY
