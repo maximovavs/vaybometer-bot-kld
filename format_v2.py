@@ -735,7 +735,7 @@ def _morning_score_reason(flags: dict[str, object], score: float) -> str:
         return "с оговорками; высокий УФ."
     if flags.get("windy"):
         gust = flags.get("gust")
-        if isinstance(gust, (int, float)) and gust >= 7:
+        if is_editorial_wind_significant(gust_ms=gust):
             return "порывы требуют поправки на маршрут."
         return "ветер требует поправки на маршрут."
     return _morning_score_label(score) + "."

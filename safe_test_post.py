@@ -348,8 +348,6 @@ def _kld_score_line(v2_text: str) -> str:
             score -= 0.4; reasons.append("ветер")
     elif isinstance(wind, (int, float)) and wind >= 6:
         score -= 0.8; reasons.append("ветер")
-    elif isinstance(wind, (int, float)) and wind >= 3:
-        score -= 0.5; reasons.append("ветер")
     if isinstance(tmax, (int, float)):
         if tmax >= 35:
             score -= 1.2; reasons.append("жара")
@@ -388,12 +386,10 @@ def _kld_score_line(v2_text: str) -> str:
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; тёплый день и высокий УФ."
         if visibility != "clear":
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и {visibility_reason(visibility)}."
-        windy = (
-            isinstance(gust, (int, float)) and gust >= 7
-        ) or (
-            isinstance(wind, (int, float)) and wind >= 3
-        )
-        if windy:
+        if is_editorial_wind_significant(
+            wind_ms=wind,
+            gust_ms=gust,
+        ):
             return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ и ветер у воды."
         return f"✨ VayboMeter: {score:.1f}/10 — с оговорками; высокий УФ."
     label = _score_label(score)
@@ -655,10 +651,9 @@ def _kld_main_nuance(v2_text: str) -> str:
     cool = any(x in low for x in ("прохлад", "свеж"))
     gust = c.get("gust")
     wind_ms = c.get("wind")
-    wind = (
-        isinstance(gust, (int, float)) and gust >= 7
-    ) or (
-        isinstance(wind_ms, (int, float)) and wind_ms >= 3
+    wind = is_editorial_wind_significant(
+        wind_ms=wind_ms,
+        gust_ms=gust,
     )
     if precip and cool and wind:
         return "⚠️ Главный нюанс: морось, свежий ветер и прохладное побережье."
