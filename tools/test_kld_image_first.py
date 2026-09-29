@@ -1256,6 +1256,49 @@ def local_cover_semantic_validation_blocks_tampering() -> None:
         assert any("display facts" in error or "snow" in error for error in invalid["errors"])
 
 
+
+def local_cover_variants_rotate_across_adjacent_dates() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        variants: set[str] = set()
+        panels: set[tuple[int, ...]] = set()
+        horizons: set[tuple[int, ...]] = set()
+
+        for day in range(20, 24):
+            date_value = f"{day:02d}.07.2026"
+            message = MESSAGE.replace("20.07.2026", date_value)
+            metadata = render_kld_informative_cover(
+                message,
+                post_type="evening",
+                visibility_context={
+                    "visibility_condition": "reduced_visibility",
+                    "morning_min_visibility_m": 5500,
+                    "reported_visibility_threshold_m": 6000,
+                },
+                output_path=root / f"cover-{day}.png",
+            )
+            variants.add(str(metadata["cover_variant"]))
+            panels.add(tuple(metadata["panel_bbox"]))
+            horizons.add(tuple(metadata["horizon_band"]))
+            valid = validate_kld_cover_semantics(
+                message,
+                metadata,
+                post_type="evening",
+                visibility_context={
+                    "visibility_condition": "reduced_visibility",
+                    "morning_min_visibility_m": 5500,
+                    "reported_visibility_threshold_m": 6000,
+                },
+            )
+            assert valid["valid"] is True, valid
+            assert Path(metadata["path"]).stat().st_size > 0
+
+        assert len(variants) == 4
+        assert len(panels) >= 3
+        assert len(horizons) == 4
+
+
+
 def invalid_local_cover_is_not_sent_and_text_remains_nonblocking() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1673,6 +1716,7 @@ TESTS = [
     mixed_regional_precipitation_keeps_text_and_graphics_aligned,
     production_decorative_snow_headers_are_not_weather_evidence,
     local_cover_semantic_validation_blocks_tampering,
+    local_cover_variants_rotate_across_adjacent_dates,
     invalid_local_cover_is_not_sent_and_text_remains_nonblocking,
     second_backend_runs_after_pollinations_exhaustion_with_diagnostics,
     semantic_rejection_rotates_to_next_candidate,

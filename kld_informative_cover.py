@@ -14,7 +14,8 @@ from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_sto
 from weather_text import split_clauses as _split_clauses
 
 
-RENDERER_VERSION = "kld_local_informative_cover_v2"
+RENDERER_VERSION = "kld_local_informative_cover_v3"
+_COVER_VARIANTS = ("north_horizon", "lower_brief", "mid_brief", "dune_window")
 _NUMBER = r"-?\d+(?:[.,]\d+)?"
 _CITY_TEMPERATURE_RE = re.compile(
     rf"Калининград[^\n]*?({_NUMBER})\s*/\s*({_NUMBER})\s*°?C?",
@@ -690,6 +691,80 @@ def _draw_weather_graphics(
     }
 
 
+def _select_cover_variant(metadata: Mapping[str, Any], post_type: str) -> str:
+    raw_date = str(metadata.get("date") or "")
+    match = _DATE_RE.search(raw_date)
+    if match:
+        day, month, year = (int(part) for part in match.group(1).split("."))
+        seed = day + month * 3 + year
+    else:
+        seed = 0
+    if str(post_type).strip().lower() == "evening":
+        seed += 1
+    return _COVER_VARIANTS[seed % len(_COVER_VARIANTS)]
+
+
+def _cover_layout(variant: str) -> dict[str, Any]:
+    if variant == "lower_brief":
+        return {
+            "horizon_top": 300,
+            "horizon_bottom": 525,
+            "panel_bbox": (70, 445, 1010, 1010),
+            "branding_origin": (115, 480),
+            "title_origin": (115, 542),
+            "date_origin": (117, 622),
+            "facts_y": 700,
+        }
+    if variant == "mid_brief":
+        return {
+            "horizon_top": 560,
+            "horizon_bottom": 800,
+            "panel_bbox": (70, 225, 1010, 745),
+            "branding_origin": (115, 260),
+            "title_origin": (115, 322),
+            "date_origin": (117, 402),
+            "facts_y": 480,
+        }
+    if variant == "dune_window":
+        return {
+            "horizon_top": 430,
+            "horizon_bottom": 675,
+            "panel_bbox": (70, 70, 1010, 590),
+            "branding_origin": (115, 112),
+            "title_origin": (115, 174),
+            "date_origin": (117, 254),
+            "facts_y": 326,
+        }
+    return {
+        "horizon_top": 665,
+        "horizon_bottom": 850,
+        "panel_bbox": (70, 70, 1010, 590),
+        "branding_origin": (115, 112),
+        "title_origin": (115, 174),
+        "date_origin": (117, 254),
+        "facts_y": 326,
+    }
+
+
+def _draw_variant_backdrop(draw: Any, *, variant: str, horizon_top: int, horizon_bottom: int) -> None:
+    if variant == "lower_brief":
+        draw.ellipse((90, 70, 360, 340), outline=(213, 227, 230), width=7)
+        for x in range(610, 1040, 90):
+            draw.arc((x - 250, 90, x + 130, 360), 205, 342, fill=(178, 207, 217), width=5)
+    elif variant == "mid_brief":
+        for y in range(80, 540, 80):
+            draw.line((650, y, 1030, y + 180), fill=(197, 216, 222), width=5)
+        draw.ellipse((760, 65, 1005, 310), outline=(220, 230, 230), width=5)
+    elif variant == "dune_window":
+        draw.rounded_rectangle((650, 80, 1015, 390), radius=120, outline=(214, 224, 220), width=6)
+        for x in range(120, 620, 85):
+            draw.arc((x - 160, horizon_bottom - 45, x + 220, horizon_bottom + 85), 195, 345, fill=(184, 203, 204), width=4)
+    else:
+        for offset in range(0, 360, 32):
+            y = horizon_top + 35 + (offset % 120)
+            draw.arc((-120 + offset * 3, y, 260 + offset * 3, y + 55), 190, 345, fill=(178, 207, 217), width=4)
+
+
 def render_kld_informative_cover(
     message: str,
     *,
@@ -706,6 +781,8 @@ def render_kld_informative_cover(
         visibility_context=visibility_context,
     )
     top, middle, sand = _palette(metadata)
+    variant = _select_cover_variant(metadata, post_type)
+    layout = _cover_layout(variant)
     width = height = 1080
     image = Image.new("RGB", (width, height), top)
     draw = ImageDraw.Draw(image)
@@ -720,27 +797,47 @@ def render_kld_informative_cover(
             color = tuple(round(middle[i] * (1 - local) + sand[i] * local) for i in range(3))
         draw.line((0, y, width, y), fill=color)
 
-    # Baltic horizon and restrained natural texture.
-    draw.rectangle((0, 665, width, 850), fill=(74, 119, 142))
-    for offset in range(0, 360, 32):
-        y = 700 + (offset % 120)
-        draw.arc((-120 + offset * 3, y, 260 + offset * 3, y + 55), 190, 345, fill=(178, 207, 217), width=4)
-    draw.polygon(((0, 850), (240, 795), (520, 850), (810, 800), (1080, 835), (1080, 1080), (0, 1080)), fill=sand)
+    # Baltic horizon and restrained natural texture. The large geometry rotates
+    # by target date so consecutive local fallbacks are not one near-identical card.
+    horizon_top = int(layout["horizon_top"])
+    horizon_bottom = int(layout["horizon_bottom"])
+    draw.rectangle((0, horizon_top, width, horizon_bottom), fill=(74, 119, 142))
+    _draw_variant_backdrop(
+        draw,
+        variant=variant,
+        horizon_top=horizon_top,
+        horizon_bottom=horizon_bottom,
+    )
+    dune_peak = max(horizon_top + 80, horizon_bottom - 55)
+    draw.polygon(
+        (
+            (0, horizon_bottom),
+            (240, dune_peak),
+            (520, horizon_bottom),
+            (810, max(horizon_top + 65, dune_peak + 5)),
+            (1080, max(horizon_top + 80, horizon_bottom - 15)),
+            (1080, 1080),
+            (0, 1080),
+        ),
+        fill=sand,
+    )
 
     weather = metadata["weather"]
     if weather["fog"] or weather["mixed_visibility"]:
         draw.rounded_rectangle((0, 500, width, 760), radius=80, fill=(224, 225, 218))
     graphics = _draw_weather_graphics(draw, width=width, weather=weather)
 
-    # Branded information panel; no pseudo-photographic text.
-    draw.rounded_rectangle((70, 70, 1010, 590), radius=42, fill=(20, 34, 45), outline=(230, 238, 240), width=3)
-    draw.text((115, 112), "VAYBOMETER · KLD", font=_font(28, bold=True), fill=(154, 199, 216))
-    draw.text((115, 174), metadata["title"], font=_font(61, bold=True), fill=(247, 249, 246))
+    # Branded information panel; the panel can move as part of the bounded
+    # fallback variant while the facts and typography remain unchanged.
+    panel_bbox = tuple(layout["panel_bbox"])
+    draw.rounded_rectangle(panel_bbox, radius=42, fill=(20, 34, 45), outline=(230, 238, 240), width=3)
+    draw.text(tuple(layout["branding_origin"]), "VAYBOMETER · KLD", font=_font(28, bold=True), fill=(154, 199, 216))
+    draw.text(tuple(layout["title_origin"]), metadata["title"], font=_font(61, bold=True), fill=(247, 249, 246))
     if metadata["date"]:
-        draw.text((117, 254), metadata["date"], font=_font(29), fill=(194, 211, 217))
+        draw.text(tuple(layout["date_origin"]), metadata["date"], font=_font(29), fill=(194, 211, 217))
 
     facts = metadata["facts"] or ["АКТУАЛЬНЫЙ ПРОГНОЗ — В ТЕКСТЕ"]
-    y = 326
+    y = int(layout["facts_y"])
     for fact in facts:
         draw.rounded_rectangle((112, y - 8, 968, y + 66), radius=18, fill=(42, 62, 74))
         draw.text((142, y + 8), fact, font=_font(31, bold=True), fill=(245, 247, 242))
@@ -749,6 +846,9 @@ def render_kld_informative_cover(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")
+    metadata["cover_variant"] = variant
+    metadata["panel_bbox"] = list(panel_bbox)
+    metadata["horizon_band"] = [horizon_top, horizon_bottom]
     metadata["graphics"] = graphics
     metadata["precipitation_display"] = weather["precipitation_display"]
     metadata["rain_graphics"] = bool(graphics["rain_lines"])
@@ -757,6 +857,9 @@ def render_kld_informative_cover(
     metadata["lightning_graphics"] = bool(graphics["lightning_line"])
     png_info = PngImagePlugin.PngInfo()
     png_info.add_text("renderer_version", RENDERER_VERSION)
+    png_info.add_text("cover_variant", variant)
+    png_info.add_text("panel_bbox", json.dumps(list(panel_bbox), separators=(",", ":")))
+    png_info.add_text("horizon_band", json.dumps([horizon_top, horizon_bottom], separators=(",", ":")))
     png_info.add_text("weather_flags", json.dumps(weather, ensure_ascii=False, sort_keys=True))
     png_info.add_text("graphics", json.dumps(graphics, ensure_ascii=False, sort_keys=True))
     png_info.add_text("explicit_storm", str(bool(weather["explicit_storm"])).lower())
