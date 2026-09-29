@@ -701,6 +701,21 @@ def _select_cover_variant(metadata: Mapping[str, Any], post_type: str) -> str:
         seed = 0
     if str(post_type).strip().lower() == "evening":
         seed += 1
+
+    weather = metadata.get("weather")
+    weather = weather if isinstance(weather, Mapping) else {}
+    has_visible_weather_graphics = bool(
+        weather.get("thunderstorm")
+        or weather.get("actual_precipitation")
+        or weather.get("strong_wind")
+    )
+    if has_visible_weather_graphics:
+        # The lower/middle information panels overlap the bounded weather-motif
+        # strip. Keep factual rain/lightning/wind graphics fully visible rather
+        # than letting a visual-variation choice hide source-backed evidence.
+        safe_variants = ("north_horizon", "dune_window")
+        return safe_variants[seed % len(safe_variants)]
+
     return _COVER_VARIANTS[seed % len(_COVER_VARIANTS)]
 
 
