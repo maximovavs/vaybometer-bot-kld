@@ -91,6 +91,110 @@
       "kld_night_01"
     ]
   },
+  "overlay_geometry": {
+    "kld_clear_01": {
+      "title_panel": [35, 75, 681, 204],
+      "title_safe": [70, 103, 660, 158],
+      "facts_panel": [32, 724, 739, 1165],
+      "facts_safe": [78, 766, 700, 1125]
+    },
+    "kld_sunset_01": {
+      "title_panel": [35, 77, 658, 204],
+      "title_safe": [70, 103, 635, 158],
+      "facts_panel": [34, 897, 735, 1225],
+      "facts_safe": [78, 939, 695, 1185]
+    },
+    "kld_overcast_01": {
+      "title_panel": [35, 73, 690, 203],
+      "title_safe": [70, 103, 668, 158],
+      "facts_panel": [32, 916, 741, 1241],
+      "facts_safe": [78, 958, 700, 1201]
+    },
+    "kld_overcast_02": {
+      "title_panel": [37, 75, 610, 202],
+      "title_safe": [70, 103, 588, 158],
+      "facts_panel": [35, 896, 752, 1212],
+      "facts_safe": [78, 938, 710, 1172]
+    },
+    "kld_rain_evening_01": {
+      "title_panel": [37, 87, 696, 223],
+      "title_safe": [70, 104, 672, 159],
+      "facts_panel": [37, 874, 734, 1225],
+      "facts_safe": [78, 916, 695, 1185]
+    },
+    "kld_fog_01": {
+      "title_panel": [37, 92, 604, 225],
+      "title_safe": [70, 104, 580, 159],
+      "facts_panel": [37, 836, 721, 1223],
+      "facts_safe": [78, 878, 680, 1183]
+    },
+    "kld_snow_01": {
+      "title_panel": [37, 90, 704, 226],
+      "title_safe": [70, 104, 680, 159],
+      "facts_panel": [37, 867, 720, 1222],
+      "facts_safe": [78, 909, 680, 1182]
+    },
+    "kld_frost_sunset_01": {
+      "title_panel": [37, 89, 604, 224],
+      "title_safe": [70, 104, 580, 159],
+      "facts_panel": [36, 841, 720, 1223],
+      "facts_safe": [78, 883, 680, 1183]
+    },
+    "kld_strong_wind_01": {
+      "title_panel": [37, 90, 707, 227],
+      "title_safe": [70, 104, 682, 159],
+      "facts_panel": [37, 835, 721, 1227],
+      "facts_safe": [78, 877, 680, 1187]
+    },
+    "kld_rain_day_01": {
+      "title_panel": [40, 86, 703, 235],
+      "title_safe": [70, 104, 678, 159],
+      "facts_panel": [35, 906, 761, 1260],
+      "facts_safe": [78, 948, 720, 1220]
+    },
+    "kld_windy_autumn_01": {
+      "title_panel": [42, 88, 703, 235],
+      "title_safe": [70, 104, 678, 159],
+      "facts_panel": [35, 906, 760, 1261],
+      "facts_safe": [78, 948, 720, 1221]
+    },
+    "kld_winter_overcast_01": {
+      "title_panel": [41, 88, 703, 235],
+      "title_safe": [70, 104, 678, 159],
+      "facts_panel": [35, 908, 760, 1261],
+      "facts_safe": [78, 950, 720, 1221]
+    },
+    "kld_blizzard_01": {
+      "title_panel": [41, 88, 701, 235],
+      "title_safe": [70, 104, 677, 159],
+      "facts_panel": [36, 906, 760, 1261],
+      "facts_safe": [78, 948, 720, 1221]
+    },
+    "kld_snow_02": {
+      "title_panel": [41, 88, 703, 236],
+      "title_safe": [70, 104, 678, 159],
+      "facts_panel": [34, 908, 760, 1261],
+      "facts_safe": [78, 950, 720, 1221]
+    },
+    "kld_night_01": {
+      "title_panel": [42, 89, 703, 236],
+      "title_safe": [70, 104, 678, 159],
+      "facts_panel": [35, 907, 760, 1261],
+      "facts_safe": [78, 949, 720, 1221]
+    },
+    "kld_frost_01": {
+      "title_panel": [37, 88, 604, 222],
+      "title_safe": [70, 104, 580, 159],
+      "facts_panel": [37, 838, 720, 1217],
+      "facts_safe": [78, 880, 680, 1177]
+    },
+    "kld_slush_01": {
+      "title_panel": [39, 84, 695, 219],
+      "title_safe": [70, 104, 670, 159],
+      "facts_panel": [36, 874, 731, 1219],
+      "facts_safe": [78, 916, 690, 1179]
+    }
+  },
   "night_rule": "night asset requires explicit visual_period=night",
   "slush_rule": "mixed snow/rain or snow/drizzle plus near-freezing temperature evidence",
   "truth_rule": "background illustrates only source-backed weather state and never creates a claim",
