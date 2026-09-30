@@ -82,10 +82,12 @@ def scenario_for_metadata(
         if weather.get("strong_wind") or weather.get("severe_weather"):
             return "heavy_snow"
         return "snow"
-    if weather.get("fog") or weather.get("mixed_visibility") or weather.get("reduced_visibility"):
+    if weather.get("fog"):
         return "fog"
     if display in {"rain", "rain_and_drizzle", "drizzle", "precipitation"}:
         return "rain_evening" if mode == "evening" else "rain_day"
+    if weather.get("mixed_visibility") or weather.get("reduced_visibility"):
+        return "fog"
     if weather.get("strong_wind") or weather.get("severe_weather"):
         return "windy_autumn" if month in {9, 10, 11} else "strong_wind"
 
