@@ -58,6 +58,51 @@ _DROP_LINE_PATTERNS = [
     (re.compile(r"\bЛуна\s*[—-]\s*держи курс на простые", re.I), "generic moon placeholder"),
 ]
 
+
+_RECOMMENDATION_LINE_RE = re.compile(
+    r"^(?P<prefix>✅\s*(?:Сегодня|План):)\s*(?P<body>.*)$",
+    re.I,
+)
+_CONTROL_LABEL_RE = re.compile(
+    r"^(?P<label>Constraint|Instruction|System|Developer|Prompt|Policy|Rule)\s*:",
+    re.I,
+)
+_CONTROL_LEADING_MARKUP_RE = re.compile(r"^[\s*\`_~>#•\-–—]+")
+
+
+def _sanitize_recommendation_control_segments(line: str, issues: list[str]) -> str:
+    """Remove explicit internal/control segments from public recommendation lines."""
+    match = _RECOMMENDATION_LINE_RE.match(str(line or "").strip())
+    if not match:
+        return line
+
+    kept: list[str] = []
+    removed: list[tuple[str, str]] = []
+    for segment in match.group("body").split(";"):
+        stripped = segment.strip()
+        if not stripped:
+            continue
+        probe = _CONTROL_LEADING_MARKUP_RE.sub("", stripped)
+        control = _CONTROL_LABEL_RE.match(probe)
+        if control:
+            removed.append((control.group("label"), stripped))
+            continue
+        kept.append(stripped)
+
+    if not removed:
+        return line
+
+    for label, segment in removed:
+        issues.append(
+            f"removed recommendation control segment ({label}): {segment[:120]}"
+        )
+
+    if not kept:
+        issues.append("removed empty recommendation line after control-token filtering")
+        return ""
+
+    return f"{match.group('prefix')} " + "; ".join(kept)
+
 @dataclass
 class SafetyResult:
     text: str
@@ -295,6 +340,7 @@ def sanitize_post_text(text: str) -> SafetyResult:
     blank_seen = False
     for raw in raw_lines:
         line = _normalize_line(raw, issues)
+        line = _sanitize_recommendation_control_segments(line, issues)
         drop, reason = _line_should_drop(line)
         if drop:
             issues.append(f"removed line ({reason}): {raw.strip()[:120]}")

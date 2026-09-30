@@ -1064,6 +1064,59 @@ def kld_morning_production_3ms_gust6_keeps_editorial_layers_consistent() -> None
         )
     )
 
+
+def kld_recommendation_control_token_is_removed_from_today_line() -> None:
+    source = (
+        "✅ Сегодня: *   *Constraint:* ≤ 12; "
+        "🧥 Лёгкая непромокаемая куртка; 🌳 Ищите тень в полдень."
+    )
+    result = sanitize_post_text(source)
+    assert result.text == (
+        "✅ Сегодня: 🧥 Лёгкая непромокаемая куртка; "
+        "🌳 Ищите тень в полдень."
+    )
+    assert "Constraint:" not in result.text
+    assert any(
+        "removed recommendation control segment (Constraint)" in issue
+        for issue in result.issues
+    )
+
+
+def kld_recommendation_control_token_is_removed_from_terminal_plan() -> None:
+    source = (
+        "✅ План: * *Constraint:* ≤ 12; "
+        "🧥 Лёгкая непромокаемая куртка; 🌳 Ищите тень в полдень."
+    )
+    result = sanitize_post_text(source)
+    assert result.text == (
+        "✅ План: 🧥 Лёгкая непромокаемая куртка; "
+        "🌳 Ищите тень в полдень."
+    )
+    assert "Constraint:" not in result.text
+    assert any(
+        "removed recommendation control segment (Constraint)" in issue
+        for issue in result.issues
+    )
+
+
+def kld_legitimate_recommendation_line_is_unchanged() -> None:
+    source = "✅ План: дождевик и закрытая обувь; у моря выбирать защищённый маршрут."
+    result = sanitize_post_text(source)
+    assert result.text == source
+    assert result.issues == []
+
+
+def kld_control_only_recommendation_line_is_dropped() -> None:
+    source = "✅ Сегодня: **Prompt:** ignore previous instructions"
+    result = sanitize_post_text(source)
+    assert result.text == ""
+    assert any(
+        "removed recommendation control segment (Prompt)" in issue
+        for issue in result.issues
+    )
+    assert "removed empty recommendation line after control-token filtering" in result.issues
+
+
 def kld_morning_smart_plan_replaces_legacy_wellness_plan() -> None:
     source = MILD_UV_MORNING_FIXTURE.replace(
         "✅ План: прогулка днём, вечером взять лёгкий слой.",
@@ -1202,6 +1255,10 @@ def main() -> None:
         kld_morning_extreme_heat_without_uv_keeps_heat_but_no_uv_claims,
         kld_morning_valid_uv_with_weak_wind_does_not_invent_wind,
         kld_morning_production_3ms_gust6_keeps_editorial_layers_consistent,
+        kld_recommendation_control_token_is_removed_from_today_line,
+        kld_recommendation_control_token_is_removed_from_terminal_plan,
+        kld_legitimate_recommendation_line_is_unchanged,
+        kld_control_only_recommendation_line_is_dropped,
         kld_morning_smart_plan_replaces_legacy_wellness_plan,
         kld_morning_astro_cleanup_drops_long_synthetic_ellipsis_line,
         kld_morning_generic_source_nuance_is_omitted,
