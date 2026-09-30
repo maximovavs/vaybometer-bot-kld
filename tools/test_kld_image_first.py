@@ -985,7 +985,7 @@ def local_cover_variants_rotate_across_adjacent_dates() -> None:
         assets: set[str] = set()
         for day in range(20, 32):
             date_value = f"{day:02d}.07.2026"
-            message = MESSAGE.replace("20.07.2026", date_value)
+            message = MESSAGE.replace(\n                "🌫 Видимость: завтра утром местами снижена; около 5500 м.\\n",\n                "",\n            ).replace("20.07.2026", date_value)
             metadata = render_kld_informative_cover(
                 message,
                 post_type="evening",
