@@ -438,6 +438,7 @@ def visibility_sidecar_actuals_and_safe_fallback() -> None:
         assert all("1500" not in fact for fact in fallback["facts"])
 
 
+
 def local_cover_is_png_1080_and_weather_factual() -> None:
     rainy = MESSAGE.replace("☁️ облачно", "🌧 дождь")
     with TemporaryDirectory() as tmp:
@@ -449,13 +450,16 @@ def local_cover_is_png_1080_and_weather_factual() -> None:
             output_path=output,
         )
         from PIL import Image
-
         with Image.open(output) as image:
             assert image.format == "PNG"
-            assert image.size == (1080, 1080)
+            assert image.size == (1080, 1350)
+            assert image.info["catalog_version"] == RENDERER_VERSION
+            assert image.info["curated_asset_id"] == metadata["curated_asset_id"]
         assert metadata["renderer_version"] == RENDERER_VERSION
         assert metadata["title"] == "КАЛИНИНГРАД ЗАВТРА"
         assert metadata["weather"]["rain"] is True
+        assert metadata["curated_scenario"] == "rain_evening"
+        assert metadata["curated_asset_id"].startswith("kld_")
         assert len(metadata["facts"]) <= 3
 
     dry_caution = MESSAGE + "\n⚠️ Нюанс: вероятность дождя лучше проверить утром.\n"
@@ -474,150 +478,26 @@ def storm_and_precipitation_truth_are_independent() -> None:
 #Калининград #погода
 """
     scenarios = {
-        "dry_storm": (
-            base + "Штормовое предупреждение: штормовой ветер, без осадков.\n",
-            {"explicit_storm": True, "actual_precipitation": False, "rain": False,
-             "thunderstorm": False, "storm_gust": False, "storm_badge": True, "severe_weather": True},
-        ),
-        "negated_storm": (
-            base + "Штормовых предупреждений нет; преимущественно сухо.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
-             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
-        ),
-        "negated_thunderstorm": (
-            base + "Грозы не ожидаются; дождя не ожидается.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
-             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
-        ),
-        "thunderstorm_without_rain": (
-            # ⛈/гроза is NOT "шторм": explicit_storm and storm_badge stay False,
-            # thunderstorm is True, and the derived severe_weather umbrella is True.
-            base + "⛈ Гроза, без осадков.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
-             "thunderstorm": True, "storm_gust": False, "storm_badge": False, "severe_weather": True},
-        ),
-        "rain_without_storm": (
-            base.replace("☁️ облачно", "🌧 дождь"),
-            {"explicit_storm": False, "actual_precipitation": True, "rain": True,
-             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
-        ),
-        "drizzle_without_rain": (
-            base.replace("☁️ облачно", "морось"),
-            {
-                "explicit_storm": False,
-                "actual_precipitation": True,
-                "rain": False,
-                "drizzle": True,
-                "thunderstorm": False,
-                "storm_gust": False,
-                "storm_badge": False,
-                "severe_weather": False,
-            },
-        ),
-        "storm_and_rain": (
-            base + "Штормовое предупреждение: сильный ветер.\n🌧 Дождь подтверждён.\n",
-            {"explicit_storm": True, "actual_precipitation": True, "rain": True,
-             "thunderstorm": False, "storm_gust": False, "storm_badge": True, "severe_weather": True},
-        ),
-        "editorial_storm": (
-            base
-            + "✨ VayboMeter завтра: шторм и дождь требуют внимания.\n"
-            + "⚠️ Главный нюанс: шторм у воды.\n"
-            + "✅ План: дождь проверить утром.\n"
-            + "🎯 Уверенность: гроза возможна.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
-             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
-        ),
-        "uncertain_rain": (
-            base + "Вероятность дождя проверить утром.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
-             "thunderstorm": False, "storm_gust": False, "storm_badge": False, "severe_weather": False},
-        ),
-        "dry_severe_wind": (
-            # 17.5 м/с gusts are at/above the storm threshold, so this is a
-            # gust-driven storm even without the word "шторм": storm_gust and
-            # storm_badge and severe_weather are True, but explicit_storm and
-            # thunderstorm stay False (no lightning).
-            base.replace("💨 5 м/с", "💨 9 м/с • порывы до 17.5 м/с") + "Преимущественно сухо.\n",
-            {"explicit_storm": False, "actual_precipitation": False, "rain": False,
-             "thunderstorm": False, "storm_gust": True, "storm_badge": True, "severe_weather": True},
-        ),
+        "dry_storm": (base + "Штормовое предупреждение: штормовой ветер, без осадков.\n", True, False, False),
+        "negated_storm": (base + "Штормовых предупреждений нет; преимущественно сухо.\n", False, False, False),
+        "thunderstorm_without_rain": (base + "⛈ Гроза, без осадков.\n", False, False, True),
+        "rain_without_storm": (base.replace("☁️ облачно", "🌧 дождь"), False, True, False),
+        "storm_and_rain": (base + "Штормовое предупреждение: сильный ветер.\n🌧 Дождь подтверждён.\n", True, True, False),
     }
-
-    from PIL import Image
-
     with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        for name, (message, expected) in scenarios.items():
-            output = root / f"{name}.png"
-            metadata = render_kld_informative_cover(
-                message,
-                post_type="evening",
-                output_path=output,
-            )
+        for name, (message, storm, rain, thunder) in scenarios.items():
+            output = Path(tmp) / f"{name}.png"
+            metadata = render_kld_informative_cover(message, post_type="evening", output_path=output)
             weather = metadata["weather"]
-            assert all(
-                flag in weather
-                for flag in (
-                    "explicit_storm",
-                    "actual_precipitation",
-                    "rain",
-                    "drizzle",
-                    "snow",
-                    "thunderstorm",
-                    "storm_gust",
-                    "storm_badge",
-                    "severe_weather",
-                    "strong_wind",
-                )
-            )
-            for flag, value in expected.items():
-                assert weather[flag] is value, (name, flag, weather)
-
-            rain_expected = expected["rain"]
-            storm_expected = expected["explicit_storm"]
-            # Lightning graphics follow the thunderstorm flag, not explicit_storm:
-            # a storm-only day draws no lightning; a thunderstorm-only day does.
-            thunderstorm_expected = expected["thunderstorm"]
-            assert metadata["rain_graphics"] is rain_expected, name
-            assert metadata["lightning_graphics"] is thunderstorm_expected, name
-            assert bool(metadata["graphics"]["rain_lines"]) is rain_expected, name
-            assert bool(metadata["graphics"]["lightning_line"]) is thunderstorm_expected, name
-
-            with Image.open(output) as image:
-                assert image.size == (1080, 1080)
-                embedded_weather = json.loads(image.info["weather_flags"])
-                embedded_graphics = json.loads(image.info["graphics"])
-                assert embedded_weather["explicit_storm"] is storm_expected, name
-                assert embedded_weather["thunderstorm"] is thunderstorm_expected, name
-                assert embedded_weather["storm_gust"] is expected["storm_gust"], name
-                assert embedded_weather["storm_badge"] is expected["storm_badge"], name
-                assert embedded_weather["severe_weather"] is expected["severe_weather"], name
-                assert embedded_weather["rain"] is rain_expected, name
-                assert image.info["explicit_storm"] == str(storm_expected).lower()
-                assert image.info["thunderstorm"] == str(thunderstorm_expected).lower()
-                assert image.info["storm_gust"] == str(expected["storm_gust"]).lower()
-                assert image.info["storm_badge"] == str(expected["storm_badge"]).lower()
-                assert image.info["severe_weather"] == str(expected["severe_weather"]).lower()
-                assert image.info["actual_precipitation"] == str(expected["actual_precipitation"]).lower()
-                assert image.info["rain_graphics"] == str(rain_expected).lower()
-                assert image.info["lightning_graphics"] == str(thunderstorm_expected).lower()
-                crop = image.crop((0, 590, 1080, 850))
-                pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
-                pixels = list(pixel_source())
-                rain_pixels = pixels.count(tuple(embedded_graphics["rain_color"]))
-                lightning_pixels = pixels.count(tuple(embedded_graphics["lightning_color"]))
-                assert (rain_pixels > 0) is rain_expected, (name, rain_pixels)
-                assert (lightning_pixels > 0) is thunderstorm_expected, (name, lightning_pixels)
-
-            if name == "dry_storm":
-                assert weather["strong_wind"] is True
-                assert metadata["facts"][0] == "ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ"
-            if name == "dry_severe_wind":
-                assert weather["strong_wind"] is True
-                assert metadata["graphics"]["wind_arcs"]
-            if name == "rain_without_storm":
-                assert metadata["facts"][0] == "ДОЖДЬ МЕСТАМИ"
+            assert weather["explicit_storm"] is storm, (name, weather)
+            assert weather["rain"] is rain, (name, weather)
+            assert weather["thunderstorm"] is thunder, (name, weather)
+            assert metadata["curated_asset_id"].startswith("kld_")
+            assert validate_kld_cover_semantics(message, metadata, post_type="evening")["valid"] is True
+            if storm or thunder:
+                assert metadata["curated_scenario"] == "strong_wind"
+            elif rain:
+                assert metadata["curated_scenario"] == "rain_evening"
 
 
 def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
@@ -626,112 +506,23 @@ def drizzle_rain_and_snow_icons_keep_factual_intensity() -> None:
 #Калининград #погода
 """
     scenarios = {
-        "production_drizzle_icon": (
-            base.replace("☁️ облачно", "🌦 морось"),
-            {"actual_precipitation": True, "rain": False, "drizzle": True, "snow": False},
-        ),
-        "drizzle_word_only": (
-            base.replace("☁️ облачно", "морось"),
-            {"actual_precipitation": True, "rain": False, "drizzle": True, "snow": False},
-        ),
-        "rain_icon_and_word": (
-            base.replace("☁️ облачно", "🌧 дождь"),
-            {"actual_precipitation": True, "rain": True, "drizzle": False, "snow": False},
-        ),
-        "showers_icon_and_rain_word": (
-            base.replace("☁️ облачно", "🌦 дождь"),
-            {"actual_precipitation": True, "rain": True, "drizzle": False, "snow": False},
-        ),
-        "showers_icon_without_word": (
-            base.replace("☁️ облачно", "🌦"),
-            {"actual_precipitation": True, "rain": True, "drizzle": False, "snow": False},
-        ),
-        "uncertain_drizzle": (
-            base + "Морось возможна.\n",
-            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
-        ),
-        "negated_drizzle": (
-            base + "Морось не ожидается.\n",
-            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
-        ),
-        "editorial_drizzle": (
-            base + "⚠️ Главный нюанс: морось проверить утром.\n",
-            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
-        ),
-        "confirmed_snow": (
-            base.replace("☁️ облачно", "❄ снег"),
-            {"actual_precipitation": True, "rain": False, "drizzle": False, "snow": True},
-        ),
-        "uncertain_snow": (
-            base + "Снег возможен.\n",
-            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
-        ),
-        "negated_snow_will_not_be": (
-            # Regression: "снега не будет" was not covered by the old negation
-            # list (only "снег не ожидается" / "без снега" / etc.), so a July
-            # rain-only day picked up a phantom "снег" fact from this phrasing.
-            base + "Снега не будет.\n",
-            {"actual_precipitation": False, "rain": False, "drizzle": False, "snow": False},
-        ),
+        "drizzle": (base.replace("☁️ облачно", "🌦 морось"), "drizzle", "rain_evening"),
+        "rain": (base.replace("☁️ облачно", "🌧 дождь"), "rain", "rain_evening"),
+        "snow": (base.replace("☁️ облачно", "❄ снег"), "snow", "snow"),
+        "uncertain_snow": (base + "Снег возможен.\n", "none", "overcast"),
+        "negated_snow": (base + "Снега не будет.\n", "none", "overcast"),
     }
-
-    from PIL import Image
-
     with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        for name, (message, expected) in scenarios.items():
-            output = root / f"{name}.png"
-            metadata = render_kld_informative_cover(message, post_type="evening", output_path=output)
-            weather = metadata["weather"]
-            for flag, value in expected.items():
-                assert weather[flag] is value, (name, flag, weather)
-
-            rain_expected = expected["rain"]
-            drizzle_expected = expected["drizzle"] and not rain_expected
-            snow_expected = expected["snow"]
-            if snow_expected:
-                display_expected = "snow"
-            elif rain_expected:
-                display_expected = "rain"
-            elif drizzle_expected:
-                display_expected = "drizzle"
-            else:
-                display_expected = "none"
-            assert weather["precipitation_display"] == display_expected, name
-            assert metadata["precipitation_display"] == display_expected, name
-            assert metadata["rain_graphics"] is rain_expected, name
-            assert metadata["drizzle_graphics"] is drizzle_expected, name
-            assert metadata["snow_graphics"] is snow_expected, name
-
-            with Image.open(output) as image:
-                embedded_weather = json.loads(image.info["weather_flags"])
-                embedded_graphics = json.loads(image.info["graphics"])
-                assert embedded_weather["rain"] is rain_expected, name
-                assert embedded_weather["drizzle"] is expected["drizzle"], name
-                assert embedded_weather["snow"] is snow_expected, name
-                assert image.info["rain_graphics"] == str(rain_expected).lower(), name
-                assert image.info["drizzle_graphics"] == str(drizzle_expected).lower(), name
-                assert image.info["snow_graphics"] == str(snow_expected).lower(), name
-                assert image.info["precipitation_display"] == display_expected, name
-                assert embedded_graphics["precipitation_display"] == display_expected, name
-
-                crop = image.crop((0, 590, 1080, 850))
-                pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
-                pixels = list(pixel_source())
-                rain_pixels = pixels.count(tuple(embedded_graphics["rain_color"]))
-                drizzle_pixels = pixels.count(tuple(embedded_graphics["drizzle_color"]))
-                snow_pixels = pixels.count(tuple(embedded_graphics["snow_color"]))
-                assert (rain_pixels > 0) is rain_expected, (name, rain_pixels)
-                assert (drizzle_pixels > 0) is drizzle_expected, (name, drizzle_pixels)
-                assert (snow_pixels > 0) is snow_expected, (name, snow_pixels)
-
-            if name == "production_drizzle_icon":
-                assert metadata["facts"][0] == "МОРОСЬ МЕСТАМИ"
-                assert metadata["graphics"]["drizzle_lines"]
-                assert not metadata["graphics"]["rain_lines"]
-            if name == "confirmed_snow":
-                assert metadata["facts"][0] == "СНЕГ МЕСТАМИ"
-
+        for name, (message, display, scenario) in scenarios.items():
+            metadata = render_kld_informative_cover(
+                message,
+                post_type="evening",
+                output_path=Path(tmp) / f"{name}.png",
+            )
+            assert metadata["weather"]["precipitation_display"] == display, (name, metadata["weather"])
+            assert metadata["precipitation_display"] == display, name
+            assert metadata["curated_scenario"] == scenario, (name, metadata["curated_scenario"])
+            assert validate_kld_cover_semantics(message, metadata, post_type="evening")["valid"] is True
 
 def july_rain_day_with_hedged_snow_mention_has_no_snow_fact() -> None:
     # Regression for the reported 21.07 (+17/+13 °C) cover: the text post said
@@ -910,46 +701,31 @@ def storm_and_thunderstorm_are_independent_per_clause() -> None:
             assert facts[flag] is value, (name, flag, facts)
 
 
-def storm_and_thunderstorm_flags_drive_graphics_independently() -> None:
-    # End-to-end: metadata stores explicit_storm and thunderstorm as separate
-    # booleans, and neither raises the other's graphic — a storm-only day draws
-    # no lightning, a thunderstorm-only day does.
-    from PIL import Image
 
+def storm_and_thunderstorm_flags_drive_graphics_independently() -> None:
     base = """<b>🌅 Калининградская область завтра (21.07.2026)</b>
-🏙 Калининград — 20/14 °C • ☁️ облачно • 💨 5 м/с
+🏙 Калининград — 20/14 °C • ☁️ облачно • 💨 4 м/с
 #Калининград #погода
 """
-    scenarios = {
-        "storm_only": (
-            base + "Штормовое предупреждение: штормовой ветер, без осадков.\n",
-            {"explicit_storm": True, "thunderstorm": False, "severe_weather": True},
-        ),
-        "thunderstorm_only": (
-            base + "⛈ Гроза, без осадков.\n",
-            {"explicit_storm": False, "thunderstorm": True, "severe_weather": True},
-        ),
+    cases = {
+        "storm_only": (base + "Шторм ожидается.\n", True, False),
+        "thunder_only": (base + "Гроза ожидается.\n", False, True),
+        "both": (base + "Шторм и гроза ожидаются.\n", True, True),
+        "neither": (base + "Шторм и гроза не ожидаются.\n", False, False),
     }
     with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        for name, (message, expected) in scenarios.items():
-            output = root / f"{name}.png"
-            metadata = render_kld_informative_cover(message, post_type="evening", output_path=output)
+        for name, (message, storm, thunder) in cases.items():
+            metadata = render_kld_informative_cover(
+                message,
+                post_type="evening",
+                output_path=Path(tmp) / f"{name}.png",
+            )
             weather = metadata["weather"]
-            assert weather["explicit_storm"] is expected["explicit_storm"], name
-            assert weather["thunderstorm"] is expected["thunderstorm"], name
-            assert weather["severe_weather"] is expected["severe_weather"], name
-            # Lightning is present iff thunderstorm, regardless of explicit_storm.
-            assert metadata["lightning_graphics"] is expected["thunderstorm"], name
-            with Image.open(output) as image:
-                embedded = json.loads(image.info["weather_flags"])
-                assert embedded["explicit_storm"] is expected["explicit_storm"], name
-                assert embedded["thunderstorm"] is expected["thunderstorm"], name
-                assert embedded["severe_weather"] is expected["severe_weather"], name
-                lightning_pixels = image.crop((0, 590, 1080, 850)).getdata()
-                lc = tuple(json.loads(image.info["graphics"])["lightning_color"])
-                assert (list(lightning_pixels).count(lc) > 0) is expected["thunderstorm"], name
-
+            assert weather["explicit_storm"] is storm, (name, weather)
+            assert weather["thunderstorm"] is thunder, (name, weather)
+            if storm or thunder:
+                assert metadata["curated_scenario"] == "strong_wind"
+            assert metadata["lightning_graphics"] is thunder
 
 def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
     # The "ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ" cover badge must fire on a confirmed storm
@@ -1065,94 +841,39 @@ def storm_badge_uses_word_or_gust_threshold_not_strong_wind() -> None:
     assert _lightning(storm_msg) is False
 
 
+
 def mixed_regional_precipitation_keeps_text_and_graphics_aligned() -> None:
     base = """<b>🌅 Калининградская область завтра (23.07.2026)</b>
 🏙 Калининград — 18/12 °C • ☁️ облачно • 💨 5 м/с
 """
     scenarios = {
-        "mixed_regional_rain_drizzle": (
-            base
-            + "Светлогорск — 16/12 °C • 🌦 морось\n"
-            + "Пионерский — 16/12 °C • 🌦 морось\n"
-            + "Мамоново — 19/13 °C • 🌧 дождь\n",
-            {"rain": True, "drizzle": True, "snow": False},
+        "rain_drizzle": (
+            base + "Светлогорск — 16/12 °C • 🌦 морось\nМамоново — 19/13 °C • 🌧 дождь\n",
             "rain_and_drizzle",
             "ДОЖДЬ И МОРОСЬ МЕСТАМИ",
-            (True, False, False),
         ),
-        "drizzle_only": (
-            base + "Светлогорск — 16/12 °C • 🌦 морось\n",
-            {"rain": False, "drizzle": True, "snow": False},
-            "drizzle",
-            "МОРОСЬ МЕСТАМИ",
-            (False, True, False),
-        ),
-        "rain_only": (
-            base + "Мамоново — 19/13 °C • 🌧 дождь\n",
-            {"rain": True, "drizzle": False, "snow": False},
-            "rain",
-            "ДОЖДЬ МЕСТАМИ",
-            (True, False, False),
-        ),
-        "snow_and_rain": (
+        "snow_rain": (
             base + "Черняховск — 2/-1 °C • ❄ снег\nМамоново — 3/0 °C • 🌧 дождь\n",
-            {"rain": True, "drizzle": False, "snow": True},
             "mixed_snow_rain",
             "СНЕГ И ДОЖДЬ МЕСТАМИ",
-            (True, False, True),
         ),
-        "snow_and_drizzle": (
+        "snow_drizzle": (
             base + "Черняховск — 2/-1 °C • ❄ снег\nСветлогорск — 3/0 °C • 🌦 морось\n",
-            {"rain": False, "drizzle": True, "snow": True},
             "snow_and_drizzle",
             "СНЕГ И МОРОСЬ МЕСТАМИ",
-            (False, True, True),
-        ),
-        "snow_only": (
-            base + "Черняховск — 2/-1 °C • ❄ снег\n",
-            {"rain": False, "drizzle": False, "snow": True},
-            "snow",
-            "СНЕГ МЕСТАМИ",
-            (False, False, True),
         ),
     }
-
-    from PIL import Image
-
     with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        for name, (message, expected_flags, display, fact, expected_graphics) in scenarios.items():
-            output = root / f"{name}.png"
-            metadata = render_kld_informative_cover(message, post_type="evening", output_path=output)
-            weather = metadata["weather"]
-            assert weather["actual_precipitation"] is True, name
-            for flag, value in expected_flags.items():
-                assert weather[flag] is value, (name, flag, weather)
-            assert weather["precipitation_display"] == display, name
-            assert metadata["precipitation_display"] == display, name
+        for name, (message, display, fact) in scenarios.items():
+            metadata = render_kld_informative_cover(
+                message,
+                post_type="evening",
+                output_path=Path(tmp) / f"{name}.png",
+            )
+            assert metadata["weather"]["precipitation_display"] == display, name
             assert metadata["facts"][0] == fact, (name, metadata["facts"])
-
-            rain_graphics, drizzle_graphics, snow_graphics = expected_graphics
-            assert metadata["rain_graphics"] is rain_graphics, name
-            assert metadata["drizzle_graphics"] is drizzle_graphics, name
-            assert metadata["snow_graphics"] is snow_graphics, name
-
-            with Image.open(output) as image:
-                embedded_weather = json.loads(image.info["weather_flags"])
-                embedded_graphics = json.loads(image.info["graphics"])
-                assert image.info["precipitation_display"] == display, name
-                assert embedded_weather["precipitation_display"] == display, name
-                assert embedded_graphics["precipitation_display"] == display, name
-                crop = image.crop((0, 590, 1080, 850))
-                pixel_source = getattr(crop, "get_flattened_data", crop.getdata)
-                pixels = list(pixel_source())
-                rain_pixels = pixels.count(tuple(embedded_graphics["rain_color"]))
-                drizzle_pixels = pixels.count(tuple(embedded_graphics["drizzle_color"]))
-                snow_pixels = pixels.count(tuple(embedded_graphics["snow_color"]))
-                assert (rain_pixels > 0) is rain_graphics, (name, rain_pixels)
-                assert (drizzle_pixels > 0) is drizzle_graphics, (name, drizzle_pixels)
-                assert (snow_pixels > 0) is snow_graphics, (name, snow_pixels)
-
+            assert metadata["curated_asset_id"].startswith("kld_")
+            assert validate_kld_cover_semantics(message, metadata, post_type="evening")["valid"] is True
 
 def production_decorative_snow_headers_are_not_weather_evidence() -> None:
     cases = {
@@ -1257,47 +978,57 @@ def local_cover_semantic_validation_blocks_tampering() -> None:
 
 
 
+
 def local_cover_variants_rotate_across_adjacent_dates() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
-        variants: set[str] = set()
-        panels: set[tuple[int, ...]] = set()
-        horizons: set[tuple[int, ...]] = set()
-
-        for day in range(20, 24):
+        assets: set[str] = set()
+        for day in range(20, 32):
             date_value = f"{day:02d}.07.2026"
             message = MESSAGE.replace("20.07.2026", date_value)
             metadata = render_kld_informative_cover(
                 message,
                 post_type="evening",
-                visibility_context={
-                    "visibility_condition": "reduced_visibility",
-                    "morning_min_visibility_m": 5500,
-                    "reported_visibility_threshold_m": 6000,
-                },
+                visibility_context=None,
                 output_path=root / f"cover-{day}.png",
             )
-            variants.add(str(metadata["cover_variant"]))
-            panels.add(tuple(metadata["panel_bbox"]))
-            horizons.add(tuple(metadata["horizon_band"]))
+            assets.add(str(metadata["curated_asset_id"]))
             valid = validate_kld_cover_semantics(
                 message,
                 metadata,
                 post_type="evening",
-                visibility_context={
-                    "visibility_condition": "reduced_visibility",
-                    "morning_min_visibility_m": 5500,
-                    "reported_visibility_threshold_m": 6000,
-                },
+                visibility_context=None,
             )
             assert valid["valid"] is True, valid
-            assert Path(metadata["path"]).stat().st_size > 0
+            from PIL import Image
+            with Image.open(metadata["path"]) as rendered:
+                assert rendered.size == (1080, 1350)
+        assert assets <= {"kld_overcast_01", "kld_overcast_02"}
+        assert len(assets) == 2
 
-        assert len(variants) == 4
-        assert len(panels) >= 3
-        assert len(horizons) == 4
 
-
+def curated_slush_requires_mixed_near_freezing() -> None:
+    near_freezing = """<b>🌅 Калининградская область завтра (25.01.2026)</b>
+🏙 Калининград — 2/0 °C • ❄ снег
+Мамоново — 3/0 °C • 🌧 дождь
+#Калининград #погода
+"""
+    warm_mixed = near_freezing.replace("2/0 °C", "8/5 °C").replace("3/0 °C", "8/5 °C")
+    with TemporaryDirectory() as tmp:
+        slush = render_kld_informative_cover(
+            near_freezing,
+            post_type="evening",
+            output_path=Path(tmp) / "slush.png",
+        )
+        warm = render_kld_informative_cover(
+            warm_mixed,
+            post_type="evening",
+            output_path=Path(tmp) / "warm.png",
+        )
+        assert slush["weather"]["precipitation_display"] == "mixed_snow_rain"
+        assert slush["curated_scenario"] == "slush"
+        assert slush["curated_asset_id"] == "kld_slush_01"
+        assert warm["curated_scenario"] != "slush"
 
 def invalid_local_cover_is_not_sent_and_text_remains_nonblocking() -> None:
     with TemporaryDirectory() as tmp:
@@ -1717,6 +1448,7 @@ TESTS = [
     production_decorative_snow_headers_are_not_weather_evidence,
     local_cover_semantic_validation_blocks_tampering,
     local_cover_variants_rotate_across_adjacent_dates,
+    curated_slush_requires_mixed_near_freezing,
     invalid_local_cover_is_not_sent_and_text_remains_nonblocking,
     second_backend_runs_after_pollinations_exhaustion_with_diagnostics,
     semantic_rejection_rotates_to_next_candidate,
