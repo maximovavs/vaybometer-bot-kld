@@ -33,6 +33,39 @@ _SCENARIO_POOLS = {
 }
 _CELL_SIZE = tuple(int(value) for value in _MANIFEST["cell_size"])
 
+
+def _box(values: object, *, label: str) -> tuple[int, int, int, int]:
+    if not isinstance(values, list) or len(values) != 4:
+        raise RuntimeError(f"invalid KLD curated {label} box")
+    box = tuple(int(value) for value in values)
+    left, top, right, bottom = box
+    if not (0 <= left < right <= OUTPUT_SIZE[0] and 0 <= top < bottom <= OUTPUT_SIZE[1]):
+        raise RuntimeError(f"invalid KLD curated {label} geometry: {box}")
+    return box
+
+
+_OVERLAY_GEOMETRY: dict[str, dict[str, tuple[int, int, int, int]]] = {}
+_raw_geometry = _MANIFEST.get("overlay_geometry")
+if not isinstance(_raw_geometry, Mapping) or set(_raw_geometry) != set(_ASSET_ORDER):
+    raise RuntimeError("invalid KLD curated per-asset overlay geometry")
+for _asset_id in _ASSET_ORDER:
+    _entry = _raw_geometry.get(_asset_id)
+    if not isinstance(_entry, Mapping):
+        raise RuntimeError(f"invalid KLD curated overlay geometry for {_asset_id}")
+    _geometry = {
+        key: _box(_entry.get(key), label=f"{_asset_id} {key}")
+        for key in ("title_panel", "title_safe", "facts_panel", "facts_safe")
+    }
+    for _panel_key, _safe_key in (("title_panel", "title_safe"), ("facts_panel", "facts_safe")):
+        _panel = _geometry[_panel_key]
+        _safe = _geometry[_safe_key]
+        if not (
+            _panel[0] <= _safe[0] < _safe[2] <= _panel[2]
+            and _panel[1] <= _safe[1] < _safe[3] <= _panel[3]
+        ):
+            raise RuntimeError(f"KLD curated {_safe_key} escapes {_panel_key} for {_asset_id}")
+    _OVERLAY_GEOMETRY[_asset_id] = _geometry
+
 def _load_atlas() -> Image.Image:
     encoded = "".join(
         (ASSET_ROOT / str(name)).read_text("ascii")
@@ -168,6 +201,79 @@ def _wrap(
         lines.append(current)
     return lines
 
+
+def _fit_single_line(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    safe_box: tuple[int, int, int, int],
+    *,
+    maximum_size: int,
+    minimum_size: int,
+) -> tuple[ImageFont.FreeTypeFont, int, tuple[int, int], tuple[int, int, int, int]]:
+    max_width = safe_box[2] - safe_box[0]
+    max_height = safe_box[3] - safe_box[1]
+    for size in range(maximum_size, minimum_size - 1, -1):
+        font = _font(size, bold=True)
+        measured = draw.textbbox((0, 0), text, font=font, stroke_width=1)
+        width = measured[2] - measured[0]
+        height = measured[3] - measured[1]
+        if width > max_width or height > max_height:
+            continue
+        origin = (
+            safe_box[0] - measured[0],
+            safe_box[1] + (max_height - height) // 2 - measured[1],
+        )
+        bbox = draw.textbbox(origin, text, font=font, stroke_width=1)
+        return font, size, origin, bbox
+    raise RuntimeError(f"KLD curated headline does not fit safe-zone: {text!r}")
+
+
+def _fit_fact_layout(
+    draw: ImageDraw.ImageDraw,
+    facts: list[str],
+    safe_box: tuple[int, int, int, int],
+) -> tuple[ImageFont.FreeTypeFont, int, list[list[str]], int, int, int]:
+    max_width = safe_box[2] - safe_box[0]
+    max_height = safe_box[3] - safe_box[1]
+    fallback: tuple[ImageFont.FreeTypeFont, int, list[list[str]], int, int, int] | None = None
+    for size in range(35, 21, -1):
+        font = _font(size, bold=True)
+        wrapped = [_wrap(draw, fact, font, max_width) for fact in facts]
+        rendered = [lines[:2] for lines in wrapped]
+        line_gap = max(5, round(size * 0.18))
+        fact_gap = max(12, round(size * 0.48))
+        heights: list[int] = []
+        widths: list[int] = []
+        fact_widths: list[list[int]] = []
+        line_count = 0
+        for lines in rendered:
+            current_widths: list[int] = []
+            for line in lines:
+                measured = draw.textbbox((0, 0), line, font=font, stroke_width=1)
+                line_width = measured[2] - measured[0]
+                widths.append(line_width)
+                current_widths.append(line_width)
+                heights.append(measured[3] - measured[1])
+                line_count += 1
+            fact_widths.append(current_widths)
+        total_height = sum(heights)
+        total_height += line_gap * max(0, line_count - len(rendered))
+        total_height += fact_gap * max(0, len(rendered) - 1)
+        candidate = (font, size, rendered, line_gap, fact_gap, total_height)
+        fallback = candidate
+        if any(len(lines) > 2 for lines in wrapped):
+            continue
+        if any(
+            len(line_widths) == 2 and line_widths[-1] < max_width * 0.28
+            for line_widths in fact_widths
+        ):
+            continue
+        if (not widths or max(widths) <= max_width) and total_height <= max_height:
+            return candidate
+    if fallback is not None and fallback[5] <= max_height:
+        return fallback
+    raise RuntimeError("KLD curated facts do not fit selected asset safe-zone")
+
 def render_curated_cover(
     metadata: Mapping[str, Any],
     *,
@@ -184,57 +290,94 @@ def render_curated_cover(
     image = atlas.crop(_asset_box(asset_id)).resize(OUTPUT_SIZE, Image.Resampling.LANCZOS)
     draw = ImageDraw.Draw(image)
 
-    title_box = (42, 84, 710, 230)
+    geometry = _OVERLAY_GEOMETRY[asset_id]
+    title_panel = geometry["title_panel"]
+    title_safe = geometry["title_safe"]
     badge_box = (865, 84, 1034, 240)
-    facts_box = (38, 828, 762, 1232)
-    title_color = _text_color(image, title_box)
+    facts_panel = geometry["facts_panel"]
+    facts_safe = geometry["facts_safe"]
+    title_color = _text_color(image, title_panel)
     badge_color = _text_color(image, badge_box)
-    facts_color = _text_color(image, facts_box)
-    title_font = _font(46, bold=True)
+    facts_color = _text_color(image, facts_panel)
     branding_font = _font(22)
     date_font = _font(28, bold=True)
-    fact_font = _font(35, bold=True)
 
     title = str(metadata.get("title") or "КАЛИНИНГРАД СЕГОДНЯ")
     title_stroke = (255, 255, 255) if title_color[0] < 100 else (0, 0, 0)
+    title_font, title_font_size, title_origin, title_bbox = _fit_single_line(
+        draw,
+        title,
+        title_safe,
+        maximum_size=46,
+        minimum_size=24,
+    )
     draw.text(
-        (70, 103),
+        title_origin,
         title,
         font=title_font,
         fill=title_color,
         stroke_width=1,
         stroke_fill=title_stroke,
     )
-    draw.text((72, 164), BRANDING, font=branding_font, fill=title_color)
+    branding_origin = (title_safe[0] + 2, title_safe[3] + 5)
+    branding_bbox = draw.textbbox(branding_origin, BRANDING, font=branding_font)
+    if branding_bbox[3] > title_panel[3]:
+        raise RuntimeError(f"KLD curated branding escapes title panel for {asset_id}")
+    draw.text(branding_origin, BRANDING, font=branding_font, fill=title_color)
 
     date_label = str(metadata.get("date") or "")
+    date_bbox: tuple[int, int, int, int] | None = None
     if date_label:
         short_date = ".".join(date_label.split(".")[:2])
         box = draw.textbbox((0, 0), short_date, font=date_font)
         x = badge_box[0] + (badge_box[2] - badge_box[0] - (box[2] - box[0])) // 2
         y = badge_box[1] + (badge_box[3] - badge_box[1] - (box[3] - box[1])) // 2
         draw.text((x, y), short_date, font=date_font, fill=badge_color)
+        date_bbox = draw.textbbox((x, y), short_date, font=date_font)
 
-    y = 867
+    clean_facts = [
+        re.sub(r"^[^\wА-ЯЁ+]+\s*", "", str(fact), flags=re.I)
+        for fact in list(metadata.get("facts") or [])[:3]
+    ]
+    fact_font, fact_font_size, wrapped_facts, line_gap, fact_gap, total_height = _fit_fact_layout(
+        draw,
+        clean_facts,
+        facts_safe,
+    )
+    y = facts_safe[1] + max(0, (facts_safe[3] - facts_safe[1] - total_height) // 2)
     layout: list[dict[str, Any]] = []
-    for fact in list(metadata.get("facts") or [])[:3]:
-        clean = re.sub(r"^[^\wА-ЯЁ+]+\s*", "", str(fact), flags=re.I)
-        lines = _wrap(draw, clean, fact_font, 645)
+    facts = list(metadata.get("facts") or [])[:3]
+    for fact_index, (fact, lines) in enumerate(zip(facts, wrapped_facts)):
         origins: list[list[int]] = []
-        for line in lines[:2]:
+        bboxes: list[list[int]] = []
+        for line_index, line in enumerate(lines):
             stroke = (255, 255, 255) if facts_color[0] < 100 else (0, 0, 0)
+            measured = draw.textbbox((0, 0), line, font=fact_font, stroke_width=1)
+            origin = (facts_safe[0] - measured[0], y - measured[1])
             draw.text(
-                (78, y),
+                origin,
                 line,
                 font=fact_font,
                 fill=facts_color,
                 stroke_width=1,
                 stroke_fill=stroke,
             )
-            origins.append([78, y])
-            y += 46
-        layout.append({"source_fact": str(fact), "lines": lines[:2], "origins": origins})
-        y += 22
+            bbox = draw.textbbox(origin, line, font=fact_font, stroke_width=1)
+            origins.append([origin[0], origin[1]])
+            bboxes.append(list(bbox))
+            y = bbox[3]
+            if line_index + 1 < len(lines):
+                y += line_gap
+        layout.append(
+            {
+                "source_fact": str(fact),
+                "lines": lines,
+                "origins": origins,
+                "bboxes": bboxes,
+            }
+        )
+        if fact_index + 1 < len(wrapped_facts):
+            y += fact_gap
 
     weather = metadata.get("weather") if isinstance(metadata.get("weather"), Mapping) else {}
     result = dict(metadata)
@@ -246,9 +389,28 @@ def render_curated_cover(
             "curated_asset_id": asset_id,
             "curated_pool": list(pool),
             "cover_variant": asset_id,
-            "panel_bbox": list(facts_box),
+            "panel_bbox": list(facts_panel),
+            "title_panel_bbox": list(title_panel),
+            "title_safe_bbox": list(title_safe),
+            "facts_safe_bbox": list(facts_safe),
+            "title_layout": {
+                "text": title,
+                "origin": list(title_origin),
+                "bbox": list(title_bbox),
+                "font_size": title_font_size,
+            },
+            "branding_layout": {
+                "text": BRANDING,
+                "origin": list(branding_origin),
+                "bbox": list(branding_bbox),
+            },
+            "date_layout": {
+                "text": ".".join(date_label.split(".")[:2]) if date_label else "",
+                "bbox": list(date_bbox) if date_bbox is not None else None,
+            },
             "canvas": [1080, 1350],
             "fact_layout": layout,
+            "fact_font_size": fact_font_size,
             "precipitation_display": str(weather.get("precipitation_display") or "none"),
             "rain_graphics": bool(weather.get("rain")),
             "drizzle_graphics": bool(weather.get("drizzle") and not weather.get("rain")),
@@ -276,6 +438,10 @@ def render_curated_cover(
     info.add_text("curated_scenario", scenario)
     info.add_text("curated_asset_id", asset_id)
     info.add_text("curated_pool", json.dumps(list(pool), ensure_ascii=False))
+    info.add_text(
+        "overlay_safe_zones",
+        json.dumps({"title": list(title_safe), "facts": list(facts_safe)}, separators=(",", ":")),
+    )
     info.add_text("weather_flags", json.dumps(dict(weather), ensure_ascii=False, sort_keys=True))
     info.add_text("precipitation_display", result["precipitation_display"])
     info.add_text("rain_graphics", str(result["rain_graphics"]).lower())

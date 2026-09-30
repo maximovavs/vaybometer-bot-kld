@@ -29,6 +29,10 @@ from kld_informative_cover import (  # noqa: E402
     validate_kld_cover_semantics,
 )
 from kld_visual_dedup import KldVisualDuplicateResult  # noqa: E402
+from curated_fallback_kld import (  # noqa: E402
+    render_curated_cover,
+    select_asset as select_curated_asset,
+)
 from tools.kld_visual_fixture_image import (  # noqa: E402
     _load_visibility_context_file,
     build_payload,
@@ -1010,6 +1014,156 @@ def local_cover_variants_rotate_across_adjacent_dates() -> None:
         assert len(assets) == 2
 
 
+def curated_overlay_safe_zones_cover_all_assets() -> None:
+    from PIL import Image
+
+    manifest = json.loads(
+        (ROOT / "assets" / "fallback" / "kld" / "manifest.json").read_text("utf-8")
+    )
+    geometry = manifest["overlay_geometry"]
+    assert set(geometry) == set(manifest["asset_order"])
+
+    cases = {
+        "clear": (9, "morning", 17, 10, "ясно", 3, 5),
+        "sunset": (9, "evening", 17, 10, "ясно; закат", 3, 5),
+        "overcast": (9, "morning", 14, 9, "пасмурно", 3, 5),
+        "rain_day": (9, "morning", 12, 8, "дождь", 4, 7),
+        "rain_evening": (9, "evening", 12, 8, "дождь", 4, 7),
+        "fog": (9, "morning", 11, 8, "туман утром", 2, 4),
+        "snow": (1, "morning", -2, -6, "снег", 3, 5),
+        "heavy_snow": (1, "morning", -3, -7, "снег; сильный ветер", 10, 14),
+        "frost": (1, "morning", -8, -13, "ясно; мороз", 3, 5),
+        "frost_evening": (1, "evening", -8, -13, "ясно; мороз; закат", 3, 5),
+        "slush": (1, "morning", 2, 0, "снег и дождь", 4, 7),
+        "strong_wind": (4, "morning", 10, 6, "сильный ветер", 10, 14),
+        "windy_autumn": (10, "morning", 11, 7, "сильный ветер", 10, 14),
+        "winter_overcast": (1, "morning", 4, 2, "пасмурно", 3, 5),
+        "night": (9, "evening", 12, 8, "ясно; ночь", 3, 5),
+    }
+    failing_assets = {
+        "kld_sunset_01",
+        "kld_rain_day_01",
+        "kld_rain_evening_01",
+        "kld_snow_02",
+        "kld_blizzard_01",
+        "kld_slush_01",
+        "kld_windy_autumn_01",
+        "kld_night_01",
+    }
+
+    def contains(outer: list[int], inner: list[int]) -> bool:
+        return (
+            outer[0] <= inner[0] <= inner[2] <= outer[2]
+            and outer[1] <= inner[1] <= inner[3] <= outer[3]
+        )
+
+    def overlaps(left: list[int], right: list[int] | None) -> bool:
+        if right is None:
+            return False
+        return not (
+            left[2] <= right[0]
+            or right[2] <= left[0]
+            or left[3] <= right[1]
+            or right[3] <= left[1]
+        )
+
+    exercised: set[str] = set()
+    headlines = ("КАЛИНИНГРАД СЕГОДНЯ", "КАЛИНИНГРАД ЗАВТРА")
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for scenario, pool in manifest["scenario_pools"].items():
+            month, post_type, temp_max, temp_min, condition, wind, gust = cases[scenario]
+            seen: set[str] = set()
+            for day in range(1, 29):
+                date_value = f"{day:02d}.{month:02d}.2026"
+                message = (
+                    f"Калининград {'завтра' if post_type == 'evening' else 'сегодня'} ({date_value})\n"
+                    f"🏙 Калининград — {temp_max}/{temp_min} °C • {condition} • "
+                    f"ветер {wind} м/с, порывы {gust} м/с\n"
+                )
+                visibility = (
+                    {
+                        "visibility_condition": "fog",
+                        "current_visibility_m": 500,
+                        "humidity_pct": 98,
+                        "weather_code": 45,
+                    }
+                    if scenario == "fog"
+                    else None
+                )
+                metadata = extract_kld_cover_facts(
+                    message,
+                    post_type=post_type,
+                    visibility_context=visibility,
+                )
+                if scenario == "night":
+                    metadata["visual_period"] = "night"
+                actual_scenario, asset_id, eligible = select_curated_asset(
+                    metadata,
+                    post_type=post_type,
+                    source_text=message,
+                )
+                assert actual_scenario == scenario, (scenario, actual_scenario, metadata)
+                assert asset_id in pool
+                assert list(eligible) == pool
+                if asset_id in seen:
+                    continue
+
+                for headline_index, headline in enumerate(headlines):
+                    render_metadata = dict(metadata)
+                    render_metadata["title"] = headline
+                    output = root / f"{asset_id}-{headline_index}.png"
+                    result = render_curated_cover(
+                        render_metadata,
+                        post_type=post_type,
+                        source_text=message,
+                        output_path=output,
+                    )
+                    assert result["curated_scenario"] == scenario
+                    assert result["curated_asset_id"] == asset_id
+                    assert result["curated_asset_id"] in result["curated_pool"]
+                    assert result["canvas"] == [1080, 1350]
+                    with Image.open(output) as rendered:
+                        assert rendered.size == (1080, 1350)
+
+                    valid = validate_kld_cover_semantics(
+                        message,
+                        result,
+                        post_type=post_type,
+                        visibility_context=visibility,
+                    )
+                    assert valid["valid"] is True, (asset_id, headline, valid)
+
+                    asset_geometry = geometry[asset_id]
+                    assert result["title_safe_bbox"] == asset_geometry["title_safe"]
+                    assert result["facts_safe_bbox"] == asset_geometry["facts_safe"]
+                    title_bbox = result["title_layout"]["bbox"]
+                    assert contains(asset_geometry["title_safe"], title_bbox), (
+                        asset_id,
+                        headline,
+                        title_bbox,
+                        asset_geometry["title_safe"],
+                    )
+                    assert not overlaps(title_bbox, result["branding_layout"]["bbox"])
+                    assert not overlaps(title_bbox, result["date_layout"]["bbox"])
+                    for fact in result["fact_layout"]:
+                        for fact_bbox in fact["bboxes"]:
+                            assert contains(asset_geometry["facts_safe"], fact_bbox), (
+                                asset_id,
+                                fact_bbox,
+                                asset_geometry["facts_safe"],
+                            )
+
+                seen.add(asset_id)
+                exercised.add(asset_id)
+                if seen == set(pool):
+                    break
+            assert seen == set(pool), (scenario, seen, pool)
+
+    assert exercised == set(manifest["asset_order"])
+    assert failing_assets <= exercised
+
+
 def curated_slush_requires_mixed_near_freezing() -> None:
     near_freezing = """<b>🌅 Калининградская область завтра (25.01.2026)</b>
 🏙 Калининград — 2/0 °C • ❄ снег
@@ -1451,6 +1605,7 @@ TESTS = [
     production_decorative_snow_headers_are_not_weather_evidence,
     local_cover_semantic_validation_blocks_tampering,
     local_cover_variants_rotate_across_adjacent_dates,
+    curated_overlay_safe_zones_cover_all_assets,
     curated_slush_requires_mixed_near_freezing,
     invalid_local_cover_is_not_sent_and_text_remains_nonblocking,
     second_backend_runs_after_pollinations_exhaustion_with_diagnostics,
