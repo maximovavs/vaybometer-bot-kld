@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import weather_text
-from curated_fallback_kld import (\n    CATALOG_VERSION as CURATED_FALLBACK_VERSION,\n    render_curated_cover as _render_curated_cover,\n)\nfrom weather_text import clause_has_confirmed_storm as _clause_has_confirmed_storm
+from curated_fallback_kld import (
+    CATALOG_VERSION as CURATED_FALLBACK_VERSION,
+    render_curated_cover as _render_curated_cover,
+)
+from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_storm
 from weather_text import split_clauses as _split_clauses
 
 
