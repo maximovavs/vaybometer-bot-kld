@@ -711,7 +711,7 @@ def storm_and_thunderstorm_flags_drive_graphics_independently() -> None:
         "storm_only": (base + "Шторм ожидается.\n", True, False),
         "thunder_only": (base + "Гроза ожидается.\n", False, True),
         "both": (base + "Шторм и гроза ожидаются.\n", True, True),
-        "neither": (base + "Шторм и гроза не ожидаются.\n", False, False),
+        "neither": (base + "Шторм не ожидается. Гроза не ожидается.\n", False, False),
     }
     with TemporaryDirectory() as tmp:
         for name, (message, storm, thunder) in cases.items():
