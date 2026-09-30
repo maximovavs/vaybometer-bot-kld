@@ -10,11 +10,16 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import weather_text
+from curated_fallback_kld import (
+    CATALOG_VERSION as CURATED_FALLBACK_VERSION,
+    render_curated_cover as _render_curated_cover,
+)
 from weather_text import clause_has_confirmed_storm as _clause_has_confirmed_storm
 from weather_text import split_clauses as _split_clauses
 
 
-RENDERER_VERSION = "kld_local_informative_cover_v2"
+RENDERER_VERSION = CURATED_FALLBACK_VERSION
+_COVER_VARIANTS = ("north_horizon", "lower_brief", "mid_brief", "dune_window")
 _NUMBER = r"-?\d+(?:[.,]\d+)?"
 _CITY_TEMPERATURE_RE = re.compile(
     rf"Калининград[^\n]*?({_NUMBER})\s*/\s*({_NUMBER})\s*°?C?",
@@ -588,106 +593,6 @@ def validate_kld_cover_semantics(
     }
 
 
-def _font(size: int, *, bold: bool = False):
-    from PIL import ImageFont
-
-    names = (
-        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if bold
-        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
-        if bold
-        else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-    )
-    for name in names:
-        if Path(name).exists():
-            return ImageFont.truetype(name, size=size)
-    return ImageFont.load_default()
-
-
-def _palette(metadata: Mapping[str, Any]) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
-    weather = metadata["weather"]
-    # Dramatic backdrop for either severe phenomenon (storm or thunderstorm),
-    # via the derived umbrella flag — a thunderstorm-only day should still read
-    # as severe without overloading explicit_storm.
-    if weather.get("severe_weather"):
-        return (32, 46, 59), (73, 91, 105), (190, 204, 211)
-    precipitation_display = weather["precipitation_display"]
-    if precipitation_display in {"snow", "snow_and_drizzle"}:
-        return (126, 151, 165), (181, 198, 205), (232, 235, 229)
-    if precipitation_display == "drizzle":
-        return (105, 133, 149), (157, 178, 188), (224, 230, 229)
-    if precipitation_display != "none":
-        return (80, 105, 122), (134, 154, 166), (220, 229, 233)
-    if weather["fog"] or weather["mixed_visibility"]:
-        return (184, 190, 190), (216, 220, 216), (240, 239, 229)
-    if weather["dust_haze"]:
-        return (167, 156, 135), (205, 194, 171), (232, 224, 204)
-    return (111, 154, 181), (182, 204, 214), (231, 228, 207)
-
-
-def _draw_weather_graphics(
-    draw: Any,
-    *,
-    width: int,
-    weather: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Draw visible factual motifs and return coordinates for pixel regressions."""
-    rain_color = (203, 220, 228)
-    drizzle_color = (174, 211, 229)
-    snow_color = (248, 250, 252)
-    lightning_color = (235, 226, 170)
-    wind_color = (220, 230, 232)
-    rain_lines: list[tuple[int, int, int, int]] = []
-    drizzle_lines: list[tuple[int, int, int, int]] = []
-    snow_dots: list[tuple[int, int, int, int]] = []
-    lightning_line: tuple[tuple[int, int], ...] = ()
-    wind_arcs: list[tuple[int, int, int, int]] = []
-    precipitation_display = str(weather["precipitation_display"])
-
-    if precipitation_display in {"rain", "rain_and_drizzle", "mixed_snow_rain"}:
-        for x in range(30, width, 65):
-            y = 610 + (x % 130)
-            segment = (x, y, x - 24, y + 90)
-            rain_lines.append(segment)
-            draw.line(segment, fill=rain_color, width=3)
-    elif precipitation_display in {"drizzle", "snow_and_drizzle"}:
-        for x in range(70, width, 125):
-            y = 625 + (x % 95)
-            segment = (x, y, x - 6, y + 24)
-            drizzle_lines.append(segment)
-            draw.line(segment, fill=drizzle_color, width=1)
-    if precipitation_display in {"snow", "snow_and_drizzle", "mixed_snow_rain"}:
-        for x in range(55, width, 115):
-            y = 615 + (x % 155)
-            dot = (x - 3, y - 3, x + 3, y + 3)
-            snow_dots.append(dot)
-            draw.ellipse(dot, fill=snow_color)
-    # Lightning is a thunderstorm motif — driven by the thunderstorm flag, not
-    # by a (possibly storm-only) severe-weather day.
-    if weather.get("thunderstorm"):
-        lightning_line = ((850, 615), (805, 710), (850, 700), (790, 825))
-        draw.line(lightning_line, fill=lightning_color, width=8)
-    if weather["strong_wind"] and not weather["rain"]:
-        for y in (625, 690, 755):
-            arc = (700, y, 1040, y + 95)
-            wind_arcs.append(arc)
-            draw.arc(arc, 180, 350, fill=wind_color, width=4)
-
-    return {
-        "precipitation_display": precipitation_display,
-        "rain_lines": rain_lines,
-        "rain_color": rain_color,
-        "drizzle_lines": drizzle_lines,
-        "drizzle_color": drizzle_color,
-        "snow_dots": snow_dots,
-        "snow_color": snow_color,
-        "lightning_line": lightning_line,
-        "lightning_color": lightning_color,
-        "wind_arcs": wind_arcs,
-        "wind_color": wind_color,
-    }
 
 
 def render_kld_informative_cover(
@@ -697,85 +602,18 @@ def render_kld_informative_cover(
     visibility_context: Mapping[str, Any] | None = None,
     output_path: str | Path = "outputs/kld_informative_cover.png",
 ) -> dict[str, Any]:
-    """Render a deterministic 1080px factual card with no external calls."""
-    from PIL import Image, ImageDraw, PngImagePlugin
-
+    """Render a deterministic curated 1080x1350 factual fallback with no external calls."""
     metadata = extract_kld_cover_facts(
         message,
         post_type=post_type,
         visibility_context=visibility_context,
     )
-    top, middle, sand = _palette(metadata)
-    width = height = 1080
-    image = Image.new("RGB", (width, height), top)
-    draw = ImageDraw.Draw(image)
-
-    for y in range(height):
-        ratio = y / (height - 1)
-        if ratio < 0.66:
-            local = ratio / 0.66
-            color = tuple(round(top[i] * (1 - local) + middle[i] * local) for i in range(3))
-        else:
-            local = (ratio - 0.66) / 0.34
-            color = tuple(round(middle[i] * (1 - local) + sand[i] * local) for i in range(3))
-        draw.line((0, y, width, y), fill=color)
-
-    # Baltic horizon and restrained natural texture.
-    draw.rectangle((0, 665, width, 850), fill=(74, 119, 142))
-    for offset in range(0, 360, 32):
-        y = 700 + (offset % 120)
-        draw.arc((-120 + offset * 3, y, 260 + offset * 3, y + 55), 190, 345, fill=(178, 207, 217), width=4)
-    draw.polygon(((0, 850), (240, 795), (520, 850), (810, 800), (1080, 835), (1080, 1080), (0, 1080)), fill=sand)
-
-    weather = metadata["weather"]
-    if weather["fog"] or weather["mixed_visibility"]:
-        draw.rounded_rectangle((0, 500, width, 760), radius=80, fill=(224, 225, 218))
-    graphics = _draw_weather_graphics(draw, width=width, weather=weather)
-
-    # Branded information panel; no pseudo-photographic text.
-    draw.rounded_rectangle((70, 70, 1010, 590), radius=42, fill=(20, 34, 45), outline=(230, 238, 240), width=3)
-    draw.text((115, 112), "VAYBOMETER · KLD", font=_font(28, bold=True), fill=(154, 199, 216))
-    draw.text((115, 174), metadata["title"], font=_font(61, bold=True), fill=(247, 249, 246))
-    if metadata["date"]:
-        draw.text((117, 254), metadata["date"], font=_font(29), fill=(194, 211, 217))
-
-    facts = metadata["facts"] or ["АКТУАЛЬНЫЙ ПРОГНОЗ — В ТЕКСТЕ"]
-    y = 326
-    for fact in facts:
-        draw.rounded_rectangle((112, y - 8, 968, y + 66), radius=18, fill=(42, 62, 74))
-        draw.text((142, y + 8), fact, font=_font(31, bold=True), fill=(245, 247, 242))
-        y += 82
-
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(output.name + ".tmp")
-    metadata["graphics"] = graphics
-    metadata["precipitation_display"] = weather["precipitation_display"]
-    metadata["rain_graphics"] = bool(graphics["rain_lines"])
-    metadata["drizzle_graphics"] = bool(graphics["drizzle_lines"])
-    metadata["snow_graphics"] = bool(graphics["snow_dots"])
-    metadata["lightning_graphics"] = bool(graphics["lightning_line"])
-    png_info = PngImagePlugin.PngInfo()
-    png_info.add_text("renderer_version", RENDERER_VERSION)
-    png_info.add_text("weather_flags", json.dumps(weather, ensure_ascii=False, sort_keys=True))
-    png_info.add_text("graphics", json.dumps(graphics, ensure_ascii=False, sort_keys=True))
-    png_info.add_text("explicit_storm", str(bool(weather["explicit_storm"])).lower())
-    png_info.add_text("thunderstorm", str(bool(weather["thunderstorm"])).lower())
-    png_info.add_text("storm_gust", str(bool(weather.get("storm_gust"))).lower())
-    png_info.add_text("storm_badge", str(bool(weather.get("storm_badge"))).lower())
-    png_info.add_text("severe_weather", str(bool(weather.get("severe_weather"))).lower())
-    png_info.add_text("actual_precipitation", str(bool(weather["actual_precipitation"])).lower())
-    png_info.add_text("precipitation_display", str(weather["precipitation_display"]))
-    png_info.add_text("rain_graphics", str(metadata["rain_graphics"]).lower())
-    png_info.add_text("drizzle_graphics", str(metadata["drizzle_graphics"]).lower())
-    png_info.add_text("snow_graphics", str(metadata["snow_graphics"]).lower())
-    png_info.add_text("lightning_graphics", str(metadata["lightning_graphics"]).lower())
-    image.save(temporary, format="PNG", optimize=True, pnginfo=png_info)
-    temporary.replace(output)
-    metadata["path"] = str(output)
-    metadata["width"] = width
-    metadata["height"] = height
-    return metadata
+    return _render_curated_cover(
+        metadata,
+        post_type=post_type,
+        source_text=message,
+        output_path=output_path,
+    )
 
 
 __all__ = [

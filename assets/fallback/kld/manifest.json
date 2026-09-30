@@ -1,0 +1,98 @@
+{
+  "version": "kld_curated_fallback_v1",
+  "canvas": [
+    1080,
+    1350
+  ],
+  "atlas_format": "webp",
+  "atlas_quality": 3,
+  "atlas_size": [
+    4320,
+    6750
+  ],
+  "cell_size": [
+    1080,
+    1350
+  ],
+  "columns": 4,
+  "atlas_parts": [
+    "atlas_v1.part00.b64",
+    "atlas_v1.part01.b64",
+    "atlas_v1.part02.b64",
+    "atlas_v1.part03.b64",
+    "atlas_v1.part04.b64",
+    "atlas_v1.part05.b64"
+  ],
+  "asset_order": [
+    "kld_clear_01",
+    "kld_sunset_01",
+    "kld_overcast_01",
+    "kld_overcast_02",
+    "kld_rain_evening_01",
+    "kld_fog_01",
+    "kld_snow_01",
+    "kld_frost_sunset_01",
+    "kld_strong_wind_01",
+    "kld_rain_day_01",
+    "kld_windy_autumn_01",
+    "kld_winter_overcast_01",
+    "kld_blizzard_01",
+    "kld_snow_02",
+    "kld_night_01",
+    "kld_frost_01",
+    "kld_slush_01"
+  ],
+  "scenario_pools": {
+    "clear": [
+      "kld_clear_01"
+    ],
+    "sunset": [
+      "kld_sunset_01"
+    ],
+    "overcast": [
+      "kld_overcast_01",
+      "kld_overcast_02"
+    ],
+    "rain_day": [
+      "kld_rain_day_01"
+    ],
+    "rain_evening": [
+      "kld_rain_evening_01"
+    ],
+    "fog": [
+      "kld_fog_01"
+    ],
+    "snow": [
+      "kld_snow_01",
+      "kld_snow_02"
+    ],
+    "heavy_snow": [
+      "kld_blizzard_01"
+    ],
+    "frost": [
+      "kld_frost_01"
+    ],
+    "frost_evening": [
+      "kld_frost_sunset_01"
+    ],
+    "slush": [
+      "kld_slush_01"
+    ],
+    "strong_wind": [
+      "kld_strong_wind_01"
+    ],
+    "windy_autumn": [
+      "kld_windy_autumn_01"
+    ],
+    "winter_overcast": [
+      "kld_winter_overcast_01"
+    ],
+    "night": [
+      "kld_night_01"
+    ]
+  },
+  "night_rule": "night asset requires explicit visual_period=night",
+  "slush_rule": "mixed snow/rain or snow/drizzle plus near-freezing temperature evidence",
+  "truth_rule": "background illustrates only source-backed weather state and never creates a claim",
+  "rotation_rule": "eligible pool -> deterministic asset -> existing perceptual dedup"
+}
