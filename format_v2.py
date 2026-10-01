@@ -800,8 +800,37 @@ def _evening_flags(lines: list[str], *, storm: str) -> dict[str, bool]:
     }
 
 
+def _evening_score_value(score_line: str) -> float | None:
+    match = re.search(
+        r"VayboMeter(?:\s+завтра)?\s*:\s*(\d+(?:[\.,]\d+)?)/10",
+        str(score_line or ""),
+        flags=re.I,
+    )
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _high_score_wind_only(flags: dict[str, bool], score_line: str) -> bool:
+    score = _evening_score_value(score_line)
+    return bool(
+        isinstance(score, (int, float))
+        and score >= 8.0
+        and flags.get("wind")
+        and not flags.get("storm")
+        and not flags.get("rain")
+        and not flags.get("heat")
+        and not flags.get("visibility_alert")
+        and not flags.get("waves")
+    )
+
+
 def _evening_main_scenario(flags: dict[str, bool], score_line: str) -> str:
-    del score_line
+    if _high_score_wind_only(flags, score_line):
+        return "🧭 Главное завтра: хороший день для обычных дел и прогулок."
     if flags["storm"]:
         return "🧭 Главное завтра: неустойчивое погодное окно; береговые планы лучше держать гибкими."
     if flags.get("visibility_condition") in {"dense_fog", "fog"}:
@@ -864,7 +893,9 @@ def _evening_confidence_line(flags: dict[str, bool]) -> str:
     return ""
 
 
-def _evening_plan(flags: dict[str, bool]) -> str:
+def _evening_plan(flags: dict[str, bool], *, high_score_wind_only: bool = False) -> str:
+    if high_score_wind_only:
+        return "✅ План завтра: обычные дела и прогулки без специальных погодных ограничений."
     if flags["storm"]:
         return "✅ План завтра: короткий маршрут, непромокаемый слой и без риска на пирсах."
     if flags.get("visibility_condition") in {"dense_fog", "fog"}:
@@ -1077,6 +1108,10 @@ def _clean_evening_score_line(line: str, flags: dict[str, bool]) -> str:
         s = re.sub(r"—\s*хорошо\b[^.\n]*\.?", "— жарко; у моря порывы.", s, flags=re.I)
     elif flags.get("heat"):
         s = re.sub(r"—\s*отлично\b[^.\n]*\.?", "— днём жарко; активность лучше утром/вечером.", s, flags=re.I)
+    elif _high_score_wind_only(flags, s):
+        score = _evening_score_value(s)
+        if isinstance(score, (int, float)):
+            s = re.sub(r"—\s*[^.\n]*\.?", f"— {_morning_score_label(score)}.", s, flags=re.I)
     if not flags.get("wind") and _has_wind_claim(s):
         m = re.search(r"(\d+(?:[\.,]\d+)?)/10", s)
         if m:
@@ -1567,9 +1602,14 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
     visibility = _morning_pick(weather_lines, ("🌫 Видимость:",))
     score = _first_line_starts(weather_lines, ("✨ VayboMeter завтра:", "✨ VayboMeter:"))
     flags = _evening_flags(weather_lines, storm=storm)
+    high_score_wind_only = _high_score_wind_only(flags, score)
     sup_water = _common_sup_water_line(raw_sea, has_storm=bool(flags.get("storm")))
-    nuance = _evening_nuance(flags, bool(sea), bool(warm_cold))
-    confidence = _evening_confidence_line(flags)
+    nuance = (
+        "⚠️ Нюанс: у моря условия ощущаются иначе, чем в городе."
+        if high_score_wind_only
+        else _evening_nuance(flags, bool(sea), bool(warm_cold))
+    )
+    confidence = "" if high_score_wind_only else _evening_confidence_line(flags)
 
     out: list[str] = [f"<b>🌅 Калининградская область завтра{title_date}</b>"]
 
@@ -1614,7 +1654,7 @@ def build_evening_format_v2(region_name: str, safe_legacy_text: str) -> str:
                 out.append(line)
         out.append("")
 
-    out.append(_evening_plan(flags))
+    out.append(_evening_plan(flags, high_score_wind_only=high_score_wind_only))
     out.append("#Калининград #погода #здоровье #море")
     return "\n".join(out).strip()
 
