@@ -199,17 +199,42 @@ def stable_horde_prompt_is_short_kld_first_and_negative_separate() -> None:
             "weather_scenario": "cloudy",
             "visibility_condition": "clear",
             "wind_gust_category": "gust_7_9",
-            "lunar_phase": "waning crescent",
+            "lunar_phase": "waning_gibbous",
         }
     )
     assert positive.startswith("Kaliningrad region, Baltic Sea coast, August summer.")
     assert "lush fresh natural green" in positive
     assert "Open Baltic water" in positive
     assert len(positive.split()) < 100
+    assert "Lunar phase:" not in positive
+    assert "waning_gibbous" not in positive
+    assert "moon" in negative
+    assert "lunar disc" in negative
+    assert "night sky" in negative
+    assert "night atmosphere" in negative
     assert "dry yellow living grass" not in positive
     assert "dry yellow living grass" in negative
     assert "breakwater" in negative
     assert "screenshot" in negative
+
+
+def stable_horde_evening_lunar_cue_is_preserved() -> None:
+    positive, negative = build_stable_horde_prompt_parts(
+        {
+            "target_date": "2026-10-01",
+            "post_type": "evening",
+            "scene_family": "baltiysk_breakwater",
+            "scene_text": "Baltiysk breakwater stones, working-harbour edge in the distance and open sea",
+            "composition": "breakwater perspective line",
+            "weather_scenario": "drizzle",
+            "visibility_condition": "clear",
+            "wind_gust_category": "gust_7_9",
+            "lunar_phase": "waning_gibbous",
+        }
+    )
+    assert "Lunar phase: waning_gibbous." in positive
+    assert "moon" not in negative
+    assert "night sky" not in negative
 
 
 TESTS = [
@@ -225,6 +250,7 @@ TESTS = [
     wet_promenade_is_fail_closed_out_of_rain_and_storm_routes,
     pine_forest_sea_path_is_fail_closed_out_of_provider_routes,
     stable_horde_prompt_is_short_kld_first_and_negative_separate,
+    stable_horde_evening_lunar_cue_is_preserved,
 ]
 
 
