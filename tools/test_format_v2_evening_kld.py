@@ -1133,6 +1133,9 @@ def kld_evening_high_score_wind_only_is_editorially_deduped() -> None:
     source = _wind_gust_evening(4, 10).replace(
         "✨ VayboMeter завтра: 6.0/10 — с оговорками; ветер у моря.",
         "✨ VayboMeter завтра: 8.5/10 — очень хороший день; ветер у моря.",
+    ).replace(
+        "\n#Калининград #погода #здоровье #море\n",
+        "\n———\n#Калининград #погода #здоровье #море\n",
     )
     formatted = build_evening_format_v2("Калининградская область", source)
     final_text = _apply_format_v2_safe_postprocess(formatted, "", "", "evening")
