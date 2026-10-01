@@ -365,6 +365,7 @@ def build_stable_horde_prompt_parts(
     gust = str(metadata.get("wind_gust_category") or "wind_unknown")
     post_type = str(metadata.get("post_type") or "daily")
     lunar = str(metadata.get("lunar_phase") or "unknown")
+    is_morning = post_type.strip().lower() == "morning"
 
     opening = f"Kaliningrad region, Baltic Sea coast, {season}."
     if summer:
@@ -378,7 +379,7 @@ def build_stable_horde_prompt_parts(
     ]
     if scene in _OPEN_BALTIC_SCENES:
         positive_parts.append("Open Baltic water and a readable sea horizon are clearly present.")
-    if lunar not in {"", "unknown", "none"}:
+    if not is_morning and lunar not in {"", "unknown", "none"}:
         positive_parts.append(f"Lunar phase: {lunar}.")
 
     negative_parts = [
@@ -399,6 +400,10 @@ def build_stable_horde_prompt_parts(
         "text overlay",
         "watermark",
     ]
+    if is_morning:
+        negative_parts.extend(
+            ("moon", "lunar disc", "moonlit scene", "night sky", "night atmosphere")
+        )
     if summer:
         negative_parts[1:1] = [
             *SUMMER_ANTI_WINTER_TERMS,
