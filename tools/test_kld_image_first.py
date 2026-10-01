@@ -35,6 +35,7 @@ from curated_fallback_kld import (  # noqa: E402
 )
 from tools.kld_visual_fixture_image import (  # noqa: E402
     _load_visibility_context_file,
+    _send_and_record,
     build_payload,
     execute_image_delivery,
 )
@@ -1579,7 +1580,68 @@ def stable_horde_backend_has_offline_success_and_url_safety() -> None:
             os.environ["KLD_STABLE_HORDE_ENABLED"] = original_enabled
 
 
+
+def scene_aware_caption_uses_final_selected_scene_without_changing_identity() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        args = _args(root)
+        args.caption = ""
+        args.caption_prefix = ""
+        sent: list[str] = []
+
+        def send_photo(_path, caption, *, chat_id_override=""):
+            sent.append(caption)
+            return 42
+
+        def record(**_kwargs):
+            return {"sha256": "c" * 64}
+
+        def deliver(scene_family: str, cache_key: str) -> dict[str, object]:
+            metadata = {
+                "forecast_date": "2026-07-20",
+                "target_date": "tomorrow",
+                "scene_family": scene_family,
+                "composition": "fixture composition",
+                "prompt_version": "fixture",
+            }
+            return _send_and_record(
+                args=args,
+                outcome={},
+                backend="pollinations",
+                image_path="fixture.png",
+                metadata=metadata,
+                cache_key=cache_key,
+                style_name="fixture-style",
+                history_path=root / "history.json",
+                send_photo=send_photo,
+                record_publication=record,
+            )
+
+        open_result = deliver("yantarny_wide_beach", "cache-open")
+        assert sent[-1] == "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
+        assert open_result["selected_scene_family"] == "yantarny_wide_beach"
+        assert open_result["selected_cache_key"] == "cache-open"
+
+        urban_result = deliver("zelenogradsk_promenade", "cache-urban")
+        assert "над Балтикой" not in sent[-1]
+        assert sent[-1] == "Визуальный вайб завтрашнего вечера у воды 🌆"
+        assert urban_result["selected_scene_family"] == "zelenogradsk_promenade"
+        assert urban_result["selected_cache_key"] == "cache-urban"
+
+
+def morning_workflow_preserves_existing_user_caption() -> None:
+    workflow = (ROOT / ".github/workflows/daily_post_klg.yml").read_text(encoding="utf-8")
+    morning_start = workflow.index('"safe_test_post.py", "--mode", "morning", "--format-v2"')
+    evening_start = workflow.index("\n  evening:\n", morning_start)
+    morning = workflow[morning_start:evening_start]
+    assert 'caption = "Визуальный вайб сегодняшнего утра над Балтикой 🌊"' in morning
+    assert '"--caption", caption,' in morning
+    assert '"--caption-prefix", "🧪"' not in morning
+
+
 TESTS = [
+    scene_aware_caption_uses_final_selected_scene_without_changing_identity,
+    morning_workflow_preserves_existing_user_caption,
     visual_target_date_propagates_through_provider_and_fallback,
     pollinations_failure_uses_cover_and_text_once,
     exact_duplicates_are_nonfatal_and_text_once,

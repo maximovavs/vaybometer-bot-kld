@@ -472,9 +472,6 @@ jobs:
                       preview_args += ["--date", wd]
                   preview_cmd = [sys.executable] + preview_args
 
-                  caption = "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
-                  if to_test:
-                      caption = "🧪 " + caption
                   history_namespace = "test" if to_test else "prod"
 
                   img_cmd = [
@@ -484,11 +481,12 @@ jobs:
                       "--visibility-context-file", "format_v2_visibility_context.json",
                       "--send-to-test",
                       "--chat-id", send_chat,
-                      "--caption", caption,
                       "--history-namespace", history_namespace,
                       "--result-file", "image_result.json",
                       "--prompt-metadata-file", "image_prompt_metadata.json",
                   ]
+                  if to_test:
+                      img_cmd += ["--caption-prefix", "🧪"]
                   add_test_label = to_test and not chat_override and not scheduled_run
                   run_image_first_publication(
                       mode="evening",

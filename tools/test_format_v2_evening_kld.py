@@ -1128,6 +1128,37 @@ def kld_evening_weak_wind_and_gust_are_not_promoted() -> None:
     assert "порыв" not in plan.lower()
 
 
+
+def kld_evening_high_score_wind_only_is_editorially_deduped() -> None:
+    source = _wind_gust_evening(4, 10).replace(
+        "✨ VayboMeter завтра: 6.0/10 — с оговорками; ветер у моря.",
+        "✨ VayboMeter завтра: 8.5/10 — очень хороший день; ветер у моря.",
+    )
+    formatted = build_evening_format_v2("Калининградская область", source)
+    final_text = _apply_format_v2_safe_postprocess(formatted, "", "", "evening")
+    lines = [line.strip() for line in final_text.splitlines() if line.strip()]
+    score_line = next(line for line in lines if line.startswith("✨ VayboMeter"))
+    main_line = next(line for line in lines if line.startswith("🧭 Главное завтра:"))
+    nuance_line = next(line for line in lines if line.startswith("⚠️ Нюанс:"))
+    human_lines = [line for line in lines if line.startswith("💬 Настрой на завтра:")]
+    plan_line = next(line for line in lines if line.startswith("✅ План завтра:"))
+
+    assert "8.5/10" in score_line
+    assert "ветер" not in score_line.lower() and "порыв" not in score_line.lower()
+    assert main_line == "🧭 Главное завтра: хороший день для обычных дел и прогулок."
+    assert "ветер" not in nuance_line.lower() and "порыв" not in nuance_line.lower()
+    assert len(human_lines) == 1
+    assert plan_line == "✅ План завтра: обычные дела и прогулки без специальных погодных ограничений."
+    assert "4 м/с" in final_text
+    assert "порывы до 10 м/с" in final_text
+    editorial = [score_line, main_line, nuance_line, human_lines[0], plan_line]
+    wind_mentions = [
+        line for line in editorial
+        if "ветер" in line.lower() or "порыв" in line.lower()
+    ]
+    assert len(wind_mentions) <= 1, editorial
+
+
 def kld_evening_meaningful_gust_remains_actionable() -> None:
     source = _wind_gust_evening(2, 10)
     text = build_evening_format_v2("Калининградская область", source)
@@ -1230,6 +1261,7 @@ def main() -> None:
         kld_evening_score_preserves_moderate_non_heat_contract,
         kld_numeric_wind_parser_keeps_average_and_gust_separate,
         kld_evening_weak_wind_and_gust_are_not_promoted,
+        kld_evening_high_score_wind_only_is_editorially_deduped,
         kld_evening_meaningful_gust_remains_actionable,
         kld_evening_structural_headings_do_not_create_contrast,
         kld_evening_real_regional_spread_owns_only_scenario_role,

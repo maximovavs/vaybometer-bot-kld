@@ -55,6 +55,7 @@ from kld_visual_policy import (  # noqa: E402
     apply_weather_scene_route,
     build_stable_horde_prompt_parts,
     finalize_kld_provider_prompt,
+    scene_macro_family,
     scene_policy_rejection,
 )
 from visual_context_kld import build_visual_context  # noqa: E402
@@ -323,14 +324,33 @@ def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[st
     }
 
 
-def _caption(args: argparse.Namespace) -> str:
-    default_suffix = args.scenario or "FORMAT_V2 message"
-    if args.post_type == "morning":
-        default_caption = "🧪 KLD morning image • FORMAT_V2 SceneCues"
-    else:
-        default_caption = f"🧪 KLD image • {default_suffix} • FORMAT_V2 SceneCues"
-    return args.caption.strip() or default_caption
+def _scene_aware_evening_caption(scene_family: str) -> str:
+    macro = scene_macro_family(scene_family)
+    if macro in {"open_beach_dunes", "cliff_overlook"}:
+        return "Визуальный вайб завтрашнего вечера над Балтикой 🌊"
+    if macro == "promenade_urban":
+        return "Визуальный вайб завтрашнего вечера у воды 🌆"
+    if macro == "breakwater_harbour":
+        return "Визуальный вайб завтрашнего вечера у Балтики 🌊"
+    if macro == "lagoon":
+        return "Визуальный вайб завтрашнего вечера у залива 🌊"
+    if macro == "forest_road":
+        return "Визуальный вайб завтрашнего вечера на побережье 🌲"
+    if macro == "local_cover":
+        return "Погодный вайб Калининградской области на завтра 🌦"
+    return "Визуальный вайб завтрашнего вечера в Калининградской области 🌆"
 
+
+def _caption(args: argparse.Namespace, metadata: Mapping[str, Any]) -> str:
+    explicit = str(getattr(args, "caption", "") or "").strip()
+    if explicit:
+        return explicit
+    if args.post_type == "morning":
+        return "🧪 KLD morning image • FORMAT_V2 SceneCues"
+    prefix = str(getattr(args, "caption_prefix", "") or "").strip()
+    return (prefix + " " if prefix else "") + _scene_aware_evening_caption(
+        str(metadata.get("scene_family") or "")
+    )
 
 def _send_and_record(
     *,
@@ -355,7 +375,7 @@ def _send_and_record(
         return outcome
 
     try:
-        message_id = send_photo(image_path, _caption(args), chat_id_override=args.chat_id)
+        message_id = send_photo(image_path, _caption(args, metadata), chat_id_override=args.chat_id)
     except Exception as exc:
         error = _error_payload(exc)
         outcome.update(
@@ -940,7 +960,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--generate", action="store_true", help="Generate local image but do not send")
     parser.add_argument("--send-to-test", action="store_true", help="Generate and send image. Defaults to CHANNEL_ID_TEST unless --chat-id is provided")
     parser.add_argument("--chat-id", default="", help="Explicit chat id for --send-to-test")
-    parser.add_argument("--caption", default="", help="Caption for sent image")
+    parser.add_argument("--caption", default="", help="Explicit caption override for sent image")
+    parser.add_argument("--caption-prefix", default="", help="Optional prefix for the scene-aware evening caption")
     parser.add_argument("--history-namespace", choices=("prod", "test"), default="", help="Visual history namespace for duplicate checks")
     parser.add_argument("--result-file", default="image_result.json", help="Structured image outcome JSON")
     parser.add_argument("--prompt-metadata-file", default="image_prompt_metadata.json", help="Prompt/cover metadata JSON")
