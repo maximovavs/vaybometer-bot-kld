@@ -23,6 +23,7 @@ from gpt import gpt_complete  # общая обёртка LLM
 
 # ───── настройки ────────────────────────────────────────────────────────────
 TZ = pendulum.timezone("Asia/Nicosia")
+KLD_PHASE_TZ = pendulum.timezone("Europe/Kaliningrad")  # only for civil-date lunar phase events
 SKIP_SHORT = os.getenv("GEN_SKIP_SHORT", "").strip().lower() in ("1","true","yes","on")
 DEBUG_VOC  = os.getenv("DEBUG_VOC",   "").strip().lower() in ("1","true","yes","on")
 MIN_VOC_MIN = int(os.getenv("MIN_VOC_MINUTES", "0") or 0)   # порог для вывода месячного списка
@@ -69,10 +70,14 @@ def dt2jd(dt: pendulum.DateTime) -> float:
 
 def phase_name(angle: float) -> str:
     idx = int(((angle + 22.5) % 360) // 45)
-    return [
+    name = [
         "Новолуние","Растущий серп","Первая четверть","Растущая Луна",
         "Полнолуние","Убывающая Луна","Последняя четверть","Убывающий серп"
     ][idx]
+    # Last Quarter is a discrete 270° event, not the whole 247.5°–292.5° bucket.
+    if name == "Последняя четверть":
+        return "Убывающая Луна" if angle < 270.0 else "Убывающий серп"
+    return name
 
 def moon_lon(jd: float) -> float:
     return swe.calc_ut(jd, swe.MOON)[0][0]
@@ -91,6 +96,19 @@ def compute_phase(jd: float) -> Tuple[str,int,str]:
     name  = phase_name(ang)
     sign  = SIGNS[int(lon_m // 30) % 12]
     return name, illum, sign
+
+def _phase_angle(jd: float) -> float:
+    return (moon_lon(jd) - sun_lon(jd)) % 360
+
+def _last_quarter_event_on_kld_date(day) -> bool:
+    """True when the physical 270° Last Quarter event falls in this KLD civil date."""
+    start_local = pendulum.datetime(day.year, day.month, day.day, 0, 0, tz=KLD_PHASE_TZ)
+    end_local = start_local.add(days=1)
+    start_angle = _phase_angle(dt2jd(start_local.in_tz("UTC")))
+    end_angle = _phase_angle(dt2jd(end_local.in_tz("UTC")))
+    advance = (end_angle - start_angle) % 360
+    to_event = (270.0 - start_angle) % 360
+    return math.isclose(to_event, 0.0, abs_tol=1e-9) or (0.0 < to_event < advance)
 
 # ───── Void-of-Course (по сменам знаков) ────────────────────────────────────
 ASPECTS = {0,60,90,120,180}   # мажоры
@@ -332,6 +350,8 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
 
         # лунные данные
         name, illum, sign = compute_phase(jd)
+        if _last_quarter_event_on_kld_date(d):
+            name = "Последняя четверть"
         emoji      = EMO[name]
         phase_time = jd2dt(jd).in_tz(TZ).to_iso8601_string()
 
