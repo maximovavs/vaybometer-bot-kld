@@ -128,6 +128,7 @@ jobs:
           python tools/test_kld_morning_prompt_contract.py
           python tools/test_kld_evening_controlled_variety.py
           python tools/test_kld_lunar_phase_boundary.py
+          python tools/test_lunar_long_desc.py
           python tools/test_kld_visual_policy.py
           python tools/test_kld_image_content_guard.py
           python tools/test_kld_summer_vegetation_prompt.py
