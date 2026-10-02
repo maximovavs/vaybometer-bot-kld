@@ -6,10 +6,15 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import sys
 from pathlib import Path
 
 import pendulum
 import swisseph as swe
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("GEN_SKIP_SHORT", "1")
 os.environ.setdefault("TELEGRAM_TOKEN_KLG", "test-token")
