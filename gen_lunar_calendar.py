@@ -248,6 +248,15 @@ async def gpt_short(date: str, phase: str) -> List[str]:
         pass
     return FALLBACK_SHORT[:]
 
+def _long_desc_is_complete(text: str) -> bool:
+    """Accept only a non-trivial description ending in terminal punctuation."""
+    clean = (text or "").strip()
+    if len(clean) < 24:
+        return False
+    terminal = clean.rstrip("»”\"')]} ")
+    return terminal.endswith((".", "!", "?", "…"))
+
+
 async def gpt_long(name: str, month: str) -> str:
     system = (
         "Ты пишешь краткие (1–2 предложения) пояснения на русском. "
@@ -261,8 +270,9 @@ async def gpt_long(name: str, month: str) -> str:
     )
     try:
         txt = gpt_complete(prompt=prompt, system=system, temperature=0.7, max_tokens=400)
-        if txt:
-            return _sanitize_ru(txt.strip())
+        clean = _sanitize_ru((txt or "").strip())
+        if _long_desc_is_complete(clean):
+            return clean
     except Exception:
         pass
     return FALLBACK_LONG[name]
