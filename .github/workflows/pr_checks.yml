@@ -66,6 +66,7 @@ jobs:
           set -euo pipefail
           python tools/test_format_v2_evening_kld.py
           python tools/test_format_v2_morning_kld.py
+          python tools/test_lunar_phase_boundary.py
       - name: Smoke daily (dry-run)
         env:
           TELEGRAM_TOKEN_KLG: "test"
@@ -107,7 +108,7 @@ jobs:
           for check in (
               "run_image_prompt_bridge_case",
               "run_first_quarter_moon_guard_case",
-              "run_last_quarter_59_moon_guard_case",
+              "run_last_quarter_50_moon_guard_case",
               "run_not_quite_full_moon_guard_case",
               "run_full_moon_evening_moonlit_guard_case",
               "run_waning_gibbous_moon_guard_case",

@@ -23,6 +23,8 @@ from gpt import gpt_complete  # общая обёртка LLM
 
 # ───── настройки ────────────────────────────────────────────────────────────
 TZ = pendulum.timezone("Asia/Nicosia")
+KLD_LUNAR_EVENT_TZ = pendulum.timezone("Europe/Kaliningrad")
+LAST_QUARTER_ANGLE = 270.0
 SKIP_SHORT = os.getenv("GEN_SKIP_SHORT", "").strip().lower() in ("1","true","yes","on")
 DEBUG_VOC  = os.getenv("DEBUG_VOC",   "").strip().lower() in ("1","true","yes","on")
 MIN_VOC_MIN = int(os.getenv("MIN_VOC_MINUTES", "0") or 0)   # порог для вывода месячного списка
@@ -68,11 +70,18 @@ def dt2jd(dt: pendulum.DateTime) -> float:
     return ts/86400 + 2440587.5
 
 def phase_name(angle: float) -> str:
+    """Continuous phase label; Last Quarter itself is assigned by civil-day event."""
+    angle = angle % 360
     idx = int(((angle + 22.5) % 360) // 45)
-    return [
+    name = [
         "Новолуние","Растущий серп","Первая четверть","Растущая Луна",
         "Полнолуние","Убывающая Луна","Последняя четверть","Убывающий серп"
     ][idx]
+    if name == "Последняя четверть":
+        if math.isclose(angle, LAST_QUARTER_ANGLE, abs_tol=1e-9):
+            return "Последняя четверть"
+        return "Убывающая Луна" if angle < LAST_QUARTER_ANGLE else "Убывающий серп"
+    return name
 
 def moon_lon(jd: float) -> float:
     return swe.calc_ut(jd, swe.MOON)[0][0]
@@ -80,16 +89,49 @@ def moon_lon(jd: float) -> float:
 def sun_lon(jd: float) -> float:
     return swe.calc_ut(jd, swe.SUN)[0][0]
 
+def phase_angle(jd: float) -> float:
+    return (moon_lon(jd) - sun_lon(jd)) % 360
+
 def moon_sign_idx(jd: float) -> int:
     return int(moon_lon(jd) // 30) % 12
 
+def _phase_angle_crosses_local_date(
+    date_local,
+    target_angle: float,
+    *,
+    tz=KLD_LUNAR_EVENT_TZ,
+) -> bool:
+    """True when target elongation occurs inside [local midnight, next midnight)."""
+    start_local = pendulum.datetime(
+        date_local.year, date_local.month, date_local.day, 0, 0, 0, tz=tz
+    )
+    end_local = start_local.add(days=1)
+    start_angle = phase_angle(dt2jd(start_local.in_tz("UTC")))
+    end_angle = phase_angle(dt2jd(end_local.in_tz("UTC")))
+
+    # Unwrap the normal 360°→0° transition; one civil day spans far less than 360°.
+    if end_angle < start_angle:
+        end_angle += 360.0
+    target = target_angle % 360.0
+    if target < start_angle:
+        target += 360.0
+    return start_angle <= target < end_angle
+
+def last_quarter_occurs_on_local_date(date_local) -> bool:
+    return _phase_angle_crosses_local_date(date_local, LAST_QUARTER_ANGLE)
+
 def compute_phase(jd: float) -> Tuple[str,int,str]:
-    lon_s = sun_lon(jd)
     lon_m = moon_lon(jd)
-    ang   = (lon_m - lon_s) % 360
+    ang   = phase_angle(jd)
     illum = int(round((1 - math.cos(math.radians(ang))) / 2 * 100))
     name  = phase_name(ang)
     sign  = SIGNS[int(lon_m // 30) % 12]
+    return name, illum, sign
+
+def compute_phase_for_local_date(jd: float, date_local) -> Tuple[str,int,str]:
+    name, illum, sign = compute_phase(jd)
+    if last_quarter_occurs_on_local_date(date_local):
+        name = "Последняя четверть"
     return name, illum, sign
 
 # ───── Void-of-Course (по сменам знаков) ────────────────────────────────────
@@ -331,7 +373,7 @@ async def generate(year: int, month: int) -> Dict[str,Any]:
         jd = swe.julday(d.year, d.month, d.day, 0.0)
 
         # лунные данные
-        name, illum, sign = compute_phase(jd)
+        name, illum, sign = compute_phase_for_local_date(jd, d)
         emoji      = EMO[name]
         phase_time = jd2dt(jd).in_tz(TZ).to_iso8601_string()
 

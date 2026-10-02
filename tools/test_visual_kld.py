@@ -427,15 +427,15 @@ def run_first_quarter_moon_guard_case() -> None:
     print(f"PASS {name}")
 
 
-def run_last_quarter_59_moon_guard_case() -> None:
-    name = "last_quarter_59_percent_moon_guard"
+def run_last_quarter_50_moon_guard_case() -> None:
+    name = "last_quarter_50_percent_moon_guard"
     message = "\n".join(
         [
             "03.07.2026",
             "🌊 Морские города",
             "Балтийск: 21/16 °C • 🌥 облачно • 💨 6.9 м/с • порывы до 15 м/с • 🌊 21°C • волна 1.0 м",
             "Зеленоградск: 21/16 °C • 🌥 облачно • 🌊 23°C",
-            "🌗 Последняя четверть, 59% освещённости",
+            "🌗 Последняя четверть, 50% освещённости",
         ]
     )
     prompt, style_name = build_kld_evening_prompt(
@@ -448,7 +448,7 @@ def run_last_quarter_59_moon_guard_case() -> None:
 
     _assert_startswith(name, "style_name", style_name, "format_v2_scene_cues_v6_")
     for needle in [
-        "Lunar cue: one physically accurate last-quarter Moon, left side lit, visibly non-full, 59% illuminated, at small-to-medium natural non-dominant scale.",
+        "Lunar cue: one physically accurate last-quarter Moon, left side lit, visibly non-full, 50% illuminated, at small-to-medium natural non-dominant scale.",
         "Lunar negative: no perfect full moon, no oversized moon, no fantasy supermoon, no duplicate moon.",
     ]:
         _assert_contains(name, prompt, needle)
@@ -1309,7 +1309,7 @@ def main() -> None:
         run_case(case)
     run_image_prompt_bridge_case()
     run_first_quarter_moon_guard_case()
-    run_last_quarter_59_moon_guard_case()
+    run_last_quarter_50_moon_guard_case()
     run_not_quite_full_moon_guard_case()
     run_full_moon_evening_moonlit_guard_case()
     run_waning_gibbous_moon_guard_case()
