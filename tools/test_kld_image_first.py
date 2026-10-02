@@ -116,6 +116,7 @@ def _run_delivery(
     secondary_generate=None,
     validate_cover=None,
     provider_diagnostics=None,
+    presentation_renderer=None,
 ):
     args = _args(root, post_type=post_type)
     visibility = {
@@ -124,6 +125,9 @@ def _run_delivery(
         "reported_visibility_threshold_m": 6000,
     }
     payload = build_payload(MESSAGE, "test", post_type=post_type, visibility_context=visibility)
+    delivery_kwargs = {}
+    if presentation_renderer is not None:
+        delivery_kwargs["presentation_renderer"] = presentation_renderer
     return execute_image_delivery(
         args=args,
         message=MESSAGE,
@@ -138,6 +142,7 @@ def _run_delivery(
         validate_cover=validate_cover or (lambda *args, **kwargs: {"valid": True, "errors": []}),
         send_photo=send_photo,
         record_publication=record,
+        **delivery_kwargs,
     )
 
 
@@ -1639,7 +1644,84 @@ def morning_workflow_preserves_existing_user_caption() -> None:
     assert '"--caption-prefix", "🧪"' not in morning
 
 
+
+
+def accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        raw_path = root / "accepted-raw.png"
+        evaluated: list[str] = []
+        sent: list[str] = []
+        recorded: list[dict[str, object]] = []
+
+        def generate(**_kwargs):
+            return _image(raw_path, (61, 101, 141))
+
+        def evaluate(path, **_kwargs):
+            evaluated.append(str(path))
+            return _duplicate(accepted=True, reason="accepted", distance=23)
+
+        def send_photo(path, _caption, *, chat_id_override=""):
+            sent.append(str(path))
+            return 501
+
+        def record(**kwargs):
+            recorded.append(dict(kwargs))
+            return {"sha256": "d" * 64, "scene_family": kwargs["scene_family"]}
+
+        outcome = _run_delivery(
+            root,
+            generate=generate,
+            evaluate=evaluate,
+            cover_renderer=_cover_renderer([]),
+            send_photo=send_photo,
+            record=record,
+        )
+
+        assert evaluated == [str(raw_path)]
+        assert len(sent) == 1
+        assert sent[0] != str(raw_path)
+        with Image.open(sent[0]) as rendered:
+            assert rendered.size == (1080, 1350)
+            assert rendered.info["presentation_version"] == "kld_ai_primary_branded_v1"
+        assert recorded and recorded[0]["image_path"] == str(raw_path)
+        assert outcome["source_image_path"] == str(raw_path)
+        assert outcome["published_image_path"] == sent[0]
+        assert outcome["source_sha256"]
+        assert outcome["published_sha256"]
+        assert outcome["source_sha256"] != outcome["published_sha256"]
+        assert outcome["presentation_version"] == "kld_ai_primary_branded_v1"
+        assert outcome["cover_attempted"] is False
+
+
+def presentation_failure_uses_existing_validated_local_cover() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+
+        def fail_presentation(*_args, **_kwargs):
+            raise RuntimeError("fixture presentation failure")
+
+        outcome = _run_delivery(
+            root,
+            generate=lambda **_kwargs: _image(root / "raw.png", (62, 102, 142)),
+            evaluate=lambda *_args, **_kwargs: _duplicate(accepted=True, reason="accepted", distance=24),
+            cover_renderer=_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 502,
+            record=_record(events),
+            presentation_renderer=fail_presentation,
+        )
+
+        assert outcome["backend"] == "local_informative_cover"
+        assert outcome["cover_attempted"] is True
+        assert outcome["local_cover_published"] is True
+        assert outcome["fallback_reason"] == "presentation_failure"
+        assert events == ["cover", "photo", "history"]
+
+
 TESTS = [
+    accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw,
+    presentation_failure_uses_existing_validated_local_cover,
     scene_aware_caption_uses_final_selected_scene_without_changing_identity,
     morning_workflow_preserves_existing_user_caption,
     visual_target_date_propagates_through_provider_and_fallback,
