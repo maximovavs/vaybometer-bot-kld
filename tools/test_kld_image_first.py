@@ -1647,6 +1647,8 @@ def morning_workflow_preserves_existing_user_caption() -> None:
 
 
 def accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw() -> None:
+    from PIL import Image
+
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         raw_path = root / "accepted-raw.png"
