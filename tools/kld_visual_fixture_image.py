@@ -41,9 +41,11 @@ from image_prompt_kld import (  # noqa: E402
 from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
 from kld_informative_cover import (  # noqa: E402
     RENDERER_VERSION as LOCAL_COVER_RENDERER_VERSION,
+    extract_kld_cover_facts,
     render_kld_informative_cover,
     validate_kld_cover_semantics,
 )
+import daily_ai_presentation as ai_presentation  # noqa: E402
 from kld_visual_dedup import (  # noqa: E402
     evaluate_kld_visual_candidate,
     kld_visual_history_path,
@@ -352,6 +354,17 @@ def _caption(args: argparse.Namespace, metadata: Mapping[str, Any]) -> str:
         str(metadata.get("scene_family") or "")
     )
 
+def _sha256_file(path: str | Path) -> str:
+    image_path = Path(path)
+    if not image_path.exists():
+        return ""
+    digest = hashlib.sha256()
+    with image_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _send_and_record(
     *,
     args: argparse.Namespace,
@@ -364,9 +377,21 @@ def _send_and_record(
     history_path: Path,
     send_photo: Callable[..., int | None],
     record_publication: Callable[..., Mapping[str, Any]],
+    history_image_path: str | None = None,
+    presentation_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     outcome["backend"] = backend
+    source_image_path = str(history_image_path or image_path)
     outcome["image_path"] = image_path
+    outcome["source_image_path"] = source_image_path
+    outcome["published_image_path"] = image_path
+    outcome["source_sha256"] = _sha256_file(source_image_path)
+    outcome["published_sha256"] = _sha256_file(image_path)
+    if presentation_metadata:
+        outcome["presentation_version"] = str(
+            presentation_metadata.get("presentation_version") or ""
+        )
+        outcome["presentation_metadata"] = dict(presentation_metadata)
     outcome["selected_scene_family"] = str(metadata.get("scene_family") or "")
     outcome["selected_composition"] = str(metadata.get("composition") or "")
     outcome["selected_cache_key"] = cache_key
@@ -397,7 +422,7 @@ def _send_and_record(
             date_value=str(metadata["forecast_date"]),
             target_date=str(metadata["target_date"]),
             post_type=args.post_type,
-            image_path=image_path,
+            image_path=source_image_path,
             scene_family=str(metadata["scene_family"]),
             composition=str(metadata["composition"]),
             prompt_version=str(metadata["prompt_version"]),
@@ -622,6 +647,7 @@ def execute_image_delivery(
     validate_cover: Callable[..., Mapping[str, Any]] = validate_kld_cover_semantics,
     send_photo: Callable[..., int | None] | None = None,
     record_publication: Callable[..., Mapping[str, Any]] = record_kld_visual_publication,
+    presentation_renderer: Callable[..., Mapping[str, Any]] = ai_presentation.render_branded_ai_presentation,
 ) -> dict[str, Any]:
     """Try two providers, then a validated factual cover, without fatal image-only exits."""
     if generate_image is None:
@@ -663,6 +689,7 @@ def execute_image_delivery(
     ]
     duplicate_reasons: list[str] = []
     provider_failed = False
+    presentation_failed = False
     provider_failure_kinds: list[str] = []
     for provider_index, (backend, generator) in enumerate(providers):
         if candidates:
@@ -781,12 +808,64 @@ def execute_image_delivery(
                 f"min_distance={duplicate.min_distance}"
             )
             if duplicate.accepted:
-                print(f"Selected KLD image: backend={backend} path={img_path}")
+                print(f"Selected KLD raw image: backend={backend} path={img_path}")
+                try:
+                    factual_metadata = extract_kld_cover_facts(
+                        message,
+                        post_type=args.post_type,
+                        visibility_context=visibility_context,
+                    )
+                    presentation_validation = dict(
+                        validate_cover(
+                            message,
+                            factual_metadata,
+                            post_type=args.post_type,
+                            visibility_context=visibility_context,
+                        )
+                    )
+                    if not presentation_validation.get("valid"):
+                        raise RuntimeError(
+                            "KLD AI presentation facts failed deterministic semantic validation: "
+                            + "; ".join(str(item) for item in presentation_validation.get("errors") or [])
+                        )
+                    source_path = Path(img_path)
+                    presentation_path = source_path.with_name(source_path.stem + ".branded.png")
+                    presentation_metadata = dict(
+                        presentation_renderer(
+                            source_path,
+                            headline=str(factual_metadata.get("title") or ""),
+                            date_value=str(factual_metadata.get("date") or metadata["target_date"]),
+                            facts=list(factual_metadata.get("facts") or [])[:3],
+                            branding="VAYBOMETER · KLD",
+                            output_path=presentation_path,
+                        )
+                    )
+                    outcome["presentation_validation"] = presentation_validation
+                except Exception as exc:
+                    presentation_failed = True
+                    error = _error_payload(exc)
+                    outcome["presentation_error"] = error
+                    outcome["error_type"] = error["type"]
+                    outcome["error_message"] = error["message"]
+                    outcome["provider_attempts"][-1]["presentation_error_type"] = error["type"]
+                    outcome["provider_attempts"][-1]["presentation_error_message"] = error["message"]
+                    print(
+                        "WARNING: KLD accepted raw image presentation failed; "
+                        f"validated local cover will be attempted: {error['type']}: {error['message']}"
+                    )
+                    break
+                publication_path = str(presentation_metadata["path"])
+                print(
+                    "Selected KLD branded presentation: "
+                    f"backend={backend} raw={img_path} published={publication_path}"
+                )
                 return _send_and_record(
                     args=args,
                     outcome=outcome,
                     backend=backend,
-                    image_path=img_path,
+                    image_path=publication_path,
+                    history_image_path=img_path,
+                    presentation_metadata=presentation_metadata,
                     metadata=metadata,
                     cache_key=candidate["cache_key"],
                     style_name=candidate["style_name"],
@@ -798,8 +877,12 @@ def execute_image_delivery(
             # Hard rejection: a near duplicate, semantic mismatch, or scene
             # policy violation is never promoted merely because it is the least
             # similar of the rejected candidates.
+        if presentation_failed:
+            break
 
-    if provider_failed and duplicate_reasons:
+    if presentation_failed:
+        fallback_reason = "presentation_failure"
+    elif provider_failed and duplicate_reasons:
         fallback_reason = "provider_failure_after_rejection"
     elif provider_failed:
         fallback_reason = (
