@@ -1210,6 +1210,51 @@ def kld_morning_supported_specific_source_nuance_is_preserved() -> None:
     assert "⚠️ Главный нюанс: на побережье ветер ощущается сильнее, чем в городе." in text
 
 
+
+def kld_morning_calm_without_source_score_does_not_repeat_label() -> None:
+    source = """<b>🌅 Калининградская область: погода на сегодня (03.10.2026)</b>
+Погода: 🏙️ Калининград — 18/10 °C • 🌥 пасм • 💨 2.1 м/с (З) • порывы — 5 • 🔹 1029 гПа ↑.
+🏭 Воздух: 🟡 умеренный (AQI 51) • PM₂.₅ 14 / PM₁₀ 18 • 🌿 пыльца: низкий
+✅ Сегодня: обычные дела и прогулка по самочувствию.
+#Калининград #погода #здоровье #сегодня #море
+"""
+    expected_weather = "🏙 Калининград — 18/10 °C • 🌥 пасм • 💨 2.1 м/с (З) • порывы до 5 м/с • давл. 1029 гПа ↑."
+
+    built = build_morning_format_v2("Калининградская область", source)
+    built_scores = [line for line in built.splitlines() if line.startswith("✨ VayboMeter")]
+    assert built_scores == ["✨ VayboMeter: 10.0/10 — очень хороший."]
+    assert "очень хороший; очень хороший" not in built
+    assert expected_weather in built
+
+    env_names = (
+        "MORNING_VAYBOMETER_SCORE",
+        "FORMAT_V2_POLISH",
+        "FORMAT_V2_SCORE_CONCLUSION",
+        "FORMAT_V2_REASON_CONCLUSION",
+        "FORMAT_V2_MAIN_NUANCE",
+    )
+    old = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ[name] = "1"
+        final = _apply_format_v2_safe_postprocess(built, source, source, "morning")
+        final = sanitize_post_text(final).text
+        final = _finalize_kld_morning_safe_text(final, source, source, "morning")
+    finally:
+        for name, value in old.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    final_scores = [line for line in final.splitlines() if line.startswith("✨ VayboMeter")]
+    assert len(final_scores) == 1
+    assert "10.0/10" in final_scores[0]
+    assert final_scores[0].count("очень хороший") == 1
+    assert "очень хороший; очень хороший" not in final
+    assert expected_weather in final
+
+
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     assert "cron: '30 0 * * *'" in workflow
@@ -1264,6 +1309,7 @@ def main() -> None:
         kld_morning_generic_source_nuance_is_omitted,
         kld_morning_source_nuance_that_only_restates_score_is_omitted,
         kld_morning_supported_specific_source_nuance_is_preserved,
+        kld_morning_calm_without_source_score_does_not_repeat_label,
         kld_workflow_morning_schedule_is_earlier,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
