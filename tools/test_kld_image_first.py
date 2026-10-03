@@ -96,6 +96,35 @@ def _cover_renderer(path_events: list[str], *, fail: bool = False):
     return render
 
 
+def _bounded_cover_renderer(
+    path_events: list[str],
+    candidates: tuple[str, ...] = ("kld_overcast_01", "kld_overcast_02"),
+):
+    def render(
+        message: str,
+        *,
+        post_type: str,
+        visibility_context,
+        output_path: str,
+        curated_asset_id: str | None = None,
+    ):
+        asset_id = str(curated_asset_id or candidates[0])
+        if asset_id not in candidates:
+            raise RuntimeError(f"fixture asset not eligible: {asset_id}")
+        path_events.append(f"cover:{asset_id}")
+        color = (155 + candidates.index(asset_id) * 10, 165, 170)
+        _image(Path(output_path), color)
+        return {
+            "renderer_version": RENDERER_VERSION,
+            "facts": ["ВИДИМОСТЬ УТРОМ СНИЖЕНА"],
+            "curated_asset_id": asset_id,
+            "curated_pool": list(candidates),
+            "curated_candidates": list(candidates),
+        }
+
+    return render
+
+
 def _record(events: list[str]):
     def record(**kwargs):
         events.append("history")
@@ -993,6 +1022,7 @@ def local_cover_variants_rotate_across_adjacent_dates() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         assets: set[str] = set()
+        explicit_override_checked = False
         for day in range(20, 32):
             date_value = f"{day:02d}.07.2026"
             message = MESSAGE.replace(
@@ -1006,6 +1036,31 @@ def local_cover_variants_rotate_across_adjacent_dates() -> None:
                 output_path=root / f"cover-{day}.png",
             )
             assets.add(str(metadata["curated_asset_id"]))
+            assert metadata["curated_candidates"][0] == metadata["curated_asset_id"]
+            assert set(metadata["curated_candidates"]) == set(metadata["curated_pool"])
+            if not explicit_override_checked and len(metadata["curated_candidates"]) > 1:
+                alternate_asset = metadata["curated_candidates"][1]
+                alternate = render_kld_informative_cover(
+                    message,
+                    post_type="evening",
+                    visibility_context=None,
+                    output_path=root / f"cover-{day}-alternate.png",
+                    curated_asset_id=alternate_asset,
+                )
+                assert alternate["curated_asset_id"] == alternate_asset
+                try:
+                    render_kld_informative_cover(
+                        message,
+                        post_type="evening",
+                        visibility_context=None,
+                        output_path=root / f"cover-{day}-invalid.png",
+                        curated_asset_id="kld_not_in_pool",
+                    )
+                except RuntimeError as exc:
+                    assert "not eligible for scenario" in str(exc)
+                else:
+                    raise AssertionError("non-pool curated asset override must be rejected")
+                explicit_override_checked = True
             valid = validate_kld_cover_semantics(
                 message,
                 metadata,
@@ -1018,6 +1073,7 @@ def local_cover_variants_rotate_across_adjacent_dates() -> None:
                 assert rendered.size == (1080, 1350)
         assert assets <= {"kld_overcast_01", "kld_overcast_02"}
         assert len(assets) == 2
+        assert explicit_override_checked is True
 
 
 def curated_overlay_safe_zones_cover_all_assets() -> None:
@@ -1437,6 +1493,121 @@ def near_duplicate_local_cover_is_not_published() -> None:
         assert events == ["cover"]
 
 
+
+def duplicate_first_local_cover_retries_bounded_alternate() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        evaluated = 0
+
+        def fail_provider(**_kwargs):
+            raise RuntimeError("provider down")
+
+        def evaluate(*_args, **_kwargs):
+            nonlocal evaluated
+            evaluated += 1
+            if evaluated == 1:
+                return _duplicate(accepted=False, reason="near_duplicate", distance=0)
+            return _duplicate(accepted=True, reason="accepted", distance=18)
+
+        outcome = _run_delivery(
+            root,
+            generate=fail_provider,
+            secondary_generate=fail_provider,
+            evaluate=evaluate,
+            cover_renderer=_bounded_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 207,
+            record=_record(events),
+        )
+        assert outcome["result"] == "fallback_sent"
+        assert outcome["backend"] == "local_informative_cover"
+        assert outcome["telegram_image_sent"] is True
+        assert outcome["local_cover_published"] is True
+        assert outcome["cover_metadata"]["curated_asset_id"] == "kld_overcast_02"
+        assert events == [
+            "cover:kld_overcast_01",
+            "cover:kld_overcast_02",
+            "photo",
+            "history",
+        ]
+        local_checks = [
+            item for item in outcome["dedup_results"]
+            if item["backend"] == "local_informative_cover"
+        ]
+        assert len(local_checks) == 2
+        final, order = _orchestrate(root, outcome)
+        assert final["text_sent"] is True
+        assert order == ["preview", "image", "text"]
+
+
+def all_local_cover_variants_duplicate_remain_text_only() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+
+        def fail_provider(**_kwargs):
+            raise RuntimeError("provider down")
+
+        outcome = _run_delivery(
+            root,
+            generate=fail_provider,
+            secondary_generate=fail_provider,
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=False,
+                reason="near_duplicate",
+                distance=0,
+            ),
+            cover_renderer=_bounded_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 208,
+            record=_record(events),
+        )
+        assert outcome["result"] == "skipped_duplicate"
+        assert outcome["telegram_image_sent"] is False
+        assert outcome["local_cover_published"] is False
+        assert outcome["history_recorded"] is False
+        assert events == ["cover:kld_overcast_01", "cover:kld_overcast_02"]
+        local_checks = [
+            item for item in outcome["dedup_results"]
+            if item["backend"] == "local_informative_cover"
+        ]
+        assert len(local_checks) == 2
+        final, order = _orchestrate(root, outcome)
+        assert final["text_sent"] is True
+        assert order == ["preview", "image", "text"]
+
+
+def accepted_first_local_cover_does_not_render_alternates() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+
+        def fail_provider(**_kwargs):
+            raise RuntimeError("provider down")
+
+        outcome = _run_delivery(
+            root,
+            generate=fail_provider,
+            secondary_generate=fail_provider,
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=True,
+                reason="accepted",
+                distance=18,
+            ),
+            cover_renderer=_bounded_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 209,
+            record=_record(events),
+        )
+        assert outcome["result"] == "fallback_sent"
+        assert outcome["local_cover_published"] is True
+        assert outcome["cover_metadata"]["curated_asset_id"] == "kld_overcast_01"
+        assert events == ["cover:kld_overcast_01", "photo", "history"]
+        local_checks = [
+            item for item in outcome["dedup_results"]
+            if item["backend"] == "local_informative_cover"
+        ]
+        assert len(local_checks) == 1
+
+
 def recent_scene_and_composition_cooldown_is_applied() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1759,6 +1930,9 @@ TESTS = [
     provider_branding_rejections_exhaust_to_local_cover,
     near_duplicate_candidates_are_hard_rejected_and_rotate_scene,
     near_duplicate_local_cover_is_not_published,
+    duplicate_first_local_cover_retries_bounded_alternate,
+    all_local_cover_variants_duplicate_remain_text_only,
+    accepted_first_local_cover_does_not_render_alternates,
     recent_scene_and_composition_cooldown_is_applied,
     pollinations_exception_retains_all_http_attempts,
     invalid_provider_payload_is_classified_and_never_saved,
