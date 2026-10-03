@@ -1277,7 +1277,11 @@ def _morning_score_line(source: str, flags: dict[str, bool]) -> str:
             replacement = "— с оговорками; высокий УФ."
             s = re.sub(r"—\s*[^.\n]*\.?", replacement, s, flags=re.I)
         return s
-    return f"✨ VayboMeter: {score:.1f}/10 — {_morning_score_label(score)}; {reason}"
+    label = _morning_score_label(score)
+    normalized_reason = reason.strip().rstrip(".").strip().casefold()
+    if normalized_reason == label.casefold():
+        return f"✨ VayboMeter: {score:.1f}/10 — {label}."
+    return f"✨ VayboMeter: {score:.1f}/10 — {label}; {reason}"
 
 
 def _morning_feels_line(source: str, flags: dict[str, bool]) -> str:
