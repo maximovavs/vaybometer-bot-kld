@@ -601,6 +601,7 @@ def render_kld_informative_cover(
     post_type: str,
     visibility_context: Mapping[str, Any] | None = None,
     output_path: str | Path = "outputs/kld_informative_cover.png",
+    curated_asset_id: str | None = None,
 ) -> dict[str, Any]:
     """Render a deterministic curated 1080x1350 factual fallback with no external calls."""
     metadata = extract_kld_cover_facts(
@@ -613,6 +614,7 @@ def render_kld_informative_cover(
         post_type=post_type,
         source_text=message,
         output_path=output_path,
+        asset_id=curated_asset_id,
     )
 
 

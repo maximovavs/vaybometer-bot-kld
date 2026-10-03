@@ -144,12 +144,13 @@ def scenario_for_metadata(
         return "sunset"
     return "clear"
 
-def select_asset(
+def ordered_asset_candidates(
     metadata: Mapping[str, Any],
     *,
     post_type: str,
     source_text: str = "",
-) -> tuple[str, str, tuple[str, ...]]:
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Return the deterministic first asset followed by each remaining pool asset once."""
     scenario = scenario_for_metadata(metadata, post_type=post_type, source_text=source_text)
     pool = _SCENARIO_POOLS[scenario]
     missing = [asset_id for asset_id in pool if asset_id not in _ASSET_ORDER]
@@ -158,8 +159,23 @@ def select_asset(
     digest = hashlib.sha256(
         f"{metadata.get('date', '')}|{post_type}|{scenario}|{CATALOG_VERSION}".encode("utf-8")
     ).digest()
-    asset_id = pool[int.from_bytes(digest[:4], "big") % len(pool)]
-    return scenario, asset_id, pool
+    first_index = int.from_bytes(digest[:4], "big") % len(pool)
+    ordered = (pool[first_index],) + pool[:first_index] + pool[first_index + 1 :]
+    return scenario, ordered, pool
+
+def select_asset(
+    metadata: Mapping[str, Any],
+    *,
+    post_type: str,
+    source_text: str = "",
+) -> tuple[str, str, tuple[str, ...]]:
+    scenario, candidates, pool = ordered_asset_candidates(
+        metadata,
+        post_type=post_type,
+        source_text=source_text,
+    )
+    return scenario, candidates[0], pool
+
 
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
     candidates = (
@@ -280,12 +296,21 @@ def render_curated_cover(
     post_type: str,
     source_text: str,
     output_path: str | Path,
+    asset_id: str | None = None,
 ) -> dict[str, Any]:
-    scenario, asset_id, pool = select_asset(
+    scenario, candidates, pool = ordered_asset_candidates(
         metadata,
         post_type=post_type,
         source_text=source_text,
     )
+    if asset_id is None:
+        asset_id = candidates[0]
+    else:
+        asset_id = str(asset_id)
+        if asset_id not in pool:
+            raise RuntimeError(
+                f"KLD curated asset {asset_id!r} is not eligible for scenario {scenario!r}"
+            )
     atlas = _load_atlas()
     image = atlas.crop(_asset_box(asset_id)).resize(OUTPUT_SIZE, Image.Resampling.LANCZOS)
     draw = ImageDraw.Draw(image)
@@ -388,6 +413,7 @@ def render_curated_cover(
             "curated_scenario": scenario,
             "curated_asset_id": asset_id,
             "curated_pool": list(pool),
+            "curated_candidates": list(candidates),
             "cover_variant": asset_id,
             "panel_bbox": list(facts_panel),
             "title_panel_bbox": list(title_panel),
@@ -438,6 +464,7 @@ def render_curated_cover(
     info.add_text("curated_scenario", scenario)
     info.add_text("curated_asset_id", asset_id)
     info.add_text("curated_pool", json.dumps(list(pool), ensure_ascii=False))
+    info.add_text("curated_candidates", json.dumps(list(candidates), ensure_ascii=False))
     info.add_text(
         "overlay_safe_zones",
         json.dumps({"title": list(title_safe), "facts": list(facts_safe)}, separators=(",", ":")),
@@ -460,6 +487,7 @@ def render_curated_cover(
 __all__ = [
     "CATALOG_VERSION",
     "scenario_for_metadata",
+    "ordered_asset_candidates",
     "select_asset",
     "render_curated_cover",
 ]

@@ -905,15 +905,22 @@ def execute_image_delivery(
 
     outcome["cover_attempted"] = True
     cover_path = str(Path(args.cover_path))
-    try:
-        cover_metadata = dict(
-            cover_renderer(
-                message,
-                post_type=args.post_type,
-                visibility_context=visibility_context,
-                output_path=cover_path,
-            )
-        )
+    metadata = initial_payload["metadata"]
+    duplicate_cover_reasons = {"exact_duplicate", "near_duplicate"}
+
+    def _render_validate_dedup_cover(
+        *,
+        requested_asset_id: str | None,
+        attempt: int,
+    ) -> tuple[dict[str, Any], dict[str, Any], Any, dict[str, Any]]:
+        render_kwargs: dict[str, Any] = {
+            "post_type": args.post_type,
+            "visibility_context": visibility_context,
+            "output_path": cover_path,
+        }
+        if requested_asset_id is not None:
+            render_kwargs["curated_asset_id"] = requested_asset_id
+        cover_metadata = dict(cover_renderer(message, **render_kwargs))
         outcome["cover_metadata"] = cover_metadata
         cover_validation = dict(
             validate_cover(
@@ -925,19 +932,7 @@ def execute_image_delivery(
         )
         outcome["cover_validation"] = cover_validation
         if not cover_validation.get("valid"):
-            outcome.update(
-                result="failed_nonfatal",
-                backend="none",
-                error_type="InvalidLocalCover",
-                error_message="; ".join(str(item) for item in cover_validation.get("errors") or []),
-            )
-            print(
-                "WARNING: KLD local informative cover failed semantic validation; "
-                "continuing without image: "
-                + outcome["error_message"]
-            )
-            return outcome
-        metadata = initial_payload["metadata"]
+            return cover_metadata, cover_validation, None, {}
         cover_duplicate = evaluate_candidate(
             cover_path,
             date_value=metadata["forecast_date"],
@@ -947,6 +942,48 @@ def execute_image_delivery(
             composition="branded_weather_card",
             prompt_version=LOCAL_COVER_RENDERER_VERSION,
             history_path=history_path,
+        )
+        cover_dedup = _duplicate_payload(
+            cover_duplicate,
+            attempt=attempt,
+            backend="local_informative_cover",
+        )
+        outcome["dedup_results"].append(cover_dedup)
+        outcome["dedup_reason"] = cover_dedup["reason"]
+        outcome["dedup_distance"] = cover_dedup["min_distance"]
+        outcome["selected_scene_family"] = "local_informative_cover"
+        outcome["selected_composition"] = "branded_weather_card"
+        outcome["selected_cache_key"] = (
+            f"{initial_payload['cache_key']};renderer={LOCAL_COVER_RENDERER_VERSION}"
+        )
+        return cover_metadata, cover_validation, cover_duplicate, cover_dedup
+
+    def _publish_local_cover() -> dict[str, Any]:
+        cover_history_metadata = {
+            "forecast_date": metadata["forecast_date"],
+            "target_date": metadata["target_date"],
+            "scene_family": "local_informative_cover",
+            "composition": "branded_weather_card",
+            "prompt_version": LOCAL_COVER_RENDERER_VERSION,
+        }
+        print(f"Using KLD local informative cover: {cover_path}")
+        return _send_and_record(
+            args=args,
+            outcome=outcome,
+            backend="local_informative_cover",
+            image_path=cover_path,
+            metadata=cover_history_metadata,
+            cache_key=f"{initial_payload['cache_key']};renderer={LOCAL_COVER_RENDERER_VERSION}",
+            style_name=LOCAL_COVER_RENDERER_VERSION,
+            history_path=history_path,
+            send_photo=send_photo,
+            record_publication=record_publication,
+        )
+
+    try:
+        cover_metadata, cover_validation, cover_duplicate, cover_dedup = _render_validate_dedup_cover(
+            requested_asset_id=None,
+            attempt=0,
         )
     except Exception as exc:
         error = _error_payload(exc)
@@ -960,47 +997,96 @@ def execute_image_delivery(
         print(f"WARNING: KLD local informative cover failed: {error['type']}: {error['message']}")
         return outcome
 
-    cover_dedup = _duplicate_payload(cover_duplicate, attempt=0, backend="local_informative_cover")
-    outcome["dedup_results"].append(cover_dedup)
-    outcome["dedup_reason"] = cover_dedup["reason"]
-    outcome["dedup_distance"] = cover_dedup["min_distance"]
-    outcome["selected_scene_family"] = "local_informative_cover"
-    outcome["selected_composition"] = "branded_weather_card"
-    outcome["selected_cache_key"] = f"{initial_payload['cache_key']};renderer={LOCAL_COVER_RENDERER_VERSION}"
-    if str(getattr(cover_duplicate, "reason", "")) in {"exact_duplicate", "near_duplicate"}:
+    if not cover_validation.get("valid"):
         outcome.update(
-            result="skipped_duplicate",
-            backend="local_informative_cover",
-            telegram_image_sent=False,
-            history_recorded=False,
+            result="failed_nonfatal",
+            backend="none",
+            error_type="InvalidLocalCover",
+            error_message="; ".join(str(item) for item in cover_validation.get("errors") or []),
         )
         print(
-            "WARNING: KLD local informative cover is a duplicate "
-            f"({cover_dedup['reason']}, distance={cover_dedup['min_distance']}); "
-            "continuing without image."
+            "WARNING: KLD local informative cover failed semantic validation; "
+            "continuing without image: "
+            + outcome["error_message"]
         )
         return outcome
 
-    cover_history_metadata = {
-        "forecast_date": metadata["forecast_date"],
-        "target_date": metadata["target_date"],
-        "scene_family": "local_informative_cover",
-        "composition": "branded_weather_card",
-        "prompt_version": LOCAL_COVER_RENDERER_VERSION,
-    }
-    print(f"Using KLD local informative cover: {cover_path}")
-    return _send_and_record(
-        args=args,
-        outcome=outcome,
-        backend="local_informative_cover",
-        image_path=cover_path,
-        metadata=cover_history_metadata,
-        cache_key=f"{initial_payload['cache_key']};renderer={LOCAL_COVER_RENDERER_VERSION}",
-        style_name=LOCAL_COVER_RENDERER_VERSION,
-        history_path=history_path,
-        send_photo=send_photo,
-        record_publication=record_publication,
+    first_reason = str(getattr(cover_duplicate, "reason", ""))
+    if first_reason not in duplicate_cover_reasons:
+        return _publish_local_cover()
+
+    selected_asset = str(cover_metadata.get("curated_asset_id") or "")
+    pool = tuple(str(item) for item in (cover_metadata.get("curated_pool") or []) if str(item))
+    candidate_order = tuple(
+        str(item) for item in (cover_metadata.get("curated_candidates") or []) if str(item)
     )
+    if (
+        selected_asset
+        and candidate_order
+        and candidate_order[0] == selected_asset
+        and set(candidate_order).issubset(set(pool))
+    ):
+        remaining_assets = [asset_id for asset_id in candidate_order[1:] if asset_id in pool]
+    elif selected_asset and selected_asset in pool:
+        remaining_assets = [asset_id for asset_id in pool if asset_id != selected_asset]
+    else:
+        remaining_assets = []
+
+    for cover_attempt, alternate_asset in enumerate(remaining_assets, start=1):
+        try:
+            (
+                alternate_metadata,
+                alternate_validation,
+                alternate_duplicate,
+                alternate_dedup,
+            ) = _render_validate_dedup_cover(
+                requested_asset_id=alternate_asset,
+                attempt=cover_attempt,
+            )
+        except Exception as exc:
+            error = _error_payload(exc)
+            print(
+                "WARNING: KLD alternate local informative cover failed: "
+                f"asset={alternate_asset} {error['type']}: {error['message']}"
+            )
+            continue
+        if not alternate_validation.get("valid"):
+            print(
+                "WARNING: KLD alternate local informative cover failed semantic validation: "
+                f"asset={alternate_asset}; "
+                + "; ".join(str(item) for item in alternate_validation.get("errors") or [])
+            )
+            continue
+        alternate_reason = str(getattr(alternate_duplicate, "reason", ""))
+        if alternate_reason in duplicate_cover_reasons:
+            print(
+                "WARNING: KLD alternate local informative cover is a duplicate "
+                f"asset={alternate_asset} "
+                f"({alternate_dedup['reason']}, distance={alternate_dedup['min_distance']}); "
+                "trying next bounded variant."
+            )
+            continue
+        if not bool(getattr(alternate_duplicate, "accepted", False)):
+            print(
+                "WARNING: KLD alternate local informative cover was rejected "
+                f"asset={alternate_asset} reason={alternate_reason}; trying next bounded variant."
+            )
+            continue
+        outcome["cover_metadata"] = alternate_metadata
+        return _publish_local_cover()
+
+    outcome.update(
+        result="skipped_duplicate",
+        backend="local_informative_cover",
+        telegram_image_sent=False,
+        history_recorded=False,
+    )
+    print(
+        "WARNING: KLD local informative cover candidates exhausted after duplicate rejection; "
+        f"attempts={1 + len(remaining_assets)}; continuing without image."
+    )
+    return outcome
+
 
 
 def _print_payload(payload: Mapping[str, Any]) -> None:
