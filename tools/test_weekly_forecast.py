@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from PIL import Image  # type: ignore  # noqa: E402
 from send_weekly_forecast import build_weekly_forecast  # noqa: E402
+from weekly_cover import RENDERER_VERSION as WEEKLY_COVER_VERSION, render_weekly_cover  # noqa: E402
 
 
 WEATHER = {
@@ -92,10 +94,11 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "SUP: короткие окна в защищённых местах." in text
     assert "Кайт/винг/винд: только опытным; проверять порывы и направление." in text
     assert "Серф: по фактической волне; Балтика быстро меняется." in text
-    assert "🏭 Воздух" in text
-    assert "🧲 Космопогода" in text
-    assert "сильных бурь не видно" in text
-    assert "🌙 Луна" in text
+    assert "🏭 Воздух сейчас" in text
+    assert "Текущий снимок воздуха:" in text
+    assert "🧲 Космопогода сейчас" in text
+    assert "это текущий снимок, а не прогноз на всю неделю" in text
+    assert "🌙 Луна и астроритм (интерпретация)" in text
     assert "✅ Как прожить неделю" in text
     assert "🌕" in text and "Полнолуние" in text
     assert "01.07 01.07" not in text
@@ -131,10 +134,33 @@ def test_weekly_forecast_includes_curated_astro_events() -> None:
     assert "проверять факты" in text
 
 
+
+def test_weekly_cover_is_high_contrast_factual_projection() -> None:
+    text = _base_text()
+    with tempfile.TemporaryDirectory() as tmp:
+        metadata = render_weekly_cover(
+            text,
+            start=date(2026, 7, 1),
+            output_path=Path(tmp) / "weekly.png",
+        )
+        assert metadata["renderer_version"] == WEEKLY_COVER_VERSION
+        assert metadata["main_fact"] in text
+        assert metadata["weather_fact"] in text
+        assert metadata["sea_fact"] in text
+        with Image.open(metadata["path"]) as image:
+            assert image.size == (1080, 1080)
+            assert image.format == "PNG"
+            assert image.info["renderer_version"] == WEEKLY_COVER_VERSION
+            assert image.info["week_start"] == "2026-07-01"
+            image.verify()
+
+
+
 def main() -> None:
     checks = (
         test_weekly_forecast_structure_without_optional_config,
         test_weekly_forecast_includes_curated_astro_events,
+        test_weekly_cover_is_high_contrast_factual_projection,
     )
     for check in checks:
         check()
