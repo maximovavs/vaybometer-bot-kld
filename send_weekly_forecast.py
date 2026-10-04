@@ -9,11 +9,13 @@ import html
 import json
 import os
 import re
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from editorial_voice import build_weekly_meaning
+from weekly_cover import render_weekly_cover
 
 REGION_NAME = "Калининград"
 TZ_STR = os.getenv("TZ", "Europe/Kaliningrad")
@@ -263,8 +265,8 @@ def _air_line(air_data: dict[str, Any]) -> tuple[str, bool]:
         parts.append(" / ".join(pm))
     poor = (aqi is not None and aqi >= 100) or (pm25 is not None and pm25 >= 20) or (pm10 is not None and pm10 >= 50)
     if not parts:
-        return "Воздух: данные обновятся ближе к неделе.", False
-    line = "Воздух: " + " • ".join(parts) + "."
+        return "Текущий снимок воздуха: данных пока нет.", False
+    line = "Текущий снимок воздуха: " + " • ".join(parts) + "."
     if poor:
         line += " Воздух неидеален: активность на улице короче, окна лучше закрывать в часы пыли/дымки."
     return line, poor
@@ -273,12 +275,12 @@ def _air_line(air_data: dict[str, Any]) -> tuple[str, bool]:
 def _space_line(kp_tuple: tuple[Any, ...] | None) -> tuple[str, bool]:
     kp = _num(kp_tuple[0]) if kp_tuple else None
     if kp is None:
-        return "Космопогода: данные обновятся ближе к неделе.", False
+        return "Текущий снимок Kp: данных пока нет; это не прогноз на всю неделю.", False
     if kp >= 5:
-        return f"Kp повышен ({kp:.1f}): чувствительным лучше больше сна и меньше перегруза.", True
+        return f"Сейчас Kp {kp:.1f}: фон повышен; это текущий снимок, а не прогноз на всю неделю.", True
     if kp >= 4:
-        return f"Kp около {kp:.1f}: график лучше не перегружать.", True
-    return f"Космопогода спокойная, Kp {kp:.1f}; сильных бурь не видно.", False
+        return f"Сейчас Kp {kp:.1f}: фон умеренно повышен; это текущий снимок, а не прогноз на всю неделю.", True
+    return f"Сейчас Kp {kp:.1f}: фон спокойный; это текущий снимок, а не прогноз на всю неделю.", False
 
 
 def _parse_voc_part(value: Any) -> tuple[str | None, str | None]:
@@ -436,13 +438,13 @@ def build_weekly_forecast(
         "🏄 Вода и спорт",
         *water_sport,
         "",
-        "🏭 Воздух и самочувствие",
+        "🏭 Воздух сейчас",
         air,
         "",
-        "🧲 Космопогода",
+        "🧲 Космопогода сейчас",
         space,
         "",
-        "🌙 Луна и астроритм",
+        "🌙 Луна и астроритм (интерпретация)",
         *lunar,
         "",
         "✅ Как прожить неделю",
@@ -456,14 +458,29 @@ def build_weekly_forecast(
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
-async def _send(text: str, chat_id: str) -> None:
+async def _send(text: str, chat_id: str, start: date) -> None:
     from telegram import Bot, constants  # type: ignore
 
     token = os.getenv("TELEGRAM_TOKEN_KLG", "").strip()
     if not token:
         raise SystemExit("TELEGRAM_TOKEN_KLG is not set")
-    await Bot(token=token).send_message(
-        chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
+    destination = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+    bot = Bot(token=token)
+    try:
+        cover = render_weekly_cover(text, start=start, output_path=Path("weekly_cover.png"))
+        with Path(cover["path"]).open("rb") as photo:
+            await bot.send_photo(
+                chat_id=destination,
+                photo=photo,
+                caption=f"Вайб недели: {_fmt_week_range(start)}",
+            )
+    except Exception as exc:
+        print(
+            f"Weekly cover unavailable; text will still be sent: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+    await bot.send_message(
+        chat_id=destination,
         text=text,
         parse_mode=constants.ParseMode.HTML,
         disable_web_page_preview=True,
@@ -475,15 +492,19 @@ async def main() -> None:
     parser.add_argument("--date", default="", help="Week start date, YYYY-MM-DD. Defaults to today.")
     parser.add_argument("--send", action="store_true")
     parser.add_argument("--chat-id", default=os.getenv("CHANNEL_ID", ""))
+    parser.add_argument("--cover-out", default="", help="Optional path for a deterministic weekly cover preview.")
     args = parser.parse_args()
 
     start = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else _today()
     text = build_weekly_forecast(start)
     print(text)
+    if args.cover_out:
+        metadata = render_weekly_cover(text, start=start, output_path=args.cover_out)
+        print("WEEKLY_COVER: " + json.dumps(metadata, ensure_ascii=False, sort_keys=True))
     if args.send:
         if not args.chat_id:
             raise SystemExit("--chat-id or CHANNEL_ID is required for sending")
-        await _send(text, args.chat_id)
+        await _send(text, args.chat_id, start)
 
 
 if __name__ == "__main__":
