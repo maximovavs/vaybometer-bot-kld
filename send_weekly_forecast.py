@@ -93,11 +93,18 @@ def _load_json(path: Path) -> Any:
         return None
 
 
-def _fetch_weather() -> dict[str, Any]:
+def _fetch_weather(start: date | None = None) -> dict[str, Any]:
     try:
-        from weather import get_weather  # type: ignore
+        from weather import get_weekly_weather  # type: ignore
 
-        return get_weather(*PRIMARY_COORDS) or {}
+        start = start or _today()
+        end = start + timedelta(days=6)
+        return get_weekly_weather(
+            *PRIMARY_COORDS,
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            tz_name=TZ_STR,
+        ) or {}
     except Exception:
         return {}
 
@@ -142,6 +149,9 @@ def _daily_rows(weather_payload: dict[str, Any], start: date) -> list[dict[str, 
         return []
     times = daily.get("time") or daily.get("date") or []
     dates = _week_dates(start)
+    if not isinstance(times, list) or not times:
+        return []
+    normalized_times = [str(item)[:10] for item in times]
 
     def arr(*names: str) -> list[Any]:
         for name in names:
@@ -157,19 +167,18 @@ def _daily_rows(weather_payload: dict[str, Any], start: date) -> list[dict[str, 
         "gust": arr("wind_gusts_10m_max", "windgusts_10m_max"),
         "wave": arr("wave_height_max", "wave_height", "wave_max"),
         "rain_prob": arr("precipitation_probability_max"),
+        "precip_sum": arr("precipitation_sum"),
         "code": arr("weathercode", "weather_code"),
         "uv": arr("uv_index_max"),
     }
     rows: list[dict[str, Any]] = []
     for idx in range(7):
         row_date = dates[idx]
-        src_idx = idx
-        if isinstance(times, list) and times:
-            try:
-                src_idx = [str(x)[:10] for x in times].index(row_date.isoformat())
-            except ValueError:
-                if idx >= len(times):
-                    continue
+        wanted = row_date.isoformat()
+        try:
+            src_idx = normalized_times.index(wanted)
+        except ValueError:
+            continue
         row = {"date": row_date}
         for key, values in arrays.items():
             row[key] = values[src_idx] if src_idx < len(values) else None
@@ -188,6 +197,7 @@ def _weather_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     wave = clean([_num(row.get("wave")) for row in rows])
     uv = clean([_num(row.get("uv")) for row in rows])
     rain_prob = clean([_num(row.get("rain_prob")) for row in rows])
+    precip_sum = clean([_num(row.get("precip_sum")) for row in rows])
     codes = clean([_num(row.get("code")) for row in rows])
     return {
         "tmax_min": min(tmax, default=None),
@@ -197,11 +207,35 @@ def _weather_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "gust_max": max(gust, default=None),
         "wave_max": max(wave, default=None),
         "uv_max": max(uv, default=None),
+        "precipitation_sum_total": sum(precip_sum) if precip_sum else None,
         "rain": any(x >= 40 for x in rain_prob) or any(int(x) in RAIN_CODES for x in codes),
     }
 
 
+def _payload_weekly_coverage(payload: dict[str, Any], start: date) -> tuple[int, bool]:
+    expected = [day.isoformat() for day in _week_dates(start)]
+    daily = payload.get("daily") if isinstance(payload, dict) else {}
+    if not isinstance(daily, dict):
+        return 0, False
+    raw_dates = daily.get("time") or daily.get("date") or []
+    returned = [str(item)[:10] for item in raw_dates if item is not None] if isinstance(raw_dates, list) else []
+    coverage_days = len(set(expected).intersection(returned))
+    exact_dates = len(returned) == 7 and len(set(returned)) == 7 and returned == expected
+    meta = payload.get("_weekly_meta") if isinstance(payload.get("_weekly_meta"), dict) else None
+    if meta is not None:
+        exact_dates = (
+            exact_dates
+            and meta.get("coverage_complete") is True
+            and meta.get("weather_code_system") == "wmo"
+            and meta.get("normalized_units", {}).get("wind_speed") == "m/s"
+            and meta.get("normalized_units", {}).get("precipitation") == "mm"
+        )
+    return coverage_days, exact_dates
+
+
 def _main_background(metrics: dict[str, Any]) -> str:
+    if metrics.get("coverage_complete") is False:
+        return "Полный прогноз на все 7 дней пока не подтверждён; погодные ориентиры недели уточнятся ближе к датам."
     rainy = bool(metrics.get("rain"))
     windy = isinstance(metrics.get("gust_max"), (int, float)) and metrics["gust_max"] >= 10
     warm = isinstance(metrics.get("tmax_max"), (int, float)) and metrics["tmax_max"] >= 25
@@ -217,6 +251,8 @@ def _main_background(metrics: dict[str, Any]) -> str:
 
 
 def _weather_line(metrics: dict[str, Any]) -> str:
+    if metrics.get("coverage_complete") is False:
+        return "Полный прогноз на все 7 дней пока не собран; температуру, осадки и ветер лучше уточнять ближе к датам."
     if isinstance(metrics.get("tmax_min"), (int, float)) and isinstance(metrics.get("tmax_max"), (int, float)):
         line = f"Температура держится в диапазоне {_fmt_num(metrics['tmax_min'])}–{_fmt_num(metrics['tmax_max'])}°C"
     else:
@@ -404,7 +440,7 @@ def build_weekly_forecast(
     astro_events_paths: list[Path] | None = None,
 ) -> str:
     start = start or _today()
-    weather_payload = weather_payload if weather_payload is not None else _fetch_weather()
+    weather_payload = weather_payload if weather_payload is not None else _fetch_weather(start)
     air_data = air_data if air_data is not None else _fetch_air()
     sea_temps = sea_temps if sea_temps is not None else _fetch_sea_temps()
     kp_tuple = kp_tuple if kp_tuple is not None else _fetch_kp()
@@ -413,12 +449,16 @@ def build_weekly_forecast(
 
     rows = _daily_rows(weather_payload or {}, start)
     metrics = _weather_metrics(rows)
+    coverage_days, coverage_complete = _payload_weekly_coverage(weather_payload or {}, start)
+    metrics["coverage_days"] = coverage_days
+    metrics["coverage_complete"] = coverage_complete
     air, poor_air = _air_line(air_data or {})
     space, elevated_kp = _space_line(kp_tuple)
     lunar = _lunar_lines(start, lunar_data, astro_events)
-    plan = _plan_lines(metrics, poor_air, elevated_kp, lunar)
-    water_sport = _water_sport_lines(metrics)
-    weekly_meaning = build_weekly_meaning(REGION_NAME, start, metrics)
+    decision_metrics = metrics if metrics.get("coverage_complete") is not False else {}
+    plan = _plan_lines(decision_metrics, poor_air, elevated_kp, lunar)
+    water_sport = _water_sport_lines(decision_metrics)
+    weekly_meaning = build_weekly_meaning(REGION_NAME, start, decision_metrics)
 
     lines = [
         f"🗓 Вайб недели: {_fmt_week_range(start)}",

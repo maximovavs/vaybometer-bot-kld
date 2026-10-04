@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 from PIL import Image  # type: ignore  # noqa: E402
 import send_weekly_forecast as weekly_module  # noqa: E402
+import weather as weather_module  # noqa: E402
 from send_weekly_forecast import build_weekly_forecast  # noqa: E402
 from weekly_cover import RENDERER_VERSION as WEEKLY_COVER_VERSION, render_weekly_cover  # noqa: E402
 
@@ -236,8 +237,134 @@ def test_weekly_send_survives_image_send_failure() -> None:
     assert _run_weekly_send_case(image_fails=True) == ["cover", "photo", "text"]
 
 
+def _weekly_api_fixture(dates: list[str]) -> dict:
+    count = len(dates)
+    return {
+        "daily": {
+            "time": dates,
+            "temperature_2m_max": [20 + idx for idx in range(count)],
+            "temperature_2m_min": [12 + idx for idx in range(count)],
+            "weathercode": [3] * count,
+            "precipitation_probability_max": [20] * count,
+            "precipitation_sum": [0.5] * count,
+            "wind_speed_10m_max": [5.0] * count,
+            "wind_gusts_10m_max": [8.0] * count,
+            "uv_index_max": [4.0] * count,
+        },
+        "daily_units": {
+            "temperature_2m_max": "°C",
+            "temperature_2m_min": "°C",
+            "precipitation_probability_max": "%",
+            "precipitation_sum": "mm",
+            "wind_speed_10m_max": "m/s",
+            "wind_gusts_10m_max": "m/s",
+        },
+    }
+
+
+def test_weekly_source_requests_exact_range_and_units_without_network() -> None:
+    captured: list[dict] = []
+    old_http = weather_module._safe_http_get
+    dates = [f"2026-07-{day:02d}" for day in range(6, 13)]
+
+    def fake_http(url: str, **kwargs) -> dict:
+        assert url == weather_module.OPEN_METEO_URL
+        captured.append(dict(kwargs))
+        return _weekly_api_fixture(dates)
+
+    try:
+        weather_module._safe_http_get = fake_http
+        payload = weather_module.get_weekly_weather(
+            54.7104,
+            20.4522,
+            start_date="2026-07-06",
+            end_date="2026-07-12",
+            tz_name="Europe/Kaliningrad",
+        )
+    finally:
+        weather_module._safe_http_get = old_http
+
+    assert len(captured) == 1
+    query = captured[0]
+    assert query["start_date"] == "2026-07-06"
+    assert query["end_date"] == "2026-07-12"
+    assert query["wind_speed_unit"] == "ms"
+    assert query["precipitation_unit"] == "mm"
+    assert query["temperature_unit"] == "celsius"
+    assert "precipitation_probability_max" in query["daily"]
+    assert "precipitation_sum" in query["daily"]
+    assert payload["_weekly_meta"]["coverage_complete"] is True
+    assert payload["_weekly_meta"]["coverage_days"] == 7
+    assert payload["_weekly_meta"]["normalized_units"]["wind_speed"] == "m/s"
+    assert payload["_weekly_meta"]["normalized_units"]["precipitation"] == "mm"
+
+
+def test_weekly_source_rejects_six_eight_and_wrong_dates() -> None:
+    old_http = weather_module._safe_http_get
+    variants = [
+        [f"2026-07-{day:02d}" for day in range(6, 12)],
+        [f"2026-07-{day:02d}" for day in range(5, 13)],
+        [f"2026-07-{day:02d}" for day in range(7, 14)],
+    ]
+    try:
+        for dates in variants:
+            weather_module._safe_http_get = lambda url, dates=dates, **kwargs: _weekly_api_fixture(dates)
+            payload = weather_module.get_weekly_weather(
+                54.7104,
+                20.4522,
+                start_date="2026-07-06",
+                end_date="2026-07-12",
+                tz_name="Europe/Kaliningrad",
+            )
+            assert payload["_weekly_meta"]["coverage_complete"] is False
+    finally:
+        weather_module._safe_http_get = old_http
+
+
+def test_weekly_synthetic_current_fallback_is_not_seven_day_coverage() -> None:
+    synthetic = {
+        "daily": {
+            "temperature_2m_max": [18, 18],
+            "temperature_2m_min": [18, 18],
+            "weathercode": [500, 500],
+        }
+    }
+    assert weekly_module._daily_rows(synthetic, date(2026, 7, 6)) == []
+    days, complete = weekly_module._payload_weekly_coverage(synthetic, date(2026, 7, 6))
+    assert days == 0
+    assert complete is False
+    text = build_weekly_forecast(
+        date(2026, 7, 6),
+        weather_payload=synthetic,
+        air_data=AIR,
+        sea_temps=[20.1, 21.8, 20.6],
+        kp_tuple=KP,
+        lunar_data=LUNAR,
+        astro_events_paths=[Path("__missing_astro_events.json")],
+    )
+    assert "Полный прогноз на все 7 дней пока не собран" in text
+
+
+def test_weekly_openweather_code_system_is_not_accepted_as_wmo() -> None:
+    dates = [f"2026-07-{day:02d}" for day in range(6, 13)]
+    payload = _weekly_api_fixture(dates)
+    payload["daily"]["weathercode"] = [500] * 7
+    payload["_weekly_meta"] = {
+        "coverage_complete": True,
+        "weather_code_system": "openweather",
+        "normalized_units": {"wind_speed": "m/s", "precipitation": "mm"},
+    }
+    days, complete = weekly_module._payload_weekly_coverage(payload, date(2026, 7, 6))
+    assert days == 7
+    assert complete is False
+
+
 def main() -> None:
     checks = (
+        test_weekly_source_requests_exact_range_and_units_without_network,
+        test_weekly_source_rejects_six_eight_and_wrong_dates,
+        test_weekly_synthetic_current_fallback_is_not_seven_day_coverage,
+        test_weekly_openweather_code_system_is_not_accepted_as_wmo,
         test_weekly_forecast_structure_without_optional_config,
         test_weekly_forecast_includes_curated_astro_events,
         test_weekly_cover_is_high_contrast_factual_projection,

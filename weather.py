@@ -16,6 +16,7 @@ weather.py
 """
 
 from __future__ import annotations
+from datetime import date, timedelta
 import os
 import logging
 from typing import Any, Dict, Optional, Tuple, List
@@ -70,6 +71,104 @@ def _ensure_aliases_om_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     payload["hourly"] = hr
     payload["daily"] = dl
     return payload
+
+
+WEEKLY_DAILY_FIELDS = [
+    "temperature_2m_max",
+    "temperature_2m_min",
+    "weathercode",
+    "precipitation_probability_max",
+    "precipitation_sum",
+    "wind_speed_10m_max",
+    "wind_gusts_10m_max",
+    "uv_index_max",
+]
+
+
+def _weekly_expected_dates(start_date: str, end_date: str) -> list[str]:
+    try:
+        start = date.fromisoformat(str(start_date)[:10])
+        end = date.fromisoformat(str(end_date)[:10])
+    except (TypeError, ValueError):
+        return []
+    if (end - start).days != 6:
+        return []
+    return [(start + timedelta(days=offset)).isoformat() for offset in range(7)]
+
+
+def _annotate_weekly_payload(
+    payload: Dict[str, Any],
+    *,
+    start_date: str,
+    end_date: str,
+    provider: str = "open-meteo",
+) -> Dict[str, Any]:
+    out = dict(payload) if isinstance(payload, dict) else {}
+    expected = _weekly_expected_dates(start_date, end_date)
+    daily = out.get("daily") if isinstance(out.get("daily"), dict) else {}
+    raw_dates = daily.get("time") or daily.get("date") or []
+    returned_dates = [str(item)[:10] for item in raw_dates if item is not None] if isinstance(raw_dates, list) else []
+    coverage_days = len(set(expected).intersection(returned_dates))
+    coverage_complete = (
+        len(expected) == 7
+        and len(returned_dates) == 7
+        and len(set(returned_dates)) == 7
+        and returned_dates == expected
+    )
+    out["_weekly_meta"] = {
+        "provider": provider,
+        "requested_start": str(start_date)[:10],
+        "requested_end": str(end_date)[:10],
+        "returned_dates": returned_dates,
+        "coverage_days": coverage_days,
+        "coverage_complete": coverage_complete,
+        "weather_code_system": "wmo",
+        "source_daily_units": dict(out.get("daily_units") or {}),
+        "normalized_units": {
+            "temperature": "celsius",
+            "wind_speed": "m/s",
+            "precipitation": "mm",
+            "precipitation_probability": "%",
+        },
+    }
+    return out
+
+
+def get_weekly_weather(
+    lat: float,
+    lon: float,
+    *,
+    start_date: str,
+    end_date: str,
+    tz_name: str = "Europe/Kaliningrad",
+) -> Dict[str, Any]:
+    """Fetch an exact weekly Open-Meteo range without changing daily provider order."""
+    expected = _weekly_expected_dates(start_date, end_date)
+    if len(expected) != 7:
+        return _annotate_weekly_payload({}, start_date=start_date, end_date=end_date)
+
+    payload = _safe_http_get(
+        OPEN_METEO_URL,
+        latitude=lat,
+        longitude=lon,
+        timezone=tz_name or "Europe/Kaliningrad",
+        start_date=expected[0],
+        end_date=expected[-1],
+        temperature_unit="celsius",
+        wind_speed_unit="ms",
+        precipitation_unit="mm",
+        daily=",".join(WEEKLY_DAILY_FIELDS),
+    )
+    if not isinstance(payload, dict) or "daily" not in payload:
+        return _annotate_weekly_payload({}, start_date=expected[0], end_date=expected[-1])
+
+    normalized = _ensure_aliases_om_payload(payload)
+    return _annotate_weekly_payload(
+        normalized,
+        start_date=expected[0],
+        end_date=expected[-1],
+        provider="open-meteo",
+    )
 
 
 # ────────────────────────── Вспомогательный запрос Open-Mетео ────────────────
