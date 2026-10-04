@@ -315,6 +315,8 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
 
 
 def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[str, Any]:
+    matched = getattr(duplicate, "matched_entry", None)
+    matched = dict(matched) if isinstance(matched, Mapping) else {}
     return {
         "attempt": attempt,
         "backend": backend,
@@ -323,7 +325,44 @@ def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[st
         "sha256": str(getattr(duplicate, "sha256", "")),
         "perceptual_hash": getattr(duplicate, "perceptual_hash", None),
         "min_distance": getattr(duplicate, "min_distance", None),
+        "matched_target_date": str(matched.get("target_date") or matched.get("date") or ""),
     }
+
+
+def _normalized_cover_date(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return dt.datetime.strptime(raw[:10], fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def _terminal_local_relaxation_eligible(
+    duplicate: Any,
+    cover_metadata: Mapping[str, Any],
+    *,
+    target_date: str,
+) -> bool:
+    if str(getattr(duplicate, "reason", "") or "") != "near_duplicate":
+        return False
+    matched = getattr(duplicate, "matched_entry", None)
+    if not isinstance(matched, Mapping):
+        return False
+    current = _normalized_cover_date(target_date)
+    matched_date = _normalized_cover_date(
+        matched.get("target_date") or matched.get("date")
+    )
+    cover_date = _normalized_cover_date(cover_metadata.get("date"))
+    return bool(
+        current
+        and matched_date
+        and cover_date == current
+        and matched_date != current
+    )
 
 
 def _scene_aware_evening_caption(scene_family: str) -> str:
@@ -1016,6 +1055,15 @@ def execute_image_delivery(
         return _publish_local_cover()
 
     selected_asset = str(cover_metadata.get("curated_asset_id") or "")
+    terminal_relaxation_asset = (
+        selected_asset
+        if _terminal_local_relaxation_eligible(
+            cover_duplicate,
+            cover_metadata,
+            target_date=str(metadata["forecast_date"]),
+        )
+        else ""
+    )
     pool = tuple(str(item) for item in (cover_metadata.get("curated_pool") or []) if str(item))
     candidate_order = tuple(
         str(item) for item in (cover_metadata.get("curated_candidates") or []) if str(item)
@@ -1059,6 +1107,15 @@ def execute_image_delivery(
             continue
         alternate_reason = str(getattr(alternate_duplicate, "reason", ""))
         if alternate_reason in duplicate_cover_reasons:
+            if (
+                not terminal_relaxation_asset
+                and _terminal_local_relaxation_eligible(
+                    alternate_duplicate,
+                    alternate_metadata,
+                    target_date=str(metadata["forecast_date"]),
+                )
+            ):
+                terminal_relaxation_asset = alternate_asset
             print(
                 "WARNING: KLD alternate local informative cover is a duplicate "
                 f"asset={alternate_asset} "
@@ -1075,11 +1132,57 @@ def execute_image_delivery(
         outcome["cover_metadata"] = alternate_metadata
         return _publish_local_cover()
 
+    if terminal_relaxation_asset:
+        try:
+            (
+                terminal_metadata,
+                terminal_validation,
+                terminal_duplicate,
+                terminal_dedup,
+            ) = _render_validate_dedup_cover(
+                requested_asset_id=terminal_relaxation_asset,
+                attempt=1 + len(remaining_assets),
+            )
+        except Exception as exc:
+            error = _error_payload(exc)
+            print(
+                "WARNING: KLD terminal local cover rerender failed: "
+                f"{error['type']}: {error['message']}"
+            )
+        else:
+            if (
+                terminal_validation.get("valid")
+                and _terminal_local_relaxation_eligible(
+                    terminal_duplicate,
+                    terminal_metadata,
+                    target_date=str(metadata["forecast_date"]),
+                )
+            ):
+                outcome["cover_metadata"] = terminal_metadata
+                outcome["terminal_local_relaxation"] = {
+                    "used": True,
+                    "asset_id": terminal_relaxation_asset,
+                    "ordinary_dedup_reason": str(getattr(terminal_duplicate, "reason", "")),
+                    "matched_target_date": terminal_dedup.get("matched_target_date", ""),
+                    "target_date": str(metadata["forecast_date"]),
+                }
+                print(
+                    "KLD_TERMINAL_LOCAL_RELAXATION: "
+                    f"asset={terminal_relaxation_asset}; "
+                    f"matched_target_date={terminal_dedup.get('matched_target_date', '')}; "
+                    f"target_date={metadata['forecast_date']}"
+                )
+                return _publish_local_cover()
+
     outcome.update(
         result="skipped_duplicate",
         backend="local_informative_cover",
         telegram_image_sent=False,
         history_recorded=False,
+        terminal_local_relaxation={
+            "used": False,
+            "reason": "no_eligible_older_near_duplicate",
+        },
     )
     print(
         "WARNING: KLD local informative cover candidates exhausted after duplicate rejection; "
