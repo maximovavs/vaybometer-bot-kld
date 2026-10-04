@@ -32,6 +32,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: weekly-vaybometer-forecast-kld
@@ -91,6 +92,17 @@ jobs:
           echo "Accepted KLD weekly scheduled event: ${SCHEDULE_EXPR}"
           echo "Scheduled weekly range starts Monday: $week_start"
 
+      - name: Resolve weekly date
+        id: weekly_date
+        if: steps.schedule_guard.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            echo "week_start=${{ steps.schedule_guard.outputs.week_start }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "week_start=${WEEK_START_DATE:-}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
         if: steps.schedule_guard.outputs.should_run == 'true'
 
@@ -100,6 +112,24 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
+      - name: Restore previous canonical weekly snapshot
+        if: steps.schedule_guard.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          week_start="${{ steps.weekly_date.outputs.week_start }}"
+          rm -f weekly_snapshot_state/previous.json
+          if [ -z "$week_start" ]; then
+            echo "WeeklySnapshot restore skipped: no explicit week_start."
+            exit 0
+          fi
+          python weekly_snapshot.py restore \
+            --region kld \
+            --current-week-start "$week_start" \
+            --artifact-prefix weekly-snapshot-kld \
+            --output weekly_snapshot_state/previous.json
       - name: Install dependencies
         if: steps.schedule_guard.outputs.should_run == 'true'
         run: |
@@ -114,7 +144,7 @@ jobs:
 
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             CHANNEL_ID_OVERRIDE=""
-            WEEK_START_DATE="${{ steps.schedule_guard.outputs.week_start }}"
+            WEEK_START_DATE="${{ steps.weekly_date.outputs.week_start }}"
             SEND_TO_TEST="false"
             PUBLISH_TO_PROD="true"
             DRY_RUN="false"
@@ -191,5 +221,38 @@ jobs:
           for i in "${!targets[@]}"; do
             echo "Weekly forecast target: ${labels[$i]}"
             send_args=("${args[@]}" "--send" "--chat-id" "${targets[$i]}")
+            if [ "${labels[$i]}" = "production" ] && [ -n "${WEEK_START_DATE:-}" ]; then
+              send_args+=("--production-snapshot-out" "weekly_snapshot_state/current.json")
+            fi
             python "${send_args[@]}"
           done
+
+      - name: Check existing canonical weekly snapshot
+        id: weekly_snapshot_gate
+        if: steps.schedule_guard.outputs.should_run == 'true' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s weekly_snapshot_state/current.json ]; then
+            echo "should_upload=false" >> "$GITHUB_OUTPUT"
+            echo "No authoritative current WeeklySnapshot produced."
+            exit 0
+          fi
+          week_start="$(python -c 'import json; print(json.load(open("weekly_snapshot_state/current.json", encoding="utf-8"))["week_start"])')"
+          if python weekly_snapshot.py canonical-exists --region kld --week-start "$week_start" --artifact-prefix weekly-snapshot-kld; then
+            echo "should_upload=false" >> "$GITHUB_OUTPUT"
+            echo "Canonical WeeklySnapshot already exists; late/duplicate run will not overwrite it."
+          else
+            echo "should_upload=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload canonical weekly snapshot
+        if: steps.weekly_snapshot_gate.outputs.should_upload == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-snapshot-kld-${{ steps.weekly_date.outputs.week_start }}
+          path: weekly_snapshot_state/current.json
+          if-no-files-found: error
+          retention-days: 30
