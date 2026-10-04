@@ -427,6 +427,36 @@ def test_weekly_sea_delta_both_directions_and_complete_coverage() -> None:
     assert snapshot_module.derive_delta(cur,cold_prev,region="kld")["sea"]["direction"]=="colder"
     assert "sea" not in snapshot_module.derive_delta(dict(cur,sea_sample_count=len(weekly_module.SEA_POINTS)-1),prev,region="kld")
 
+def test_weekly_snapshot_rain_evidence_missing_fields_fail_soft() -> None:
+    def classify(prob, code):
+        payload=json.loads(json.dumps(WEATHER))
+        payload["daily"]["precipitation_probability_max"]=[prob]*7
+        payload["daily"]["weathercode"]=[code]*7
+        rows=weekly_module._snapshot_weather_days(payload,date(2026,7,1))
+        assert len(rows)==7
+        return rows[0]["rainy"], payload
+
+    rainy,_=classify(20,None)
+    assert rainy is False
+    rainy,_=classify(60,None)
+    assert rainy is True
+    rainy,_=classify(None,61)
+    assert rainy is True
+    rainy,_=classify(None,3)
+    assert rainy is False
+    rainy,missing=classify(None,None)
+    assert rainy is None
+
+    candidate=weekly_module._build_snapshot_candidate(
+        date(2026,7,1),
+        missing,
+        [20.0]*len(weekly_module.SEA_POINTS),
+    )
+    assert candidate is not None
+    assert candidate["rainy_day_count"] is None
+    assert "rain" not in snapshot_module.derive_delta(candidate,_auth(_previous_candidate()),region="kld")
+
+
 def test_weekly_incomplete_current_is_not_snapshot_authority() -> None:
     partial=json.loads(json.dumps(WEATHER)); partial["daily"]["time"]=partial["daily"]["time"][:-1]
     for key,values in list(partial["daily"].items()):
@@ -493,6 +523,7 @@ def main() -> None:
         test_weekly_snapshot_selects_exact_previous_and_earliest_canonical,
         test_weekly_delta_all_threshold_directions,
         test_weekly_sea_delta_both_directions_and_complete_coverage,
+        test_weekly_snapshot_rain_evidence_missing_fields_fail_soft,
         test_weekly_incomplete_current_is_not_snapshot_authority,
         test_weekly_snapshot_authority_follows_production_text_success,
         test_weekly_first_run_without_history_and_delta_labeling,

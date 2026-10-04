@@ -246,7 +246,10 @@ def _snapshot_weather_days(weather_payload: dict[str, Any], start: date) -> list
     result=[]
     for row in rows:
         prob=_num(row.get("rain_prob")); code=_num(row.get("code"))
-        rainy=(prob>=40 or int(code) in RAIN_CODES) if prob is not None or code is not None else None
+        if prob is None and code is None:
+            rainy=None
+        else:
+            rainy=(prob is not None and prob>=40) or (code is not None and int(code) in RAIN_CODES)
         result.append({"date":row["date"].isoformat(),"tmax":_num(row.get("tmax")),"tmin":_num(row.get("tmin")),
             "wind":_num(row.get("wind")),"gust":_num(row.get("gust")),"rainy":rainy,"precip_sum":_num(row.get("precip_sum"))})
     return result
