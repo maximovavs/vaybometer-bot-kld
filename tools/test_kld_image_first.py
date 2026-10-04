@@ -82,13 +82,25 @@ def _image(path: Path, color: tuple[int, int, int] = (70, 110, 140)) -> str:
     return str(path)
 
 
-def _duplicate(*, accepted: bool, reason: str, distance: int | None = 12) -> KldVisualDuplicateResult:
+def _duplicate(
+    *,
+    accepted: bool,
+    reason: str,
+    distance: int | None = 12,
+    matched_target_date: str | None = None,
+) -> KldVisualDuplicateResult:
+    matched_entry = (
+        {"target_date": matched_target_date}
+        if matched_target_date is not None
+        else None
+    )
     return KldVisualDuplicateResult(
         accepted=accepted,
         reason=reason,
         sha256="a" * 64,
         perceptual_hash="0" * 16,
         min_distance=distance,
+        matched_entry=matched_entry,
     )
 
 
@@ -123,6 +135,7 @@ def _bounded_cover_renderer(
         _image(Path(output_path), color)
         return {
             "renderer_version": RENDERER_VERSION,
+            "date": "20.07.2026",
             "facts": ["ВИДИМОСТЬ УТРОМ СНИЖЕНА"],
             "curated_asset_id": asset_id,
             "curated_pool": list(candidates),
@@ -1726,6 +1739,133 @@ def all_local_cover_variants_duplicate_remain_text_only() -> None:
         assert order == ["preview", "image", "text"]
 
 
+def all_near_duplicate_older_local_covers_use_one_terminal_image() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+
+        def fail_provider(**_kwargs):
+            raise RuntimeError("provider down")
+
+        outcome = _run_delivery(
+            root,
+            generate=fail_provider,
+            secondary_generate=fail_provider,
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=False,
+                reason="near_duplicate",
+                distance=0,
+                matched_target_date="2026-07-19",
+            ),
+            cover_renderer=_bounded_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 210,
+            record=_record(events),
+        )
+        assert outcome["result"] == "fallback_sent"
+        assert outcome["backend"] == "local_informative_cover"
+        assert outcome["telegram_image_sent"] is True
+        assert outcome["history_recorded"] is True
+        assert outcome["dedup_reason"] == "near_duplicate_terminal_local_allowed"
+        assert outcome["terminal_local_relaxation"]["used"] is True
+        assert outcome["terminal_local_relaxation"]["reason"] == (
+            "all_curated_near_duplicates_from_older_target_dates"
+        )
+        assert outcome["cover_metadata"]["curated_asset_id"] == "kld_overcast_02"
+        assert events == [
+            "cover:kld_overcast_01",
+            "cover:kld_overcast_02",
+            "photo",
+            "history",
+        ]
+
+
+def exact_duplicate_local_covers_never_use_terminal_relaxation() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            secondary_generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=False,
+                reason="exact_duplicate",
+                distance=0,
+                matched_target_date="2026-07-19",
+            ),
+            cover_renderer=_bounded_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 211,
+            record=_record(events),
+        )
+        assert outcome["result"] == "skipped_duplicate"
+        assert outcome["telegram_image_sent"] is False
+        assert outcome["history_recorded"] is False
+        assert outcome["terminal_local_relaxation"]["used"] is False
+        assert outcome["terminal_local_relaxation"]["reason"] == "exact_duplicate_forbidden"
+        assert "photo" not in events
+        assert "history" not in events
+
+
+def same_target_date_near_duplicates_never_use_terminal_relaxation() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            secondary_generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=False,
+                reason="near_duplicate",
+                distance=0,
+                matched_target_date="2026-07-20",
+            ),
+            cover_renderer=_bounded_cover_renderer(events),
+            send_photo=lambda *args, **kwargs: events.append("photo") or 212,
+            record=_record(events),
+        )
+        assert outcome["result"] == "skipped_duplicate"
+        assert outcome["telegram_image_sent"] is False
+        assert outcome["terminal_local_relaxation"]["used"] is False
+        assert outcome["terminal_local_relaxation"]["reason"] == "same_target_date_forbidden"
+        assert "photo" not in events
+        assert "history" not in events
+
+
+def terminal_local_send_failure_never_records_history() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+
+        def send_photo(*_args, **_kwargs):
+            events.append("photo")
+            raise RuntimeError("Telegram send_photo failed")
+
+        outcome = _run_delivery(
+            root,
+            generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            secondary_generate=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=False,
+                reason="near_duplicate",
+                distance=0,
+                matched_target_date="2026-07-19",
+            ),
+            cover_renderer=_bounded_cover_renderer(events),
+            send_photo=send_photo,
+            record=_record(events),
+        )
+        assert outcome["result"] == "failed_nonfatal"
+        assert outcome["terminal_local_relaxation"]["used"] is True
+        assert outcome["telegram_image_sent"] is False
+        assert outcome["history_recorded"] is False
+        assert events == [
+            "cover:kld_overcast_01",
+            "cover:kld_overcast_02",
+            "photo",
+        ]
+
+
 def accepted_first_local_cover_does_not_render_alternates() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2084,6 +2224,10 @@ TESTS = [
     near_duplicate_local_cover_is_not_published,
     duplicate_first_local_cover_retries_bounded_alternate,
     all_local_cover_variants_duplicate_remain_text_only,
+    all_near_duplicate_older_local_covers_use_one_terminal_image,
+    exact_duplicate_local_covers_never_use_terminal_relaxation,
+    same_target_date_near_duplicates_never_use_terminal_relaxation,
+    terminal_local_send_failure_never_records_history,
     accepted_first_local_cover_does_not_render_alternates,
     recent_scene_and_composition_cooldown_is_applied,
     pollinations_exception_retains_all_http_attempts,
