@@ -19,7 +19,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from kld_image_first import FORMAT_V2_BEGIN, FORMAT_V2_END, run_image_first_publication  # noqa: E402
+from kld_image_first import (  # noqa: E402
+    FORMAT_V2_BEGIN,
+    FORMAT_V2_END,
+    is_valid_kld_delivery_receipt,
+    kld_delivery_path,
+    load_kld_delivery_receipt,
+    run_image_first_publication,
+)
 import imagegen  # noqa: E402
 from kld_informative_cover import (  # noqa: E402
     RENDERER_VERSION,
@@ -182,6 +189,9 @@ def _orchestrate(
     mode: str = "evening",
     preview_returncode: int = 0,
     text_error: Exception | None = None,
+    production: bool = False,
+    production_chat_id: str = "-1001234567890",
+    target_date: str = "2026-07-20",
 ):
     events: list[str] = []
     result_path = root / "image_result.json"
@@ -212,9 +222,149 @@ def _orchestrate(
         result_path=result_path,
         prompt_metadata_path=root / "image_prompt_metadata.json",
         run_process=runner,
+        production=production,
+        production_chat_id=production_chat_id if production else "",
+        target_date=target_date if production else "",
+        delivery_dir=root / "kld_delivery",
     )
     return outcome, events
 
+
+
+def _write_delivery_fixture(
+    root: Path,
+    *,
+    target_date: str = "2026-07-20",
+    post_type: str = "evening",
+    chat_id: str = "-1001234567890",
+    image_id: int | None = None,
+    text_ids: list[int] | None = None,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "target_date": target_date,
+        "post_type": post_type,
+        "chat_type": "production",
+        "chat_id": chat_id,
+        "image_delivered": bool(image_id),
+        "telegram_image_message_id": image_id,
+        "image_sent_at_utc": "2026-07-19T14:00:01Z" if image_id else "",
+        "text_delivered": bool(text_ids),
+        "telegram_text_message_ids": list(text_ids or []),
+        "text_sent_at_utc": "2026-07-19T14:00:02Z" if text_ids else "",
+        "run_id": "fixture",
+        "run_attempt": "1",
+        "updated_at_utc": "2026-07-19T14:00:02Z",
+    }
+    path = kld_delivery_path(target_date, post_type, delivery_dir=root / "kld_delivery")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def production_delivery_first_repeat_and_partial_states_are_idempotent() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        image_outcome = {
+            "result": "sent",
+            "backend": "pollinations",
+            "telegram_image_sent": True,
+            "telegram_image_message_id": 601,
+            "history_recorded": True,
+        }
+        first, first_order = _orchestrate(root, image_outcome, production=True)
+        assert first_order == ["preview", "image", "text"]
+        receipt = load_kld_delivery_receipt(
+            target_date="2026-07-20",
+            post_type="evening",
+            production_chat_id="-1001234567890",
+            delivery_dir=root / "kld_delivery",
+        )
+        assert is_valid_kld_delivery_receipt(
+            receipt,
+            target_date="2026-07-20",
+            post_type="evening",
+            production_chat_id="-1001234567890",
+        )
+        assert receipt["image_delivered"] is True and receipt["text_delivered"] is True
+        second, second_order = _orchestrate(root, image_outcome, production=True)
+        assert second["result"] == "skipped_delivery_receipt_complete"
+        assert second["image_send_skipped_receipt"] is True
+        assert second["text_send_skipped_receipt"] is True
+        assert second_order == []
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_delivery_fixture(root, text_ids=[701])
+        image_only, order = _orchestrate(
+            root,
+            {"result": "sent", "telegram_image_sent": True, "telegram_image_message_id": 702},
+            production=True,
+        )
+        assert order == ["preview", "image"]
+        assert image_only["text_send_skipped_receipt"] is True
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_delivery_fixture(root, image_id=711)
+        text_only, order = _orchestrate(
+            root,
+            {"result": "sent", "telegram_image_sent": True, "telegram_image_message_id": 999},
+            production=True,
+        )
+        assert order == ["preview", "text"]
+        assert text_only["image_send_skipped_receipt"] is True
+        receipt = load_kld_delivery_receipt(
+            target_date="2026-07-20",
+            post_type="evening",
+            production_chat_id="-1001234567890",
+            delivery_dir=root / "kld_delivery",
+        )
+        assert receipt["telegram_image_message_id"] == 711
+        assert receipt["telegram_text_message_ids"] == [501]
+
+
+def production_delivery_keys_test_channel_and_trigger_are_isolated() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_delivery_fixture(root, image_id=721, text_ids=[722])
+
+        _different_date, order_date = _orchestrate(
+            root,
+            {"result": "sent", "telegram_image_sent": True, "telegram_image_message_id": 723},
+            production=True,
+            target_date="2026-07-21",
+        )
+        _different_type, order_type = _orchestrate(
+            root,
+            {"result": "sent", "telegram_image_sent": True, "telegram_image_message_id": 724},
+            production=True,
+            mode="morning",
+        )
+        test_run, order_test = _orchestrate(
+            root,
+            {"result": "sent", "telegram_image_sent": True, "telegram_image_message_id": 725},
+            production=False,
+        )
+        assert order_date == ["preview", "image", "text"]
+        assert order_type == ["preview", "image", "text"]
+        assert order_test == ["preview", "image", "text"]
+        assert test_run["text_sent"] is True
+
+        old_event = os.environ.get("GITHUB_EVENT_NAME")
+        try:
+            os.environ["GITHUB_EVENT_NAME"] = "schedule"
+            scheduled, scheduled_order = _orchestrate(root, {}, production=True)
+            os.environ["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+            dispatched, dispatched_order = _orchestrate(root, {}, production=True)
+        finally:
+            if old_event is None:
+                os.environ.pop("GITHUB_EVENT_NAME", None)
+            else:
+                os.environ["GITHUB_EVENT_NAME"] = old_event
+        assert scheduled["result"] == "skipped_delivery_receipt_complete"
+        assert dispatched["result"] == "skipped_delivery_receipt_complete"
+        assert scheduled_order == []
+        assert dispatched_order == []
 
 def visual_target_date_propagates_through_provider_and_fallback() -> None:
     visibility = {
@@ -1895,6 +2045,8 @@ def presentation_failure_uses_existing_validated_local_cover() -> None:
 TESTS = [
     accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw,
     presentation_failure_uses_existing_validated_local_cover,
+    production_delivery_first_repeat_and_partial_states_are_idempotent,
+    production_delivery_keys_test_channel_and_trigger_are_isolated,
     scene_aware_caption_uses_final_selected_scene_without_changing_identity,
     morning_workflow_preserves_existing_user_caption,
     visual_target_date_propagates_through_provider_and_fallback,

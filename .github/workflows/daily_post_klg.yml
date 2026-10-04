@@ -56,9 +56,10 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: daily-post-kld-${{ github.workflow }}-${{ github.job }}
+  group: daily-post-kld
   cancel-in-progress: false
 
 env:
@@ -97,6 +98,7 @@ env:
   KLD_VISUAL_HISTORY_PATH: ".cache/kld_visual_history_prod.json"
   KLD_VISUAL_HISTORY_PROD_PATH: ".cache/kld_visual_history_prod.json"
   KLD_VISUAL_HISTORY_TEST_PATH: ".cache/kld_visual_history_test.json"
+  KLD_DELIVERY_DIR: ".cache/kld_delivery"
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
@@ -122,6 +124,18 @@ jobs:
       DISABLE_SCHUMANN: "0"
     steps:
       - uses: actions/checkout@v4
+      - name: Restore KLD delivery receipts
+        id: kld-delivery-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_delivery
+          key: kld-delivery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-delivery-
+      - name: Restore KLD delivery snapshot artifact if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/restore_kld_delivery_snapshot.py
       - name: Restore KLD visual history (prod)
         id: kld-visual-history-prod-cache
         uses: actions/cache@v4
@@ -215,11 +229,16 @@ jobs:
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
-          format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
           publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
+          production_requested = bool(
+              scheduled_run
+              or publish_to_prod
+              or (production_chat and chat_override == production_chat and not to_test)
+          )
+          format_v2 = production_requested or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           image_enabled = scheduled_run or (
               os.getenv("KLD_MORNING_IMG_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
           )
@@ -246,6 +265,14 @@ jobs:
                   send_chat = production_chat
               else:
                   print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
+
+              production_delivery = bool(
+                  production_chat and send_chat and str(send_chat) == str(production_chat) and not to_test
+              )
+              if production_delivery:
+                  image_enabled = True
+              base_day = pendulum.parse(wd).in_tz("Europe/Kaliningrad") if wd else pendulum.now("Europe/Kaliningrad")
+              target_date = base_day.to_date_string()
 
               if image_enabled and send_chat:
                   preview_args = [
@@ -282,6 +309,10 @@ jobs:
                       send_text=lambda text_path: asyncio.run(
                           send_extracted_text(send_chat, text_path, add_test_label)
                       ),
+                      production=production_delivery,
+                      production_chat_id=production_chat if production_delivery else "",
+                      target_date=target_date,
+                      delivery_dir=os.getenv("KLD_DELIVERY_DIR", ".cache/kld_delivery"),
                   )
               else:
                   if image_enabled and not send_chat:
@@ -316,6 +347,15 @@ jobs:
             format_v2_message.txt
             format_v2_visibility_context.json
             outputs/kld_local_informative_cover.png
+            .cache/kld_delivery
+      - name: Upload KLD delivery snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kld-delivery-snapshot-morning-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .cache/kld_delivery
+          if-no-files-found: ignore
+          retention-days: 30
 
   evening:
     name: Evening post (for tomorrow)
@@ -338,6 +378,18 @@ jobs:
       DISABLE_SCHUMANN: "0"
     steps:
       - uses: actions/checkout@v4
+      - name: Restore KLD delivery receipts
+        id: kld-delivery-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/kld_delivery
+          key: kld-delivery-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          restore-keys: |
+            kld-delivery-
+      - name: Restore KLD delivery snapshot artifact if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/restore_kld_delivery_snapshot.py
       - name: Restore KLD visual history (prod)
         id: kld-visual-history-prod-cache
         uses: actions/cache@v4
@@ -431,11 +483,16 @@ jobs:
                   return dt.in_tz(tz) if tz else dt
               pendulum.today = _fake_today
           scheduled_run = (os.getenv("GITHUB_EVENT_NAME") == "schedule")
-          format_v2 = scheduled_run or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           to_test = os.getenv("TO_TEST", "").strip().lower() in ("1", "true", "yes", "on")
           publish_to_prod = os.getenv("PUBLISH_TO_PROD", "").strip().lower() in ("1", "true", "yes", "on")
           chat_override = (os.getenv("CHANNEL_ID_OVERRIDE") or "").strip()
           production_chat = (os.getenv("CHANNEL_ID_KLG") or "").strip()
+          production_requested = bool(
+              scheduled_run
+              or publish_to_prod
+              or (production_chat and chat_override == production_chat and not to_test)
+          )
+          format_v2 = production_requested or (os.getenv("FORMAT_V2", "").strip().lower() in ("1", "true", "yes", "on"))
           image_enabled = scheduled_run or (
               os.getenv("KLD_IMG_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
           )
@@ -462,6 +519,14 @@ jobs:
                   send_chat = production_chat
               else:
                   print("FORMAT_V2 включён без to_test/publish_to_prod/channel_override: выполняю dry-run без отправки.")
+
+              production_delivery = bool(
+                  production_chat and send_chat and str(send_chat) == str(production_chat) and not to_test
+              )
+              if production_delivery:
+                  image_enabled = True
+              base_day = pendulum.parse(wd).in_tz("Europe/Kaliningrad") if wd else pendulum.now("Europe/Kaliningrad")
+              target_date = base_day.add(days=1).to_date_string()
 
               if image_enabled and send_chat:
                   preview_args = [
@@ -495,6 +560,10 @@ jobs:
                       send_text=lambda text_path: asyncio.run(
                           send_extracted_text(send_chat, text_path, add_test_label)
                       ),
+                      production=production_delivery,
+                      production_chat_id=production_chat if production_delivery else "",
+                      target_date=target_date,
+                      delivery_dir=os.getenv("KLD_DELIVERY_DIR", ".cache/kld_delivery"),
                   )
               else:
                   if image_enabled and not send_chat:
@@ -529,6 +598,15 @@ jobs:
             format_v2_message.txt
             format_v2_visibility_context.json
             outputs/kld_local_informative_cover.png
+            .cache/kld_delivery
+      - name: Upload KLD delivery snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kld-delivery-snapshot-evening-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .cache/kld_delivery
+          if-no-files-found: ignore
+          retention-days: 30
 
   noon_fx:
     name: Noon FX only (12:00 MSK)

@@ -12,6 +12,7 @@ DAILY = ROOT / ".github" / "workflows" / "daily_post_klg.yml"
 SAFE_TEST = ROOT / ".github" / "workflows" / "safe_test_post.yml"
 IMAGE_FIRST = ROOT / "kld_image_first.py"
 IMAGE_TOOL = ROOT / "tools" / "kld_visual_fixture_image.py"
+DELIVERY_RESTORE = ROOT / ".github" / "scripts" / "restore_kld_delivery_snapshot.py"
 
 
 def _read(path: Path) -> str:
@@ -50,6 +51,35 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_schedule_fx_unchanged", "cron: '0 8 * * *'" in text)
     print("PASS daily_visual_history_cache")
 
+
+
+def test_production_delivery_idempotency_persistence_contract() -> None:
+    text = _read(DAILY)
+    helper = _read(IMAGE_FIRST)
+    restore = _read(DELIVERY_RESTORE)
+    compile(restore, str(DELIVERY_RESTORE), "exec")
+
+    _assert("stable_workflow_concurrency", "group: daily-post-kld\n  cancel-in-progress: false" in text)
+    _assert("actions_read_permission", "actions: read" in text)
+    _assert("delivery_env", 'KLD_DELIVERY_DIR: ".cache/kld_delivery"' in text)
+    _assert("delivery_cache", "kld-delivery-" in text)
+    _assert("delivery_restore_twice", text.count("restore_kld_delivery_snapshot.py") == 2)
+    _assert("delivery_snapshot_twice", text.count("Upload KLD delivery snapshot") == 2)
+    _assert("workflow_dispatch_preserved", "workflow_dispatch:" in text)
+    _assert("native_crons_preserved", all(item in text for item in ("cron: '30 0 * * *'", "cron: '0 14 * * *'", "cron: '0 8 * * *'")))
+    _assert("production_contract_both_jobs", text.count("production=production_delivery") == 2)
+    _assert("delivery_dir_both_jobs", text.count('delivery_dir=os.getenv("KLD_DELIVERY_DIR", ".cache/kld_delivery")') == 2)
+    _assert("production_forces_guarded_path", text.count("format_v2 = production_requested or") == 2)
+
+    _assert("receipt_authority", "def load_kld_delivery_receipt(" in helper)
+    _assert("complete_receipt_noop", "skipped_delivery_receipt_complete" in helper)
+    _assert("image_phase_guard", "KLD_IMAGE_SEND_SKIP_RECEIPT_EXISTS" in helper)
+    _assert("text_phase_guard", "KLD_TEXT_SEND_SKIP_RECEIPT_EXISTS" in helper)
+    _assert("image_result_not_authority", "delivery_receipt_path" in helper and "result_path" in helper)
+
+    _assert("snapshot_prefix", 'SNAPSHOT_PREFIX = "kld-delivery-snapshot-"' in restore)
+    _assert("snapshot_validates_image_and_text", "image_delivered" in restore and "text_delivered" in restore)
+    print("PASS production_delivery_idempotency_persistence_contract")
 
 def test_safe_test_visual_history_cache_and_checkbox() -> None:
     text = _read(SAFE_TEST)
@@ -200,6 +230,7 @@ def test_pillow_is_bounded_dependency() -> None:
 
 TESTS = [
     test_daily_visual_history_cache,
+    test_production_delivery_idempotency_persistence_contract,
     test_safe_test_visual_history_cache_and_checkbox,
     test_evening_waits_for_morning_without_losing_dispatch_paths,
     test_image_first_visibility_sidecar_wiring,
