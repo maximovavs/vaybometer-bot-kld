@@ -299,6 +299,9 @@ def _base_outcome(*, post_type: str) -> dict[str, Any]:
         "composition_cooldown": [],
         "candidate_pool": [],
         "dedup_results": [],
+        "terminal_local_relaxation": False,
+        "terminal_local_relaxation_reason": "",
+        "terminal_local_relaxation_matched_target_date": "",
     }
 
 
@@ -315,6 +318,12 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
 
 
 def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[str, Any]:
+    matched_entry = getattr(duplicate, "matched_entry", None)
+    matched_target_date = ""
+    if isinstance(matched_entry, Mapping):
+        matched_target_date = str(
+            matched_entry.get("target_date") or matched_entry.get("date") or ""
+        ).strip()
     return {
         "attempt": attempt,
         "backend": backend,
@@ -323,7 +332,41 @@ def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[st
         "sha256": str(getattr(duplicate, "sha256", "")),
         "perceptual_hash": getattr(duplicate, "perceptual_hash", None),
         "min_distance": getattr(duplicate, "min_distance", None),
+        "matched_target_date": matched_target_date,
     }
+
+
+def _cover_date_matches_target(
+    cover_metadata: Mapping[str, Any],
+    current_target_date: str,
+) -> bool:
+    raw = str(cover_metadata.get("date") or "").strip()
+    if not raw or not current_target_date:
+        return False
+    try:
+        cover_iso = dt.datetime.strptime(raw, "%d.%m.%Y").date().isoformat()
+    except ValueError:
+        return False
+    return cover_iso == current_target_date
+
+
+def _terminal_local_cover_eligible(
+    duplicate: Any,
+    cover_metadata: Mapping[str, Any],
+    *,
+    current_target_date: str,
+) -> bool:
+    if str(getattr(duplicate, "reason", "")) != "near_duplicate":
+        return False
+    matched_entry = getattr(duplicate, "matched_entry", None)
+    if not isinstance(matched_entry, Mapping):
+        return False
+    matched_target_date = str(
+        matched_entry.get("target_date") or matched_entry.get("date") or ""
+    ).strip()
+    if not matched_target_date or matched_target_date == current_target_date:
+        return False
+    return _cover_date_matches_target(cover_metadata, current_target_date)
 
 
 def _scene_aware_evening_caption(scene_family: str) -> str:
@@ -958,13 +1001,18 @@ def execute_image_delivery(
         )
         return cover_metadata, cover_validation, cover_duplicate, cover_dedup
 
-    def _publish_local_cover() -> dict[str, Any]:
+    def _publish_local_cover(*, terminal_relaxation: bool = False) -> dict[str, Any]:
+        provenance_suffix = (
+            "+terminal-near-duplicate-relaxation"
+            if terminal_relaxation
+            else ""
+        )
         cover_history_metadata = {
             "forecast_date": metadata["forecast_date"],
             "target_date": metadata["target_date"],
             "scene_family": "local_informative_cover",
             "composition": "branded_weather_card",
-            "prompt_version": LOCAL_COVER_RENDERER_VERSION,
+            "prompt_version": LOCAL_COVER_RENDERER_VERSION + provenance_suffix,
         }
         print(f"Using KLD local informative cover: {cover_path}")
         return _send_and_record(
@@ -973,8 +1021,11 @@ def execute_image_delivery(
             backend="local_informative_cover",
             image_path=cover_path,
             metadata=cover_history_metadata,
-            cache_key=f"{initial_payload['cache_key']};renderer={LOCAL_COVER_RENDERER_VERSION}",
-            style_name=LOCAL_COVER_RENDERER_VERSION,
+            cache_key=(
+                f"{initial_payload['cache_key']};renderer={LOCAL_COVER_RENDERER_VERSION}"
+                + provenance_suffix
+            ),
+            style_name=LOCAL_COVER_RENDERER_VERSION + provenance_suffix,
             history_path=history_path,
             send_photo=send_photo,
             record_publication=record_publication,
@@ -1015,7 +1066,21 @@ def execute_image_delivery(
     if first_reason not in duplicate_cover_reasons:
         return _publish_local_cover()
 
+    current_target_date = str(metadata.get("target_date") or "").strip()
+    terminal_asset_id = ""
+    terminal_matched_target_date = ""
     selected_asset = str(cover_metadata.get("curated_asset_id") or "")
+    if _terminal_local_cover_eligible(
+        cover_duplicate,
+        cover_metadata,
+        current_target_date=current_target_date,
+    ):
+        terminal_asset_id = selected_asset
+        matched_entry = getattr(cover_duplicate, "matched_entry", None)
+        if isinstance(matched_entry, Mapping):
+            terminal_matched_target_date = str(
+                matched_entry.get("target_date") or matched_entry.get("date") or ""
+            ).strip()
     pool = tuple(str(item) for item in (cover_metadata.get("curated_pool") or []) if str(item))
     candidate_order = tuple(
         str(item) for item in (cover_metadata.get("curated_candidates") or []) if str(item)
@@ -1059,6 +1124,22 @@ def execute_image_delivery(
             continue
         alternate_reason = str(getattr(alternate_duplicate, "reason", ""))
         if alternate_reason in duplicate_cover_reasons:
+            if (
+                not terminal_asset_id
+                and _terminal_local_cover_eligible(
+                    alternate_duplicate,
+                    alternate_metadata,
+                    current_target_date=current_target_date,
+                )
+            ):
+                terminal_asset_id = alternate_asset
+                matched_entry = getattr(alternate_duplicate, "matched_entry", None)
+                if isinstance(matched_entry, Mapping):
+                    terminal_matched_target_date = str(
+                        matched_entry.get("target_date")
+                        or matched_entry.get("date")
+                        or ""
+                    ).strip()
             print(
                 "WARNING: KLD alternate local informative cover is a duplicate "
                 f"asset={alternate_asset} "
@@ -1074,6 +1155,48 @@ def execute_image_delivery(
             continue
         outcome["cover_metadata"] = alternate_metadata
         return _publish_local_cover()
+
+    if terminal_asset_id:
+        try:
+            (
+                terminal_metadata,
+                terminal_validation,
+                terminal_duplicate,
+                terminal_dedup,
+            ) = _render_validate_dedup_cover(
+                requested_asset_id=terminal_asset_id,
+                attempt=1 + len(remaining_assets),
+            )
+        except Exception as exc:
+            error = _error_payload(exc)
+            print(
+                "WARNING: KLD terminal local informative cover rerender failed: "
+                f"asset={terminal_asset_id} {error['type']}: {error['message']}"
+            )
+        else:
+            if (
+                terminal_validation.get("valid")
+                and _terminal_local_cover_eligible(
+                    terminal_duplicate,
+                    terminal_metadata,
+                    current_target_date=current_target_date,
+                )
+            ):
+                outcome["cover_metadata"] = terminal_metadata
+                outcome["terminal_local_relaxation"] = True
+                outcome["terminal_local_relaxation_reason"] = (
+                    "near_duplicate_older_target_date"
+                )
+                outcome["terminal_local_relaxation_matched_target_date"] = (
+                    terminal_matched_target_date
+                )
+                outcome["dedup_reason"] = "near_duplicate_terminal_local_allowed"
+                outcome["dedup_distance"] = terminal_dedup.get("min_distance")
+                print(
+                    "WARNING: KLD curated variants exhausted; using one validated "
+                    "terminal local cover despite near-duplicate history from an older target date."
+                )
+                return _publish_local_cover(terminal_relaxation=True)
 
     outcome.update(
         result="skipped_duplicate",
