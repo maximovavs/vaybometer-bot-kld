@@ -907,6 +907,56 @@ def execute_image_delivery(
     cover_path = str(Path(args.cover_path))
     metadata = initial_payload["metadata"]
     duplicate_cover_reasons = {"exact_duplicate", "near_duplicate"}
+    terminal_local_candidates: list[dict[str, Any]] = []
+    terminal_local_blockers: list[str] = []
+
+    def _expected_cover_date() -> str:
+        try:
+            return dt.date.fromisoformat(str(metadata["target_date"])).strftime("%d.%m.%Y")
+        except Exception:
+            return ""
+
+    def _terminal_local_eligibility(
+        *,
+        cover_metadata: Mapping[str, Any],
+        cover_validation: Mapping[str, Any],
+        cover_duplicate: Any,
+        asset_id: str,
+    ) -> dict[str, Any]:
+        reason = str(getattr(cover_duplicate, "reason", "") or "")
+        matched = getattr(cover_duplicate, "matched_entry", None)
+        matched = dict(matched) if isinstance(matched, Mapping) else {}
+        matched_target_date = str(matched.get("target_date") or "")
+        current_target_date = str(metadata.get("target_date") or "")
+        expected_date = _expected_cover_date()
+        checked_facts = list(cover_validation.get("checked_facts") or [])
+        expected_facts = list(cover_validation.get("expected_facts") or [])
+        factual_current = bool(
+            cover_validation.get("valid")
+            and expected_facts
+            and checked_facts == expected_facts
+            and list(cover_metadata.get("facts") or []) == expected_facts
+        )
+        date_current = bool(expected_date and str(cover_metadata.get("date") or "") == expected_date)
+        eligible = bool(
+            reason == "near_duplicate"
+            and not bool(getattr(cover_duplicate, "accepted", False))
+            and matched_target_date
+            and matched_target_date != current_target_date
+            and factual_current
+            and date_current
+        )
+        return {
+            "eligible": eligible,
+            "asset_id": asset_id,
+            "reason": reason,
+            "matched_target_date": matched_target_date,
+            "current_target_date": current_target_date,
+            "cover_date": str(cover_metadata.get("date") or ""),
+            "expected_cover_date": expected_date,
+            "factual_current": factual_current,
+            "date_current": date_current,
+        }
 
     def _render_validate_dedup_cover(
         *,
@@ -1016,6 +1066,20 @@ def execute_image_delivery(
         return _publish_local_cover()
 
     selected_asset = str(cover_metadata.get("curated_asset_id") or "")
+    first_terminal = _terminal_local_eligibility(
+        cover_metadata=cover_metadata,
+        cover_validation=cover_validation,
+        cover_duplicate=cover_duplicate,
+        asset_id=selected_asset,
+    )
+    if first_terminal["eligible"]:
+        terminal_local_candidates.append(first_terminal)
+    else:
+        terminal_local_blockers.append(
+            f"{selected_asset or 'initial'}:{first_terminal['reason']}:"
+            f"matched={first_terminal['matched_target_date'] or 'missing'}:"
+            f"factual={first_terminal['factual_current']}:date={first_terminal['date_current']}"
+        )
     pool = tuple(str(item) for item in (cover_metadata.get("curated_pool") or []) if str(item))
     candidate_order = tuple(
         str(item) for item in (cover_metadata.get("curated_candidates") or []) if str(item)
@@ -1045,12 +1109,14 @@ def execute_image_delivery(
             )
         except Exception as exc:
             error = _error_payload(exc)
+            terminal_local_blockers.append(f"{alternate_asset}:render_failed:{error['type']}")
             print(
                 "WARNING: KLD alternate local informative cover failed: "
                 f"asset={alternate_asset} {error['type']}: {error['message']}"
             )
             continue
         if not alternate_validation.get("valid"):
+            terminal_local_blockers.append(f"{alternate_asset}:invalid_cover")
             print(
                 "WARNING: KLD alternate local informative cover failed semantic validation: "
                 f"asset={alternate_asset}; "
@@ -1059,6 +1125,20 @@ def execute_image_delivery(
             continue
         alternate_reason = str(getattr(alternate_duplicate, "reason", ""))
         if alternate_reason in duplicate_cover_reasons:
+            terminal = _terminal_local_eligibility(
+                cover_metadata=alternate_metadata,
+                cover_validation=alternate_validation,
+                cover_duplicate=alternate_duplicate,
+                asset_id=alternate_asset,
+            )
+            if terminal["eligible"]:
+                terminal_local_candidates.append(terminal)
+            else:
+                terminal_local_blockers.append(
+                    f"{alternate_asset}:{terminal['reason']}:"
+                    f"matched={terminal['matched_target_date'] or 'missing'}:"
+                    f"factual={terminal['factual_current']}:date={terminal['date_current']}"
+                )
             print(
                 "WARNING: KLD alternate local informative cover is a duplicate "
                 f"asset={alternate_asset} "
@@ -1075,6 +1155,35 @@ def execute_image_delivery(
         outcome["cover_metadata"] = alternate_metadata
         return _publish_local_cover()
 
+    if terminal_local_candidates and not terminal_local_blockers:
+        # We reach this point only after every eligible curated candidate has
+        # traversed the normal render -> factual validation -> dedup path.
+        # The final rendered file is the last deterministic eligible candidate.
+        terminal = terminal_local_candidates[-1]
+        outcome["terminal_local_relaxation"] = {
+            "used": True,
+            "reason": "all_curated_near_duplicates_from_older_target_dates",
+            "scene_family": "local_informative_cover",
+            "selected_asset_id": terminal["asset_id"],
+            "matched_target_date": terminal["matched_target_date"],
+            "current_target_date": terminal["current_target_date"],
+            "cover_date": terminal["cover_date"],
+            "normal_dedup_attempts": 1 + len(remaining_assets),
+        }
+        print(
+            "WARNING: KLD terminal local-cover relaxation used after all normal "
+            "curated candidates were near-duplicates from older target dates; "
+            f"asset={terminal['asset_id']} matched_target_date={terminal['matched_target_date']}."
+        )
+        return _publish_local_cover()
+
+    outcome["terminal_local_relaxation"] = {
+        "used": False,
+        "reason": "terminal_local_cover_ineligible",
+        "blockers": terminal_local_blockers,
+        "eligible_candidates": len(terminal_local_candidates),
+        "normal_dedup_attempts": 1 + len(remaining_assets),
+    }
     outcome.update(
         result="skipped_duplicate",
         backend="local_informative_cover",
