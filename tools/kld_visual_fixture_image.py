@@ -299,6 +299,11 @@ def _base_outcome(*, post_type: str) -> dict[str, Any]:
         "composition_cooldown": [],
         "candidate_pool": [],
         "dedup_results": [],
+        "terminal_local_relaxation": {
+            "used": False,
+            "reason": "not_considered",
+            "attempt_count": 0,
+        },
     }
 
 
@@ -314,7 +319,23 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _normalized_date(value: object) -> str:
+    raw = str(value or "").strip()[:10]
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return dt.datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
 def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[str, Any]:
+    matched_entry = getattr(duplicate, "matched_entry", None)
+    matched_target_date = ""
+    if isinstance(matched_entry, Mapping):
+        matched_target_date = _normalized_date(
+            matched_entry.get("target_date") or matched_entry.get("date")
+        )
     return {
         "attempt": attempt,
         "backend": backend,
@@ -323,6 +344,7 @@ def _duplicate_payload(duplicate: Any, *, attempt: int, backend: str) -> dict[st
         "sha256": str(getattr(duplicate, "sha256", "")),
         "perceptual_hash": getattr(duplicate, "perceptual_hash", None),
         "min_distance": getattr(duplicate, "min_distance", None),
+        "matched_target_date": matched_target_date,
     }
 
 
@@ -1075,6 +1097,77 @@ def execute_image_delivery(
         outcome["cover_metadata"] = alternate_metadata
         return _publish_local_cover()
 
+    local_dedup_results = [
+        item
+        for item in outcome["dedup_results"]
+        if item.get("backend") == "local_informative_cover"
+    ]
+    expected_attempts = 1 + len(remaining_assets)
+    current_target_date = _normalized_date(metadata.get("target_date"))
+    final_cover_metadata = outcome.get("cover_metadata")
+    if not isinstance(final_cover_metadata, Mapping):
+        final_cover_metadata = {}
+    final_cover_validation = outcome.get("cover_validation")
+    if not isinstance(final_cover_validation, Mapping):
+        final_cover_validation = {}
+    final_cover_date = _normalized_date(final_cover_metadata.get("date"))
+    all_near_duplicates = bool(local_dedup_results) and all(
+        item.get("reason") == "near_duplicate"
+        for item in local_dedup_results
+    )
+    all_matches_are_older_targets = bool(local_dedup_results) and all(
+        item.get("matched_target_date")
+        and item.get("matched_target_date") != current_target_date
+        for item in local_dedup_results
+    )
+    terminal_local_eligible = bool(
+        len(local_dedup_results) == expected_attempts
+        and all_near_duplicates
+        and all_matches_are_older_targets
+        and final_cover_validation.get("valid") is True
+        and current_target_date
+        and final_cover_date == current_target_date
+    )
+    if terminal_local_eligible:
+        outcome["dedup_reason"] = "near_duplicate_terminal_local_allowed"
+        outcome["terminal_local_relaxation"] = {
+            "used": True,
+            "reason": "all_curated_near_duplicates_from_older_target_dates",
+            "attempt_count": len(local_dedup_results),
+            "target_date": current_target_date,
+            "matched_target_date": local_dedup_results[-1].get("matched_target_date"),
+            "curated_asset_id": final_cover_metadata.get("curated_asset_id"),
+        }
+        print(
+            "WARNING: KLD terminal local-cover relaxation used after every eligible "
+            "curated cover was a near-duplicate from an older target date; "
+            f"attempts={len(local_dedup_results)} asset={final_cover_metadata.get('curated_asset_id')}"
+        )
+        return _publish_local_cover()
+
+    blocker = "terminal_local_requirements_not_met"
+    if any(item.get("reason") == "exact_duplicate" for item in local_dedup_results):
+        blocker = "exact_duplicate_forbidden"
+    elif any(
+        item.get("matched_target_date") == current_target_date
+        for item in local_dedup_results
+        if item.get("matched_target_date")
+    ):
+        blocker = "same_target_date_forbidden"
+    elif len(local_dedup_results) != expected_attempts:
+        blocker = "not_all_curated_candidates_validly_checked"
+    elif final_cover_validation.get("valid") is not True:
+        blocker = "cover_validation_failed"
+    elif not current_target_date or final_cover_date != current_target_date:
+        blocker = "current_target_date_not_proven"
+    elif not all_matches_are_older_targets:
+        blocker = "older_target_match_not_proven"
+    outcome["terminal_local_relaxation"] = {
+        "used": False,
+        "reason": blocker,
+        "attempt_count": len(local_dedup_results),
+        "target_date": current_target_date,
+    }
     outcome.update(
         result="skipped_duplicate",
         backend="local_informative_cover",
@@ -1083,7 +1176,7 @@ def execute_image_delivery(
     )
     print(
         "WARNING: KLD local informative cover candidates exhausted after duplicate rejection; "
-        f"attempts={1 + len(remaining_assets)}; continuing without image."
+        f"attempts={expected_attempts}; terminal_relaxation={blocker}; continuing without image."
     )
     return outcome
 
