@@ -232,6 +232,12 @@ def _moon_line(line: str) -> str:
     elif "растущ" in phase_low:
         moon_emoji = "🌔"
         phase_text = phase
+    elif "последн" in phase_low and "четверт" in phase_low:
+        moon_emoji = "🌗"
+        phase_text = phase
+    elif "убыва" in phase_low and "серп" in phase_low:
+        moon_emoji = "🌘"
+        phase_text = phase
     elif "убыва" in phase_low:
         moon_emoji = "🌖"
         phase_text = phase
