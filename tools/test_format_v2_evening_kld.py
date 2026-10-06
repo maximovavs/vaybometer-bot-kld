@@ -1217,6 +1217,21 @@ def kld_evening_calm_scenario_does_not_echo_score_reason() -> None:
     assert "🧭 Главное завтра: спокойный областной день без резких погодных акцентов." in text
 
 
+def kld_moon_phase_emoji_mapping_preserves_waning_subphases() -> None:
+    assert (
+        format_v2._moon_line("🌙 🌘 Убывающий серп (24%) • ♌ Лев")
+        == "🌘 Убывающий серп в ♌ Лев — 24% освещённости."
+    )
+    assert (
+        format_v2._moon_line("🌙 🌖 Убывающая Луна (72%) • ♐ Стрелец")
+        == "🌖 Убывающая Луна в ♐ Стрелец — 72% освещённости."
+    )
+    assert (
+        format_v2._moon_line("🌙 🌗 Последняя четверть (50%) • ♋ Рак")
+        == "🌗 Последняя четверть в ♋ Рак — 50% освещённости."
+    )
+
+
 def main() -> None:
     checks = (
         kld_evening_normal_no_generic_confidence,
@@ -1225,6 +1240,7 @@ def main() -> None:
         kld_evening_has_one_final_plan,
         kld_evening_preserves_city_and_marine_lines,
         kld_evening_preserves_compact_astro,
+        kld_moon_phase_emoji_mapping_preserves_waning_subphases,
         kld_evening_sunrise_only_format_is_preserved,
         kld_evening_production_uses_tomorrow_sunrise,
         kld_morning_source_contract_keeps_today_sunset,
