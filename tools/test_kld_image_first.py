@@ -336,6 +336,83 @@ def production_delivery_first_repeat_and_partial_states_are_idempotent() -> None
         assert receipt["telegram_text_message_ids"] == [501]
 
 
+
+
+def production_receipt_survives_visual_history_failure_and_recovers_text() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        image_root = root / "image"
+        image_root.mkdir()
+        image_events: list[str] = []
+
+        def fail_history(**_kwargs):
+            image_events.append("history")
+            raise RuntimeError("fixture history write failure")
+
+        image_outcome = _run_delivery(
+            image_root,
+            generate=lambda **_kwargs: _image(image_root / "ai.png"),
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=True,
+                reason="accepted",
+                distance=21,
+            ),
+            cover_renderer=_cover_renderer([]),
+            send_photo=lambda *args, **kwargs: image_events.append("photo") or 801,
+            record=fail_history,
+        )
+        assert image_outcome["telegram_image_sent"] is True
+        assert image_outcome["telegram_image_message_id"] == 801
+        assert image_outcome["history_recorded"] is False
+        assert image_events == ["photo", "history"]
+
+        delivery_root = root / "production"
+        delivery_root.mkdir()
+        try:
+            _orchestrate(
+                delivery_root,
+                image_outcome,
+                production=True,
+                text_error=RuntimeError("fixture text send failure"),
+            )
+        except RuntimeError as exc:
+            assert str(exc) == "fixture text send failure"
+        else:
+            raise AssertionError("text failure must leave an image-only delivery receipt")
+
+        image_only_receipt = load_kld_delivery_receipt(
+            target_date="2026-07-20",
+            post_type="evening",
+            production_chat_id="-1001234567890",
+            delivery_dir=delivery_root / "kld_delivery",
+        )
+        assert image_only_receipt is not None
+        assert image_only_receipt["image_delivered"] is True
+        assert image_only_receipt["telegram_image_message_id"] == 801
+        assert image_only_receipt["text_delivered"] is False
+
+        recovered, recovered_order = _orchestrate(
+            delivery_root,
+            image_outcome,
+            production=True,
+        )
+        assert recovered_order == ["preview", "text"]
+        assert recovered["image_send_skipped_receipt"] is True
+        assert recovered["text_sent"] is True
+
+        final_receipt = load_kld_delivery_receipt(
+            target_date="2026-07-20",
+            post_type="evening",
+            production_chat_id="-1001234567890",
+            delivery_dir=delivery_root / "kld_delivery",
+        )
+        assert final_receipt is not None
+        assert final_receipt["image_delivered"] is True
+        assert final_receipt["telegram_image_message_id"] == 801
+        assert final_receipt["text_delivered"] is True
+        assert final_receipt["telegram_text_message_ids"] == [501]
+
+
 def production_delivery_keys_test_channel_and_trigger_are_isolated() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1866,6 +1943,51 @@ def terminal_local_send_failure_never_records_history() -> None:
         ]
 
 
+
+
+def terminal_local_requires_current_cover_date() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        base_renderer = _bounded_cover_renderer(events)
+
+        def stale_date_renderer(*args, **kwargs):
+            metadata = dict(base_renderer(*args, **kwargs))
+            metadata["date"] = "19.07.2026"
+            return metadata
+
+        outcome = _run_delivery(
+            root,
+            generate=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            secondary_generate=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+            evaluate=lambda *_args, **_kwargs: _duplicate(
+                accepted=False,
+                reason="near_duplicate",
+                distance=0,
+                matched_target_date="2026-07-19",
+            ),
+            cover_renderer=stale_date_renderer,
+            send_photo=lambda *args, **kwargs: events.append("photo") or 213,
+            record=_record(events),
+        )
+        assert outcome["result"] == "skipped_duplicate"
+        assert outcome["telegram_image_sent"] is False
+        assert outcome["history_recorded"] is False
+        assert outcome["terminal_local_relaxation"]["used"] is False
+        assert outcome["terminal_local_relaxation"]["reason"] == "current_target_date_not_proven"
+        assert outcome["cover_metadata"]["date"] == "19.07.2026"
+
+        local_checks = [
+            item
+            for item in outcome["dedup_results"]
+            if item["backend"] == "local_informative_cover"
+        ]
+        assert len(local_checks) == 2
+        assert all(item["reason"] == "near_duplicate" for item in local_checks)
+        assert all(item["matched_target_date"] == "2026-07-19" for item in local_checks)
+        assert events == ["cover:kld_overcast_01", "cover:kld_overcast_02"]
+
+
 def accepted_first_local_cover_does_not_render_alternates() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2186,6 +2308,7 @@ TESTS = [
     accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw,
     presentation_failure_uses_existing_validated_local_cover,
     production_delivery_first_repeat_and_partial_states_are_idempotent,
+    production_receipt_survives_visual_history_failure_and_recovers_text,
     production_delivery_keys_test_channel_and_trigger_are_isolated,
     scene_aware_caption_uses_final_selected_scene_without_changing_identity,
     morning_workflow_preserves_existing_user_caption,
@@ -2228,6 +2351,7 @@ TESTS = [
     exact_duplicate_local_covers_never_use_terminal_relaxation,
     same_target_date_near_duplicates_never_use_terminal_relaxation,
     terminal_local_send_failure_never_records_history,
+    terminal_local_requires_current_cover_date,
     accepted_first_local_cover_does_not_render_alternates,
     recent_scene_and_composition_cooldown_is_applied,
     pollinations_exception_retains_all_http_attempts,
