@@ -28,6 +28,7 @@ from kld_image_first import (  # noqa: E402
     run_image_first_publication,
 )
 import imagegen  # noqa: E402
+import daily_ai_presentation  # noqa: E402
 from kld_informative_cover import (  # noqa: E402
     RENDERER_VERSION,
     _factual_weather_truth,
