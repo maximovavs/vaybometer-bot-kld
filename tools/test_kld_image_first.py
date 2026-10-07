@@ -28,6 +28,7 @@ from kld_image_first import (  # noqa: E402
     run_image_first_publication,
 )
 import imagegen  # noqa: E402
+import daily_ai_presentation  # noqa: E402
 from kld_informative_cover import (  # noqa: E402
     RENDERER_VERSION,
     _factual_weather_truth,
@@ -2229,6 +2230,38 @@ def morning_workflow_preserves_existing_user_caption() -> None:
 
 
 
+def ai_primary_presentation_is_full_bleed_with_glass_overlays() -> None:
+    from PIL import Image
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        raw_path = root / "raw.png"
+        source_color = (61, 101, 141)
+        _image(raw_path, source_color)
+        rendered = daily_ai_presentation.render_branded_ai_presentation(
+            raw_path,
+            headline="КАЛИНИНГРАД СЕГОДНЯ",
+            date_value="07.10.2026",
+            facts=["+17° / +11°", "ВЕТЕР 2.1 М/С · ПОРЫВЫ 5 М/С"],
+            branding="VAYBOMETER · KLD",
+            output_path=root / "presentation.png",
+        )
+        assert rendered["presentation_version"] == "kld_ai_primary_branded_v2_full_bleed"
+        assert rendered["layout_mode"] == "full_bleed_glass"
+        assert rendered["title_panel_bbox"] == [36, 72, 710, 238]
+        assert rendered["facts_panel_bbox"] == [36, 905, 770, 1248]
+        with Image.open(str(rendered["path"])) as image:
+            assert image.size == (1080, 1350)
+            assert image.info["presentation_version"] == "kld_ai_primary_branded_v2_full_bleed"
+            assert image.info["layout_mode"] == "full_bleed_glass"
+            # Outside all overlay panels the publication must still be the source image,
+            # proving there is no white canvas/frame around the accepted AI visual.
+            assert image.getpixel((20, 1300)) == source_color
+            assert image.getpixel((1040, 650)) == source_color
+            # Inside a glass panel the source remains visible but is deterministically overlaid.
+            assert image.getpixel((50, 100)) != source_color
+
+
 def accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw() -> None:
     from PIL import Image
 
@@ -2268,14 +2301,17 @@ def accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw() -> None
         assert sent[0] != str(raw_path)
         with Image.open(sent[0]) as rendered:
             assert rendered.size == (1080, 1350)
-            assert rendered.info["presentation_version"] == "kld_ai_primary_branded_v1"
+            assert rendered.info["presentation_version"] == "kld_ai_primary_branded_v2_full_bleed"
+            assert rendered.info["layout_mode"] == "full_bleed_glass"
+            assert rendered.getpixel((20, 1300)) == (61, 101, 141)
         assert recorded and recorded[0]["image_path"] == str(raw_path)
         assert outcome["source_image_path"] == str(raw_path)
         assert outcome["published_image_path"] == sent[0]
         assert outcome["source_sha256"]
         assert outcome["published_sha256"]
         assert outcome["source_sha256"] != outcome["published_sha256"]
-        assert outcome["presentation_version"] == "kld_ai_primary_branded_v1"
+        assert outcome["presentation_version"] == "kld_ai_primary_branded_v2_full_bleed"
+        assert outcome["presentation_metadata"]["layout_mode"] == "full_bleed_glass"
         assert outcome["cover_attempted"] is False
 
 
@@ -2305,6 +2341,7 @@ def presentation_failure_uses_existing_validated_local_cover() -> None:
 
 
 TESTS = [
+    ai_primary_presentation_is_full_bleed_with_glass_overlays,
     accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw,
     presentation_failure_uses_existing_validated_local_cover,
     production_delivery_first_repeat_and_partial_states_are_idempotent,
