@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 
@@ -28,6 +29,15 @@ def _block(text: str, start: str, end: str | None = None) -> str:
     start_idx = text.index(start)
     end_idx = text.index(end, start_idx) if end else len(text)
     return text[start_idx:end_idx]
+
+
+def _load_delivery_restore_module():
+    spec = importlib.util.spec_from_file_location("kld_delivery_restore_under_test", DELIVERY_RESTORE)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load KLD delivery restore module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_daily_visual_history_cache() -> None:
@@ -80,6 +90,72 @@ def test_production_delivery_idempotency_persistence_contract() -> None:
     _assert("snapshot_prefix", 'SNAPSHOT_PREFIX = "kld-delivery-snapshot-"' in restore)
     _assert("snapshot_validates_image_and_text", "image_delivered" in restore and "text_delivered" in restore)
     print("PASS production_delivery_idempotency_persistence_contract")
+
+def test_delivery_snapshot_transient_api_retry_is_bounded_and_fail_closed() -> None:
+    module = _load_delivery_restore_module()
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def transient_then_success(command, *, text, stderr):
+        calls.append(command[-1])
+        if len(calls) < 3:
+            raise module.subprocess.CalledProcessError(
+                1,
+                command,
+                stderr="gh: Server Error (HTTP 502)",
+            )
+        return '{"artifacts": []}'
+
+    module.subprocess.check_output = transient_then_success
+    module.time.sleep = lambda delay: sleeps.append(delay)
+    payload = module._gh_json("repos/example/repo/actions/artifacts?per_page=100")
+    _assert("delivery_restore_retry_success", payload == {"artifacts": []}, str(payload))
+    _assert("delivery_restore_retry_attempts", len(calls) == 3, str(calls))
+    _assert("delivery_restore_retry_backoff", sleeps == [1.0, 2.0], str(sleeps))
+
+    calls.clear()
+    sleeps.clear()
+
+    def non_transient(command, *, text, stderr):
+        calls.append(command[-1])
+        raise module.subprocess.CalledProcessError(
+            1,
+            command,
+            stderr="gh: HTTP 401: Bad credentials",
+        )
+
+    module.subprocess.check_output = non_transient
+    try:
+        module._gh_json("repos/example/repo/actions/artifacts?per_page=100")
+    except module.subprocess.CalledProcessError:
+        pass
+    else:
+        raise AssertionError("non-transient GitHub API error must fail immediately")
+    _assert("delivery_restore_nontransient_once", len(calls) == 1, str(calls))
+    _assert("delivery_restore_nontransient_no_sleep", sleeps == [], str(sleeps))
+
+    calls.clear()
+    sleeps.clear()
+
+    def exhausted_transient(command, *, text, stderr):
+        calls.append(command[-1])
+        raise module.subprocess.CalledProcessError(
+            1,
+            command,
+            stderr="gh: Server Error (HTTP 503)",
+        )
+
+    module.subprocess.check_output = exhausted_transient
+    try:
+        module._gh_json("repos/example/repo/actions/artifacts?per_page=100")
+    except module.subprocess.CalledProcessError:
+        pass
+    else:
+        raise AssertionError("exhausted transient GitHub API errors must remain fail-closed")
+    _assert("delivery_restore_exhaustion_attempts", len(calls) == 3, str(calls))
+    _assert("delivery_restore_exhaustion_backoff", sleeps == [1.0, 2.0], str(sleeps))
+    print("PASS delivery_snapshot_transient_api_retry_is_bounded_and_fail_closed")
+
 
 def test_safe_test_visual_history_cache_and_checkbox() -> None:
     text = _read(SAFE_TEST)
@@ -231,6 +307,7 @@ def test_pillow_is_bounded_dependency() -> None:
 TESTS = [
     test_daily_visual_history_cache,
     test_production_delivery_idempotency_persistence_contract,
+    test_delivery_snapshot_transient_api_retry_is_bounded_and_fail_closed,
     test_safe_test_visual_history_cache_and_checkbox,
     test_evening_waits_for_morning_without_losing_dispatch_paths,
     test_image_first_visibility_sidecar_wiring,

@@ -11,11 +11,15 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 import zipfile
 
 
 SNAPSHOT_PREFIX = "kld-delivery-snapshot-"
+GH_API_MAX_ATTEMPTS = 3
+GH_API_RETRY_DELAY_SECONDS = 1.0
+TRANSIENT_GH_API_HTTP_STATUSES = ("HTTP 502", "HTTP 503", "HTTP 504")
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -98,9 +102,34 @@ def _restore_from_root(source_root: Path, destination: Path) -> tuple[int, int]:
     return valid, restored
 
 
+def _is_transient_gh_api_failure(exc: subprocess.CalledProcessError) -> bool:
+    detail = "\n".join(
+        str(value or "")
+        for value in (getattr(exc, "stderr", ""), getattr(exc, "output", ""))
+    )
+    return any(status in detail for status in TRANSIENT_GH_API_HTTP_STATUSES)
+
+
 def _gh_json(path: str) -> dict[str, Any]:
-    raw = subprocess.check_output(["gh", "api", path], text=True)
-    return json.loads(raw)
+    for attempt in range(1, GH_API_MAX_ATTEMPTS + 1):
+        try:
+            raw = subprocess.check_output(
+                ["gh", "api", path],
+                text=True,
+                stderr=subprocess.PIPE,
+            )
+            return json.loads(raw)
+        except subprocess.CalledProcessError as exc:
+            if not _is_transient_gh_api_failure(exc) or attempt >= GH_API_MAX_ATTEMPTS:
+                raise
+            delay = GH_API_RETRY_DELAY_SECONDS * attempt
+            print(
+                "KLD delivery restore: transient GitHub API failure; "
+                f"attempt={attempt}/{GH_API_MAX_ATTEMPTS}; retry_in={delay:.1f}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def _artifact_candidates() -> list[dict[str, Any]]:
