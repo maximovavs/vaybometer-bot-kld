@@ -15,9 +15,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, PngImagePlugin
 
 PRESENTATION_VERSION = "kld_ai_primary_branded_v2_full_bleed"
 CANVAS_SIZE = (1080, 1350)
-_TITLE_PANEL = (36, 72, 710, 238)
-_TITLE_SAFE = (72, 92, 676, 154)
-_DATE_PANEL = (866, 76, 1040, 236)
+# Telegram crops the top of tall photos in the chat preview, so the top 10% of
+# the canvas carries no header panel or text. Header geometry starts below it.
+_TELEGRAM_SAFE_TOP = 135
+_TITLE_PANEL = (36, 150, 710, 316)
+_TITLE_SAFE = (72, 170, 676, 232)
+_BRAND_ORIGIN = (_TITLE_SAFE[0], 247)
+_DATE_PANEL = (866, 154, 1040, 314)
 _FACT_PANEL = (36, 905, 770, 1248)
 _FACT_SAFE = (78, 950, 730, 1208)
 _GLASS_FILL = (226, 236, 240, 158)
@@ -130,6 +134,14 @@ def _fit_fact_layout(
     raise RuntimeError("KLD AI presentation facts do not fit full-bleed safe-zone")
 
 
+def _require_telegram_safe(label: str, box: Iterable[int]) -> None:
+    top = list(box)[1]
+    if top < _TELEGRAM_SAFE_TOP:
+        raise RuntimeError(
+            f"KLD AI presentation {label} enters Telegram preview unsafe zone: top={top}"
+        )
+
+
 def _glass_panel(
     overlay: Image.Image,
     box: tuple[int, int, int, int],
@@ -195,7 +207,7 @@ def render_branded_ai_presentation(
         stroke_fill=_TEXT_STROKE,
     )
     brand_font = _font(22)
-    brand_origin = (_TITLE_SAFE[0], 169)
+    brand_origin = _BRAND_ORIGIN
     draw.text(
         brand_origin,
         str(branding).strip(),
@@ -221,6 +233,15 @@ def render_branded_ai_presentation(
         stroke_fill=_TEXT_STROKE,
     )
     date_bbox = draw.textbbox(date_origin, date_text, font=date_font, stroke_width=1)
+
+    for label, box in (
+        ("title panel", _TITLE_PANEL),
+        ("date panel", _DATE_PANEL),
+        ("title", title_bbox),
+        ("branding", brand_bbox),
+        ("date", date_bbox),
+    ):
+        _require_telegram_safe(label, box)
 
     fact_layout: list[dict[str, object]] = []
     fact_font_size = 0
