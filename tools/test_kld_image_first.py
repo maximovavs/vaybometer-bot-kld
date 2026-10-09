@@ -2248,7 +2248,8 @@ def ai_primary_presentation_is_full_bleed_with_glass_overlays() -> None:
         )
         assert rendered["presentation_version"] == "kld_ai_primary_branded_v2_full_bleed"
         assert rendered["layout_mode"] == "full_bleed_glass"
-        assert rendered["title_panel_bbox"] == [36, 72, 710, 238]
+        assert rendered["title_panel_bbox"] == [36, 150, 710, 316]
+        assert rendered["date_panel_bbox"] == [866, 154, 1040, 314]
         assert rendered["facts_panel_bbox"] == [36, 905, 770, 1248]
         with Image.open(str(rendered["path"])) as image:
             assert image.size == (1080, 1350)
@@ -2259,7 +2260,106 @@ def ai_primary_presentation_is_full_bleed_with_glass_overlays() -> None:
             assert image.getpixel((20, 1300)) == source_color
             assert image.getpixel((1040, 650)) == source_color
             # Inside a glass panel the source remains visible but is deterministically overlaid.
-            assert image.getpixel((50, 100)) != source_color
+            assert image.getpixel((50, 170)) != source_color
+
+
+def ai_primary_presentation_header_respects_telegram_safe_top() -> None:
+    """Telegram crops the top of tall photos in chat preview; the header must sit below that band."""
+    from PIL import Image, ImageDraw
+
+    safe_top = daily_ai_presentation._TELEGRAM_SAFE_TOP
+    assert daily_ai_presentation.CANVAS_SIZE == (1080, 1350)
+    assert safe_top == 135 == daily_ai_presentation.CANVAS_SIZE[1] // 10
+    source_color = (61, 101, 141)
+    branding = "VAYBOMETER · KLD"
+    # Ordinary non-storm cards plus the published 09.10 storm-day fact set.
+    cases = (
+        ("КАЛИНИНГРАД СЕГОДНЯ", "07.10.2026", ["+17° / +11°", "ВЕТЕР 2.1 М/С · ПОРЫВЫ 5 М/С"]),
+        ("КАЛИНИНГРАД ЗАВТРА", "2026-10-10", ["ДОЖДЬ МЕСТАМИ"]),
+        (
+            "КАЛИНИНГРАД СЕГОДНЯ",
+            "09.10.2026",
+            ["ШТОРМОВОЕ ПРЕДУПРЕЖДЕНИЕ", "+13° / +10°", "ВЕТЕР 10.8 М/С · ПОРЫВЫ 21 М/С"],
+        ),
+    )
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        raw_path = root / "raw.png"
+        Image.new("RGB", (1080, 1350), source_color).save(raw_path)
+        for index, (headline, date_value, facts) in enumerate(cases):
+            rendered = daily_ai_presentation.render_branded_ai_presentation(
+                raw_path,
+                headline=headline,
+                date_value=date_value,
+                facts=facts,
+                branding=branding,
+                output_path=root / f"safe_top_{index}.png",
+            )
+            title_panel = rendered["title_panel_bbox"]
+            date_panel = rendered["date_panel_bbox"]
+            title_bbox = rendered["title_layout"]["bbox"]
+            date_bbox = rendered["date_layout"]["bbox"]
+
+            # A/B: both header panels start below the unsafe top 10%, at y >= 150.
+            assert title_panel[1] >= 150 and title_panel[1] >= safe_top
+            assert date_panel[1] >= 150 and date_panel[1] >= safe_top
+            # Panel heights are the pre-shift heights: the block moved, it did not resize.
+            assert title_panel[3] - title_panel[1] == 166
+            assert date_panel[3] - date_panel[1] == 160
+
+            # C: title text is safe and inside the title panel.
+            assert title_bbox[1] >= safe_top
+            assert title_panel[0] <= title_bbox[0] <= title_bbox[2] <= title_panel[2]
+            assert title_panel[1] <= title_bbox[1] <= title_bbox[3] <= title_panel[3]
+
+            with Image.open(str(rendered["path"])) as image:
+                # G: canvas size is unchanged.
+                assert image.size == (1080, 1350)
+                # Nothing at all is drawn into the unsafe band: it is pure source image.
+                band = image.convert("RGB").crop((0, 0, 1080, safe_top))
+                assert band.getcolors() == [(1080 * safe_top, source_color)]
+                draw = ImageDraw.Draw(image)
+                brand_bbox = draw.textbbox(
+                    daily_ai_presentation._BRAND_ORIGIN,
+                    branding,
+                    font=daily_ai_presentation._font(22),
+                )
+
+            # D: branding is safe, inside the title panel, and still below the headline.
+            assert brand_bbox[1] >= safe_top
+            assert title_panel[0] <= brand_bbox[0] <= brand_bbox[2] <= title_panel[2]
+            assert title_panel[1] <= brand_bbox[1] <= brand_bbox[3] <= title_panel[3]
+            assert brand_bbox[1] >= title_bbox[3]
+
+            # E: date text is safe and inside the date panel.
+            assert date_bbox[1] >= safe_top
+            assert date_panel[0] <= date_bbox[0] <= date_bbox[2] <= date_panel[2]
+            assert date_panel[1] <= date_bbox[1] <= date_bbox[3] <= date_panel[3]
+
+            # F: the lower facts panel did not move, and the header stays clear of it.
+            assert rendered["facts_panel_bbox"] == [36, 905, 770, 1248]
+            assert max(title_panel[3], date_panel[3]) < rendered["facts_panel_bbox"][1]
+            # H: every fact is rendered.
+            assert len(rendered["fact_layout"]) == len(facts)
+
+        # The renderer refuses a header that drifts back into the unsafe band.
+        original_date_panel = daily_ai_presentation._DATE_PANEL
+        daily_ai_presentation._DATE_PANEL = (866, 76, 1040, 236)
+        try:
+            daily_ai_presentation.render_branded_ai_presentation(
+                raw_path,
+                headline=cases[0][0],
+                date_value=cases[0][1],
+                facts=cases[0][2],
+                branding=branding,
+                output_path=root / "unsafe.png",
+            )
+        except RuntimeError as exc:
+            assert "Telegram preview unsafe zone" in str(exc)
+        else:
+            raise AssertionError("header inside the Telegram unsafe zone was rendered")
+        finally:
+            daily_ai_presentation._DATE_PANEL = original_date_panel
 
 
 def accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw() -> None:
@@ -2342,6 +2442,7 @@ def presentation_failure_uses_existing_validated_local_cover() -> None:
 
 TESTS = [
     ai_primary_presentation_is_full_bleed_with_glass_overlays,
+    ai_primary_presentation_header_respects_telegram_safe_top,
     accepted_provider_is_branded_after_raw_dedup_and_history_keeps_raw,
     presentation_failure_uses_existing_validated_local_cover,
     production_delivery_first_repeat_and_partial_states_are_idempotent,
