@@ -1211,6 +1211,20 @@ def kld_morning_supported_specific_source_nuance_is_preserved() -> None:
 
 
 
+def kld_morning_storm_warning_outranks_generic_windy_nuance() -> None:
+    source = """<b>🌅 Калининградская область: погода на сегодня (09.10.2026)</b>
+✨ VayboMeter сегодня: 5.9/10 — с оговорками; сильные порывы.
+⚠️ Штормовое предупреждение: ветер: порывы до 24 м/с.
+Погода: 🏙️ Калининград — 13/10 °C • облачно • 💨 10.8 м/с • порывы до 21 м/с • 🔹 1003 гПа ↓.
+✅ Сегодня: поездки и прогулки держать гибкими.
+#Калининград #погода #здоровье #сегодня #море
+"""
+    text = build_morning_format_v2("Калининградская область", source)
+    nuance_lines = [line for line in text.splitlines() if line.startswith("⚠️")]
+    assert nuance_lines == ["⚠️ Штормовое предупреждение: порывы до 24 м/с."]
+    assert "у воды порывы ощущаются сильнее, чем в городе" not in text
+
+
 def kld_morning_calm_without_source_score_does_not_repeat_label() -> None:
     source = """<b>🌅 Калининградская область: погода на сегодня (03.10.2026)</b>
 Погода: 🏙️ Калининград — 18/10 °C • 🌥 пасм • 💨 2.1 м/с (З) • порывы — 5 • 🔹 1029 гПа ↑.
@@ -1288,6 +1302,7 @@ def main() -> None:
         kld_morning_final_sensor_wording_is_softened,
         kld_morning_final_production_path_softens_sensor_after_sanitize,
         kld_morning_rainy_gusty_integrated_fixture_is_not_too_optimistic,
+        kld_morning_storm_warning_outranks_generic_windy_nuance,
         kld_morning_region_contrast_uses_all_city_row_variants,
         kld_morning_region_context_is_omitted_for_one_city,
         kld_morning_equal_daytime_shows_only_coldest_night,

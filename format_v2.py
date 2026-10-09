@@ -1372,14 +1372,14 @@ def _morning_main_nuance_line(
     grounded_source = _ground_morning_source_nuance(source, flags, score_line)
     if grounded_source:
         return grounded_source
+    if warning:
+        return _clean_storm_warning_line(warning)
     if flags.get("windy"):
         return "⚠️ Главный нюанс: у воды порывы ощущаются сильнее, чем в городе."
     if flags["heat"] and flags["uv_high"]:
         return "⚠️ Главный нюанс: жара и УФ важнее формальной облачности."
     if flags["uv_high"]:
         return "⚠️ Главный нюанс: высокий УФ днём; планировать активность лучше без перегруза."
-    if warning:
-        return "⚠️ " + warning
     return ""
 
 

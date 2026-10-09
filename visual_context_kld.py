@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from statistics import median
 from typing import Any, Literal, Mapping, Optional
 
+import weather_text
 from visibility_context import normalize_visibility_m, visibility_condition_from_text
 
 Region = Literal["kaliningrad"]
@@ -526,6 +527,18 @@ def build_visual_context(
     temp_max, temp_min, temp_ev = extract_temperatures(clean)
     weather, weather_ev = detect_weather_main(clean, temp_max=temp_max)
     wind_avg, wind_gust, wind_ev = extract_wind(clean)
+    if (
+        wind_gust is not None
+        and wind_gust >= weather_text.STORM_GUST_MS
+        and weather != "storm"
+    ):
+        weather_ev["storm_gust_override"] = {
+            "from": weather,
+            "to": "storm",
+            "gust_ms": wind_gust,
+            "threshold_ms": weather_text.STORM_GUST_MS,
+        }
+        weather = "storm"
     sea_temp, wave_height, sea_ev = extract_sea(clean)
     sport, sport_level, sport_ev = extract_sport(clean, wind_gust)
     moon_phase = extract_moon_phase(clean)
