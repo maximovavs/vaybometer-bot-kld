@@ -46,7 +46,11 @@ from image_prompt_kld import (  # noqa: E402
     kld_visual_cache_key,
 )
 from image_prompt_kld_morning import build_kld_morning_prompt  # noqa: E402
-from kld_visual_policy import SUMMER_VEGETATION_CUE, finalize_kld_provider_prompt  # noqa: E402
+from kld_visual_policy import (  # noqa: E402
+    SUMMER_VEGETATION_CUE,
+    apply_weather_scene_route,
+    finalize_kld_provider_prompt,
+)
 from post_kld import _extract_storm_warning  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues  # noqa: E402
@@ -850,6 +854,24 @@ def run_gust19_without_storm_word_gets_storm_visual_case() -> None:
             "🌖 Убывающая Луна в ♐ — 92% освещённости.",
         ]
     )
+    ctx = build_visual_context(message, post_type="evening")
+    _assert_equal(name, "ctx.weather_main", ctx.weather_main, "storm")
+    override = (ctx.evidence or {}).get("storm_gust_override")
+    if not isinstance(override, dict):
+        raise AssertionError(f"{name}: expected storm_gust_override evidence, got {override!r}")
+    _assert_equal(name, "storm_gust_override.gust_ms", override.get("gust_ms"), 19.0)
+    _assert_equal(name, "storm_gust_override.threshold_ms", override.get("threshold_ms"), 15.0)
+
+    metadata = kld_scene_metadata(
+        ctx,
+        date_key="2026-07-03",
+        post_type="evening",
+        source_text=message,
+    )
+    _assert_equal(name, "metadata.weather_scenario", metadata["weather_scenario"], "storm")
+    routed = apply_weather_scene_route(metadata)
+    _assert_equal(name, "scene_route", routed["scene_route"], "storm")
+
     prompt, style_name = build_kld_evening_prompt(
         dt.date(2026, 7, 2),
         marine_mood="",
