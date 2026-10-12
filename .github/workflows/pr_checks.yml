@@ -140,6 +140,14 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_reconciliation.py
+      - name: KLD H2-B1 canonical state codec regressions (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_state_codec.py
+      - name: KLD H2-B1 GitRef CAS adapter regressions (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_gitref_store.py
       - name: KLD visual regressions (offline)
         run: |
           set -euo pipefail
