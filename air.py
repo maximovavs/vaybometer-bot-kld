@@ -49,6 +49,7 @@ __all__ = (
     "get_kp_observed_3h",
     "get_solar_wind",
     "kp_g_scale",
+    "remember_kp_observed_3h",
     "parse_noaa_kp_estimated_1m",
     "parse_noaa_kp_observed_3h",
 )
@@ -440,11 +441,30 @@ def _load_kp_cache() -> Dict[str, Any]:
 
 def _save_kp_cache(obs: Dict[str, Any]) -> None:
     data = _load_kp_cache() or {"schema": KP_CACHE_SCHEMA}
+    previous = data.get(str(obs["src"]))
+    # Newest observation wins: an older response never replaces a newer record.
+    if isinstance(previous, dict) and isinstance(previous.get("ts"), int) and previous["ts"] > int(obs["ts"]):
+        return
     data[str(obs["src"])] = {"kp": float(obs["kp"]), "ts": int(obs["ts"])}
     try:
         KP_CACHE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         logging.warning("Kp cache write error: %s", e)
+
+
+def remember_kp_observed_3h(obs: Optional[Dict[str, Any]]) -> bool:
+    """
+    Persist a confirmed live observed 3-hour Kp parsed elsewhere (post_common's
+    primary request) into the same provenance-aware cache slot get_kp() uses.
+    Estimates, cache-derived records and malformed values are refused.
+    """
+    if not isinstance(obs, dict) or obs.get("src") != KP_SRC_OBSERVED_3H:
+        return False
+    ts = obs.get("ts")
+    if _finite_kp(obs.get("kp")) is None or not isinstance(ts, int) or isinstance(ts, bool):
+        return False
+    _save_kp_cache(obs)
+    return True
 
 
 def _cached_kp(src: str, *, now_ts: int) -> Optional[Dict[str, Any]]:

@@ -1532,6 +1532,83 @@ def kld_kp_cache_keeps_provenance_and_freshness_bounds() -> None:
         assert air.get_kp_observed_3h() is None
 
 
+
+def kld_kp_primary_success_is_persisted_for_a_later_outage() -> None:
+    # Morning primary request succeeds → the confirmed observation is cached.
+    with _KpWorld(observed_http=_kp_rows((_kp_tag(6), 2.0), (_kp_tag(3), 7.0))) as world:
+        assert post_common._kp_global_swpc() == (7.0, "буря", 180, "swpc_observed_3h")
+        assert world.air_urls == []  # primary success needs no fallback fetch
+        cached = json.loads(air.KP_CACHE.read_text(encoding="utf-8"))
+        assert cached == {"schema": 2, "swpc_observed_3h": {"kp": 7.0, "ts": KP_NOW_TS - 3 * 3600}}
+
+        # Later NOAA is fully down (primary 404, air re-fetch empty): the persisted
+        # confirmed record is reused with its true age and explicit cache provenance.
+        world.observed_http = _http_404()
+        world.responses = {}
+        world.now_ts = KP_NOW_TS + 60 * 60
+        assert post_common._kp_global_swpc() == (7.0, "буря", 240, "air.cache:swpc_observed_3h")
+        assert world.air_urls == [air.KP_OBSERVED_3H_URL]
+
+        # Past the observed freshness bound the same record is rejected, and the
+        # morning post keeps an explicit «н/д» instead of turning calm.
+        world.now_ts = KP_NOW_TS - 3 * 3600 + air.KP_OBSERVED_MAX_AGE_SEC + 60
+        kp, status, age, src = post_common._kp_global_swpc()
+        assert (kp, status, age, src) == (None, "н/д", None, "kp:nodata(swpc/http-404)")
+        chunk, fact = post_common._kp_morning_chunks(kp, status, age)
+        assert (chunk, fact) == ("Кр н/д", "Кр н/д")
+        text = build_morning_format_v2("Калининградская область", _legacy_with_space_line("🧲 Космопогода: " + chunk))
+        assert "Космопогода" not in text and "спокойно" not in text.split("🏙")[0]
+
+
+def kld_kp_primary_cache_write_never_promotes_estimates() -> None:
+    # Only a confirmed live observed-3h record may be remembered.
+    for refused in (
+        None,
+        {"kp": 7.0, "ts": KP_NOW_TS, "src": "swpc_estimated_1m"},
+        {"kp": 7.0, "ts": KP_NOW_TS, "src": "cache:swpc_observed_3h"},
+        {"kp": float("nan"), "ts": KP_NOW_TS, "src": "swpc_observed_3h"},
+        {"kp": 7.0, "ts": "2026-10-10", "src": "swpc_observed_3h"},
+        {"kp": 7.0, "ts": True, "src": "swpc_observed_3h"},
+    ):
+        with _KpWorld():
+            assert air.remember_kp_observed_3h(refused) is False, refused
+            assert not air.KP_CACHE.exists(), refused
+
+    # Primary 404 + live 1-minute estimate: the estimate is cached as an estimate
+    # only, the observed slot stays empty, and the morning value stays «н/д».
+    estimate = [{"time_tag": _kp_tag(0, minutes=-1), "estimated_kp": 7.33}]
+    with _KpWorld(observed_http=_http_404(), responses={air.KP_ESTIMATED_1M_URL: estimate}):
+        assert air.get_kp()[3] == "swpc_estimated_1m"
+        assert post_common._kp_global_swpc() == (None, "н/д", None, "kp:nodata(swpc/http-404)")
+        cached = json.loads(air.KP_CACHE.read_text(encoding="utf-8"))
+        assert "swpc_observed_3h" not in cached
+        assert cached["swpc_estimated_1m"] == {"kp": 7.33, "ts": KP_NOW_TS - 60}
+
+
+def kld_kp_cache_keeps_the_newest_observation_and_survives_write_failure() -> None:
+    newer = {"kp": 7.0, "ts": KP_NOW_TS - 3 * 3600, "src": "swpc_observed_3h"}
+    older = {"kp": 2.0, "ts": KP_NOW_TS - 6 * 3600, "src": "swpc_observed_3h"}
+    with _KpWorld():
+        assert air.remember_kp_observed_3h(newer) is True
+        assert air.remember_kp_observed_3h(older) is True
+        cached = json.loads(air.KP_CACHE.read_text(encoding="utf-8"))
+        assert cached["swpc_observed_3h"] == {"kp": 7.0, "ts": KP_NOW_TS - 3 * 3600}
+
+    # An unwritable cache never costs the morning its valid primary value.
+    with _KpWorld(observed_http=_kp_rows((_kp_tag(3), 6.67))):
+        air.KP_CACHE.mkdir()  # a directory in place of the file: write fails
+        assert post_common._kp_global_swpc() == (6.67, "буря", 180, "swpc_observed_3h")
+
+
+def kld_kp_public_signatures_are_unchanged() -> None:
+    import inspect
+
+    for function in (air.get_kp, post_common._kp_global_swpc, post_common._kp_from_swpc_http):
+        assert not inspect.signature(function).parameters, function.__name__
+    assert "tuple" in str(inspect.signature(air.get_kp).return_annotation).lower()
+    assert "Tuple" in str(inspect.signature(post_common._kp_global_swpc).return_annotation)
+
+
 def _legacy_with_space_line(space_line: str) -> str:
     lines = LEGACY_FIXTURE.splitlines()
     index = next(i for i, line in enumerate(lines) if line.startswith("🧲 Космопогода:"))
@@ -1631,6 +1708,10 @@ def main() -> None:
         kld_kp_cache_keeps_provenance_and_freshness_bounds,
         kld_kp_missing_data_is_never_rendered_as_calm,
         kld_kp_morning_formatting_stays_valid_for_observed_values,
+        kld_kp_primary_success_is_persisted_for_a_later_outage,
+        kld_kp_primary_cache_write_never_promotes_estimates,
+        kld_kp_cache_keeps_the_newest_observation_and_survives_write_failure,
+        kld_kp_public_signatures_are_unchanged,
     )
     for check in checks:
         check()

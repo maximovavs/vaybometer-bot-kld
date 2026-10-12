@@ -47,6 +47,7 @@ from air     import (
     get_kp_observed_3h,
     kp_g_scale,
     parse_noaa_kp_observed_3h,
+    remember_kp_observed_3h,
 )
 from pollen  import get_pollen
 from radiation import get_radiation
@@ -336,6 +337,11 @@ def _kp_from_swpc_http() -> Tuple[Optional[float], Optional[int], str]:
     if obs is None:
         logging.warning("SWPC observed-3h Kp: no valid fresh observation in response")
         return None, None, "swpc/invalid-or-stale"
+    # Keep the confirmed observation for a later NOAA outage (same freshness bound).
+    try:
+        remember_kp_observed_3h(obs)
+    except Exception as e:
+        logging.warning("Kp observed-3h cache write skipped: %s", e)
     return obs["kp"], obs["age_min"], KP_SRC_OBSERVED_3H
 
 def _kp_global_swpc() -> Tuple[Optional[float], str, Optional[int], str]:
