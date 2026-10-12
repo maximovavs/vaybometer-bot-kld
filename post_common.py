@@ -41,6 +41,13 @@ from telegram import Bot, constants
 from utils   import compass, get_fact
 from weather import get_sunrise_sunset, get_visibility_weather, get_weather
 from air     import get_air, get_sst, get_kp, get_solar_wind
+from air     import (
+    KP_OBSERVED_3H_URL,
+    KP_SRC_OBSERVED_3H,
+    get_kp_observed_3h,
+    kp_g_scale,
+    parse_noaa_kp_observed_3h,
+)
 from pollen  import get_pollen
 from radiation import get_radiation
 from earthquakes import build_kld_quake_line, get_recent_earthquakes_kld
@@ -302,7 +309,7 @@ def _looks_gibberish(s: str) -> bool:
         return True
     return False
 
-# ────────────── ЕДИНЫЙ ИСТОЧНИК Kp: SWPC closed 3-hour bar ──────────────
+# ────────────── ЕДИНЫЙ ИСТОЧНИК Kp: NOAA SWPC observed 3-hour bar ──────────────
 def _kp_status_by_value(kp: Optional[float]) -> str:
     if not isinstance(kp, (int, float)):
         return "н/д"
@@ -314,85 +321,68 @@ def _kp_status_by_value(kp: Optional[float]) -> str:
     return "умеренно"
 
 def _kp_from_swpc_http() -> Tuple[Optional[float], Optional[int], str]:
-    url = "https://services.swpc.noaa.gov/json/planetary_k_index.json"
+    """Live NOAA observed 3-hour Kp: (kp, age_min, src). kp is None on any failure."""
+    url = KP_OBSERVED_3H_URL
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        if not data:
-            return None, None, "swpc/http-empty"
-        last = data[-1]
-        kp = float(last.get("kp_index"))
-        t  = str(last.get("time_tag"))
-        dt_utc = pendulum.parse(t, tz="UTC")
-        age_min = int((pendulum.now("UTC") - dt_utc).in_minutes())
-        return kp, age_min, "swpc/http"
+    except urllib.error.HTTPError as e:
+        logging.warning("SWPC observed-3h Kp HTTP %s: %s", e.code, url)
+        return None, None, f"swpc/http-{e.code}"
     except Exception as e:
-        logging.warning("SWPC HTTP Kp failed: %s", e)
+        logging.warning("SWPC observed-3h Kp failed: %s", e)
         return None, None, "swpc/http-fail"
+    obs = parse_noaa_kp_observed_3h(data)
+    if obs is None:
+        logging.warning("SWPC observed-3h Kp: no valid fresh observation in response")
+        return None, None, "swpc/invalid-or-stale"
+    return obs["kp"], obs["age_min"], KP_SRC_OBSERVED_3H
 
 def _kp_global_swpc() -> Tuple[Optional[float], str, Optional[int], str]:
+    """
+    (kp, status, age_min, src) for the confirmed NOAA observed 3-hour Kp only.
+
+    Order: live observed 3-hour → air.get_kp_observed_3h() (live retry, then a
+    cached observed value within the same freshness bound). The 1-minute
+    estimate is never returned here: without a confirmed observation the
+    result is (None, "н/д", None, "kp:nodata(<reason>)").
+    """
     kp, age, src = _kp_from_swpc_http()
-    if isinstance(kp, (int, float)):
-        if isinstance(age, int) and age > 6 * 60:
-            logging.warning("Kp SWPC stale (%s min, src=%s)", age, src)
-        else:
-            k = max(0.0, min(9.0, float(kp)))
-            status = _kp_status_by_value(k)
-            logging.info("Kp SWPC used: %.1f, age=%s min, src=%s", k, age, src)
-            return k, status, age, src or "swpc/http"
+    if kp is not None:
+        status = _kp_status_by_value(kp)
+        logging.info("Kp SWPC used: %.2f (%s), age=%s min, src=%s", kp, kp_g_scale(kp) or "below G1", age, src)
+        return kp, status, age, src
 
-    tup = None
-    src2 = "kp:nodata"
+    primary_src = src
+    try:
+        obs = get_kp_observed_3h()
+    except Exception as e:
+        logging.warning("Kp fallback via air.get_kp_observed_3h() failed: %s", e)
+        obs = None
+    if obs is not None:
+        k = float(obs["kp"])
+        fallback_src = f"air.{obs['src']}"
+        logging.info(
+            "Kp fallback used: %.2f (%s), age=%s min, src=%s (primary=%s)",
+            k, kp_g_scale(k) or "below G1", obs["age_min"], fallback_src, primary_src,
+        )
+        return k, _kp_status_by_value(k), int(obs["age_min"]), fallback_src
 
-    for arg in ("swpc_closed", "global", "swpc"):
-        try:
-            tup = get_kp(source=arg)  # type: ignore[arg-type]
-            src2 = f"air.{arg}"
-            break
-        except TypeError:
-            try:
-                tup = get_kp(arg)  # type: ignore[misc]
-                src2 = f"air.{arg}"
-                break
-            except Exception:
-                tup = None
-        except Exception:
-            tup = None
+    logging.warning("Kp: no confirmed NOAA observed 3-hour value (primary=%s); not shown as calm", primary_src)
+    return None, "н/д", None, f"kp:nodata({primary_src})"
 
-    if tup is None:
-        try:
-            tup = get_kp()
-            src2 = "air.default"
-        except Exception:
-            logging.warning("Kp fallback via air.get_kp() failed")
-            return None, "н/д", None, "kp:nodata"
-
-    kp_val = None
-    ts = None
-    if isinstance(tup, (list, tuple)):
-        if len(tup) > 0 and isinstance(tup[0], (int, float)):
-            kp_val = float(tup[0])
-        if len(tup) > 2 and isinstance(tup[2], (int, float)):
-            ts = int(tup[2])
-
-    age_min: Optional[int] = None
-    if ts is not None:
-        try:
-            age_min = int((pendulum.now("UTC").int_timestamp - ts) / 60)
-        except Exception:
-            age_min = None
-
-    if isinstance(age_min, int) and age_min > 24 * 60:
-        logging.warning("Kp fallback stale (%s min, src=%s)", age_min, src2)
-        return None, "н/д", age_min, f"{src2}-stale"
-
+def _kp_morning_chunks(
+    kp_val: Optional[float],
+    kp_status: str,
+    kp_age_min: Optional[int],
+) -> Tuple[str, str]:
+    """(space-line chunk, «Итого» fact). Missing data stays an explicit «н/д», never calm."""
     if not isinstance(kp_val, (int, float)):
-        return None, "н/д", age_min, src2
-
-    k = max(0.0, min(9.0, float(kp_val)))
-    status = _kp_status_by_value(k)
-    logging.info("Kp fallback used: %.1f, age=%s min, src=%s", k, age_min, src2)
-    return k, status, age_min, src2
+        return "Кр н/д", "Кр н/д"
+    age_txt = ""
+    if isinstance(kp_age_min, int) and kp_age_min >= 0:
+        age_txt = f", 🕓 {kp_age_min // 60}ч назад" if kp_age_min > 180 else f", 🕓 {kp_age_min} мин назад"
+    return f"Кр {kp_val:.1f} ({kp_status}{age_txt})", f"Кр {kp_val:.1f}"
 
 # ────────────────────────── Open-Meteo helpers ──────────────────────────
 def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
@@ -2062,10 +2052,7 @@ def build_message_morning_compact(
 
     # Космопогода (утром показываем по умолчанию)
     kp_val, kp_status, kp_age_min, _kp_src = _kp_global_swpc()
-    age_txt = ""
-    if isinstance(kp_age_min, int):
-        age_txt = f", 🕓 {kp_age_min // 60}ч назад" if kp_age_min > 180 else f", 🕓 {kp_age_min} мин назад"
-    kp_chunk = f"Кр {kp_val:.1f} ({kp_status}{age_txt})" if isinstance(kp_val, (int, float)) else "Кр н/д"
+    kp_chunk, kp_fact = _kp_morning_chunks(kp_val, kp_status, kp_age_min)
 
     sw = get_solar_wind() or {}
     v = sw.get("speed_kms")
@@ -2086,7 +2073,6 @@ def build_message_morning_compact(
     storm_short = storm_short_text(wm_klg, tz_obj)
 
     # (1) Утро: Kp в «Итого» — как факт (… • Кр …), без статуса/аналитики.
-    kp_fact = f"Кр {kp_val:.1f}" if isinstance(kp_val, (int, float)) else "Кр н/д"
     itogo = f"🔎 Итого: воздух {air_emoji_main} • {storm_short} • {kp_fact}"
 
     theme = (

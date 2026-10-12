@@ -1278,6 +1278,295 @@ def kld_workflow_morning_schedule_is_earlier() -> None:
     assert "github.event.schedule == '0 2 * * *'" not in workflow
 
 
+# ───────────── NOAA SWPC observed 3-hour Kp source contract (offline) ─────────────
+import io  # noqa: E402
+import json  # noqa: E402
+import math  # noqa: E402
+import tempfile  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+import air  # noqa: E402
+
+KP_NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+KP_NOW_TS = int(KP_NOW.timestamp())
+
+
+def _kp_tag(hours_ago: float, *, minutes: int = 0) -> str:
+    moment = KP_NOW - timedelta(hours=hours_ago) + timedelta(minutes=minutes)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _kp_rows(*pairs) -> list[dict]:
+    """Current NOAA schema: objects with time_tag (3-hour interval start, UTC) and Kp."""
+    return [{"time_tag": tag, "Kp": kp, "a_running": 7, "station_count": 8} for tag, kp in pairs]
+
+
+class _KpWorld:
+    """Fixed clock, isolated cache file, scripted HTTP for air and post_common. No network."""
+
+    def __init__(self, *, responses: dict | None = None, observed_http=None, now_ts: int = KP_NOW_TS):
+        self.responses = dict(responses or {})
+        self.observed_http = observed_http
+        self.now_ts = now_ts
+        self.air_urls: list[str] = []
+        self.http_urls: list[str] = []
+
+    def __enter__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved = (air._now_ts, air._fetch_kp_data, air.KP_CACHE, urllib.request.urlopen)
+        air._now_ts = lambda: self.now_ts
+        air.KP_CACHE = Path(self._tmp.name) / "kp.json"
+
+        def fake_fetch(url, *args, **kwargs):
+            self.air_urls.append(url)
+            return self.responses.get(url)
+
+        def fake_urlopen(url, *args, **kwargs):
+            self.http_urls.append(url)
+            outcome = self.observed_http
+            if isinstance(outcome, BaseException):
+                raise outcome
+            body = outcome if isinstance(outcome, bytes) else json.dumps(outcome).encode("utf-8")
+            return io.BytesIO(body)
+
+        air._fetch_kp_data = fake_fetch
+        urllib.request.urlopen = fake_urlopen
+        return self
+
+    def __exit__(self, *_exc):
+        air._now_ts, air._fetch_kp_data, air.KP_CACHE, urllib.request.urlopen = self._saved
+        self._tmp.cleanup()
+
+
+def _http_404() -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(air.KP_OBSERVED_3H_URL, 404, "Not Found", hdrs=None, fp=None)
+
+
+def kld_kp_observed_values_are_exact_and_unrounded() -> None:
+    # Matrix 1-4: 0.0, 6.67, 7.0, 8.67 — exact values, G-level from the unrounded value.
+    cases = ((0.0, None, "умеренно"), (6.67, "G2", "буря"), (7.0, "G3", "буря"), (8.67, "G4", "буря"))
+    for value, g_scale, status in cases:
+        rows = _kp_rows((_kp_tag(6), 2.0), (_kp_tag(3), value))
+        obs = air.parse_noaa_kp_observed_3h(rows, now_ts=KP_NOW_TS)
+        assert obs is not None, value
+        assert obs["kp"] == value and obs["src"] == "swpc_observed_3h", obs
+        assert obs["g_scale"] == g_scale, (value, obs["g_scale"])
+        assert obs["age_min"] == 180, obs
+        assert post_common._kp_status_by_value(obs["kp"]) == status
+    boundaries = {4.99: None, 5.0: "G1", 5.99: "G1", 6.0: "G2", 6.99: "G2", 7.99: "G3", 8.0: "G4", 8.99: "G4", 9.0: "G5"}
+    for value, g_scale in boundaries.items():
+        assert air.kp_g_scale(value) == g_scale, (value, air.kp_g_scale(value))
+
+    # Kp 0.0 is a real calm observation end to end, never "missing".
+    with _KpWorld(observed_http=_kp_rows((_kp_tag(3), 0.0))) as world:
+        assert post_common._kp_global_swpc() == (0.0, "умеренно", 180, "swpc_observed_3h")
+        assert world.http_urls == [air.KP_OBSERVED_3H_URL]
+
+
+def kld_kp_rejects_non_finite_and_out_of_range_values() -> None:
+    # Matrix 5.
+    bad_values = (float("nan"), "NaN", float("inf"), "Infinity", float("-inf"), -0.1, 9.01, True, None, "", "abc", [7])
+    for bad in bad_values:
+        assert air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(3), bad)), now_ts=KP_NOW_TS) is None, bad
+    # A newer invalid row never hides an older valid one, and is never clamped.
+    rows = _kp_rows((_kp_tag(3), 2.33), (_kp_tag(0), 12.0), (_kp_tag(0, minutes=-1), float("nan")))
+    obs = air.parse_noaa_kp_observed_3h(rows, now_ts=KP_NOW_TS)
+    assert obs is not None and obs["kp"] == 2.33 and obs["age_min"] == 180
+    assert air._finite_kp("6.67") == 6.67 and air._finite_kp(0) == 0.0
+    assert not math.isnan(air._finite_kp("0.0"))
+
+
+def kld_kp_rejects_missing_or_invalid_timestamps_without_substituting_now() -> None:
+    # Matrix 6.
+    for tag in (None, "", "   ", "not-a-date", 12345, "2026-13-40T99:00:00"):
+        rows = [{"time_tag": tag, "Kp": 7.0}]
+        assert air._parse_noaa_time_tag(tag) is None, tag
+        assert air.parse_noaa_kp_observed_3h(rows, now_ts=KP_NOW_TS) is None, tag
+        # Against the real wall clock too: a parser that substituted "now" for an
+        # unparseable tag would make this row look perfectly fresh.
+        assert air.parse_noaa_kp_observed_3h(rows) is None, tag
+    assert air._parse_noaa_time_tag("2026-10-10T09:00:00") == KP_NOW_TS - 3 * 3600
+    assert air._parse_noaa_time_tag("2026-10-10 09:00:00.000") == KP_NOW_TS - 3 * 3600
+    assert air._parse_noaa_time_tag("2026-10-10T09:00:00Z") == KP_NOW_TS - 3 * 3600
+    assert air._parse_noaa_time_tag("2026-10-10T12:00:00+03:00") == KP_NOW_TS - 3 * 3600
+
+
+def kld_kp_future_timestamp_outside_tolerance_is_rejected() -> None:
+    # Matrix 7: beyond the bounded skew → rejected; inside it → age 0, never negative.
+    assert air.KP_FUTURE_SKEW_SEC == 10 * 60
+    future = _kp_rows((_kp_tag(0, minutes=11), 7.0))
+    assert air.parse_noaa_kp_observed_3h(future, now_ts=KP_NOW_TS) is None
+    rows = _kp_rows((_kp_tag(3), 3.0), (_kp_tag(0, minutes=11), 8.0))
+    obs = air.parse_noaa_kp_observed_3h(rows, now_ts=KP_NOW_TS)
+    assert obs is not None and obs["kp"] == 3.0
+    skewed = air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(0, minutes=5), 7.0)), now_ts=KP_NOW_TS)
+    assert skewed is not None and skewed["age_min"] == 0
+
+
+def kld_kp_stale_observation_is_rejected() -> None:
+    # Matrix 8: two 3-hour intervals plus 30 min publication latency.
+    assert air.KP_OBSERVED_MAX_AGE_SEC == 6 * 3600 + 30 * 60
+    stale = _kp_rows((_kp_tag(6, minutes=-31), 7.0))
+    assert air.parse_noaa_kp_observed_3h(stale, now_ts=KP_NOW_TS) is None
+    fresh = air.parse_noaa_kp_observed_3h(_kp_rows((_kp_tag(6, minutes=-29), 7.0)), now_ts=KP_NOW_TS)
+    assert fresh is not None and fresh["age_min"] == 389
+    with _KpWorld(observed_http=stale):
+        kp, status, age, src = post_common._kp_global_swpc()
+    assert (kp, status, age) == (None, "н/д", None)
+    assert src == "kp:nodata(swpc/invalid-or-stale)"
+
+
+def kld_kp_unsorted_rows_pick_the_newest_timestamp() -> None:
+    # Matrix 9: the newest valid observation wins regardless of array position.
+    rows = _kp_rows((_kp_tag(3), 7.0), (_kp_tag(9), 2.0), (_kp_tag(6), 4.33))
+    obs = air.parse_noaa_kp_observed_3h(rows, now_ts=KP_NOW_TS)
+    assert obs is not None and obs["kp"] == 7.0 and obs["ts"] == KP_NOW_TS - 3 * 3600
+    # Legacy table schema is read by header name, not by last column (station_count).
+    table = [["time_tag", "Kp", "a_running", "station_count"], [_kp_tag(3).replace("T", " "), "6.67", "80", "8"]]
+    legacy = air.parse_noaa_kp_observed_3h(table, now_ts=KP_NOW_TS)
+    assert legacy is not None and legacy["kp"] == 6.67
+
+
+def kld_kp_primary_404_is_reported_and_never_uses_dead_endpoint() -> None:
+    # Matrix 10.
+    source = Path(post_common.__file__).read_text(encoding="utf-8")
+    assert "json/planetary_k_index.json" not in source
+    assert air.KP_OBSERVED_3H_URL == "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+
+    with _KpWorld(observed_http=_http_404()) as world:
+        assert post_common._kp_global_swpc() == (None, "н/д", None, "kp:nodata(swpc/http-404)")
+        assert world.http_urls == [air.KP_OBSERVED_3H_URL]
+        # The air fallback asked for observed data only, never the 1-minute estimate.
+        assert world.air_urls == [air.KP_OBSERVED_3H_URL]
+
+    # Primary 404 but air's own observed fetch succeeds: provenance is kept, not "air.default".
+    with _KpWorld(
+        observed_http=_http_404(),
+        responses={air.KP_OBSERVED_3H_URL: _kp_rows((_kp_tag(3), 7.0))},
+    ):
+        assert post_common._kp_global_swpc() == (7.0, "буря", 180, "air.swpc_observed_3h")
+
+
+def kld_kp_malformed_json_and_wrong_schema_fail_closed() -> None:
+    # Matrix 11.
+    for body, expected_src in (
+        (b"<html>404</html>", "kp:nodata(swpc/http-fail)"),
+        ({"error": "unexpected"}, "kp:nodata(swpc/invalid-or-stale)"),
+        ([], "kp:nodata(swpc/invalid-or-stale)"),
+        ([{"time_tag": _kp_tag(3), "kp_index": 7}], "kp:nodata(swpc/invalid-or-stale)"),
+        ([["time_tag", "a_running"], [_kp_tag(3), "7"]], "kp:nodata(swpc/invalid-or-stale)"),
+        ([["time_tag", "Kp"], "not-a-row"], "kp:nodata(swpc/invalid-or-stale)"),
+    ):
+        with _KpWorld(observed_http=body):
+            result = post_common._kp_global_swpc()
+        assert result == (None, "н/д", None, expected_src), (body, result)
+    for data in (None, "text", 7, {"Kp": 7}, [1, 2, 3]):
+        assert air.parse_noaa_kp_observed_3h(data, now_ts=KP_NOW_TS) is None, data
+
+
+def kld_kp_estimated_1m_is_never_a_confirmed_3h_observation() -> None:
+    # Matrix 12.
+    estimate = [
+        {"time_tag": _kp_tag(0, minutes=-2), "kp_index": 0, "estimated_kp": 0.0},
+        {"time_tag": _kp_tag(0, minutes=-1), "kp_index": 7, "estimated_kp": 7.33},
+    ]
+    obs = air.parse_noaa_kp_estimated_1m(estimate, now_ts=KP_NOW_TS)
+    assert obs is not None and obs["kp"] == 7.33 and obs["src"] == "swpc_estimated_1m"
+    # estimated_kp 0.0 is a value, not a reason to fall through to kp_index.
+    zero = air.parse_noaa_kp_estimated_1m(estimate[:1], now_ts=KP_NOW_TS)
+    assert zero is not None and zero["kp"] == 0.0
+    assert air.parse_noaa_kp_estimated_1m(
+        [{"time_tag": _kp_tag(0, minutes=-31), "estimated_kp": 7.0}], now_ts=KP_NOW_TS
+    ) is None
+
+    responses = {air.KP_OBSERVED_3H_URL: None, air.KP_ESTIMATED_1M_URL: estimate}
+    with _KpWorld(observed_http=_http_404(), responses=responses):
+        # The compatible public tuple still exposes the estimate, clearly labelled...
+        kp, state, ts, src = air.get_kp()
+        assert (kp, state, src) == (7.33, "буря", "swpc_estimated_1m")
+        assert ts == KP_NOW_TS - 60
+        # ...but it never becomes the confirmed observed-3h value the morning post shows.
+        assert air.get_kp_observed_3h() is None
+        assert post_common._kp_global_swpc() == (None, "н/д", None, "kp:nodata(swpc/http-404)")
+
+
+def kld_kp_cache_keeps_provenance_and_freshness_bounds() -> None:
+    # Matrix 13.
+    responses = {air.KP_OBSERVED_3H_URL: _kp_rows((_kp_tag(3), 7.0))}
+    with _KpWorld(responses=responses) as world:
+        assert air.get_kp() == (7.0, "буря", KP_NOW_TS - 3 * 3600, "swpc_observed_3h")
+        cached = json.loads(air.KP_CACHE.read_text(encoding="utf-8"))
+        assert cached == {"schema": 2, "swpc_observed_3h": {"kp": 7.0, "ts": KP_NOW_TS - 3 * 3600}}
+
+        world.responses = {}
+        world.now_ts = KP_NOW_TS + 60 * 60
+        obs = air.get_kp_observed_3h()
+        assert obs is not None and obs["src"] == "cache:swpc_observed_3h"
+        assert obs["kp"] == 7.0 and obs["age_min"] == 240  # true age of the observation
+        world.observed_http = _http_404()
+        assert post_common._kp_global_swpc() == (7.0, "буря", 240, "air.cache:swpc_observed_3h")
+        assert air.get_kp()[3] == "cache:swpc_observed_3h"
+
+        # Past the observed freshness bound the cache is not served.
+        world.now_ts = KP_NOW_TS - 3 * 3600 + air.KP_OBSERVED_MAX_AGE_SEC + 60
+        assert air.get_kp_observed_3h() is None
+        assert air.get_kp() == (None, "н/д", None, "n/d")
+
+    # A cached estimate stays an estimate and never satisfies the observed-only path.
+    estimate = [{"time_tag": _kp_tag(0, minutes=-1), "estimated_kp": 5.67}]
+    with _KpWorld(responses={air.KP_ESTIMATED_1M_URL: estimate}) as world:
+        assert air.get_kp()[3] == "swpc_estimated_1m"
+        world.responses = {}
+        world.now_ts = KP_NOW_TS + 10 * 60
+        assert air.get_kp()[3] == "cache:swpc_estimated_1m"
+        assert air.get_kp_observed_3h() is None
+        world.now_ts = KP_NOW_TS + 31 * 60
+        assert air.get_kp() == (None, "н/д", None, "n/d")
+
+    # Pre-provenance cache files are ignored rather than trusted.
+    with _KpWorld():
+        air.KP_CACHE.write_text(json.dumps({"kp": 1.0, "ts": KP_NOW_TS - 60, "src": "swpc_table"}), encoding="utf-8")
+        assert air.get_kp() == (None, "н/д", None, "n/d")
+        assert air.get_kp_observed_3h() is None
+
+
+def _legacy_with_space_line(space_line: str) -> str:
+    lines = LEGACY_FIXTURE.splitlines()
+    index = next(i for i, line in enumerate(lines) if line.startswith("🧲 Космопогода:"))
+    lines[index] = space_line
+    return "\n".join(lines)
+
+
+def kld_kp_missing_data_is_never_rendered_as_calm() -> None:
+    # Matrix 14.
+    chunk, fact = post_common._kp_morning_chunks(None, "н/д", None)
+    assert (chunk, fact) == ("Кр н/д", "Кр н/д")
+    text = build_morning_format_v2("Калининградская область", _legacy_with_space_line("🧲 Космопогода: " + chunk))
+    assert "🧲" not in text
+    assert "Космопогода" not in text
+    assert "🏙 Калининград" in text
+
+
+def kld_kp_morning_formatting_stays_valid_for_observed_values() -> None:
+    # Matrix 15: real values flow through the unchanged morning FORMAT_V2.
+    chunk, fact = post_common._kp_morning_chunks(0.0, "умеренно", 180)
+    assert (chunk, fact) == ("Кр 0.0 (умеренно, 🕓 180 мин назад)", "Кр 0.0")
+    calm = build_morning_format_v2("Калининградская область", _legacy_with_space_line("🧲 Космопогода: " + chunk))
+    assert "🧲 Космопогода: спокойно, Kp 0.0." in calm
+
+    chunk, fact = post_common._kp_morning_chunks(7.0, post_common._kp_status_by_value(7.0), 240)
+    assert (chunk, fact) == ("Кр 7.0 (буря, 🕓 4ч назад)", "Кр 7.0")
+    storm = build_morning_format_v2("Калининградская область", _legacy_with_space_line("🧲 Космопогода: " + chunk))
+    assert "🧲 Космопогода: возмущённо, Kp 7.0." in storm
+    assert "спокойно, Kp 7.0" not in storm
+    for text in (calm, storm):
+        assert "🏙 Калининград" in text
+        assert "💱 Курсы" in text
+        assert "🌇 Закат сегодня: 21:32" in text
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
@@ -1330,6 +1619,18 @@ def main() -> None:
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,
         kld_daily_keeps_weather_blocks,
+        kld_kp_observed_values_are_exact_and_unrounded,
+        kld_kp_rejects_non_finite_and_out_of_range_values,
+        kld_kp_rejects_missing_or_invalid_timestamps_without_substituting_now,
+        kld_kp_future_timestamp_outside_tolerance_is_rejected,
+        kld_kp_stale_observation_is_rejected,
+        kld_kp_unsorted_rows_pick_the_newest_timestamp,
+        kld_kp_primary_404_is_reported_and_never_uses_dead_endpoint,
+        kld_kp_malformed_json_and_wrong_schema_fail_closed,
+        kld_kp_estimated_1m_is_never_a_confirmed_3h_observation,
+        kld_kp_cache_keeps_provenance_and_freshness_bounds,
+        kld_kp_missing_data_is_never_rendered_as_calm,
+        kld_kp_morning_formatting_stays_valid_for_observed_values,
     )
     for check in checks:
         check()

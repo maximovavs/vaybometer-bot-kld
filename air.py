@@ -12,12 +12,15 @@ air.py
 • get_air(lat, lon)      — {'lvl','aqi','pm25','pm10','src','src_emoji','src_icon'}
 • get_sst(lat, lon)      — Sea Surface Temperature (по ближайшему часу)
 • get_kp()               — (kp, state, ts_unix, src) — индекс Kp с «свежестью»
+• get_kp_observed_3h()   — только подтверждённый NOAA observed 3-hour Kp (или None)
 • get_solar_wind()       — {'bz','bt','speed_kms','density','ts','status','src'}
 
 Особенности:
 - Open-Meteo: берём значения по ближайшему прошедшему часу (UTC).
 - SST: то же правило ближайшего часа.
-- Kp: парсим ПОСЛЕДНЕЕ значение из SWPC; кэш 120 мин, жёсткий максимум 4 ч.
+- Kp: NOAA SWPC observed 3-hour (products/noaa-planetary-k-index.json, поля
+  time_tag/Kp) → оперативная 1-минутная оценка → кэш. Источник всегда помечен:
+  observed 3-hour, estimated 1-minute и cache никогда не смешиваются.
 - Солнечный ветер: SWPC 5-минутные продукты (mag/plasma); кэш 10 мин.
 - Источник AQI возвращаем как:
     'src' ∈ {'iqair','openmeteo','n/d'},
@@ -31,6 +34,7 @@ import time
 import json
 import math
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
 
@@ -38,7 +42,16 @@ import pendulum
 
 from utils import _get  # HTTP-обёртка (_get_retry внутри)
 
-__all__ = ("get_air", "get_sst", "get_kp", "get_solar_wind")
+__all__ = (
+    "get_air",
+    "get_sst",
+    "get_kp",
+    "get_kp_observed_3h",
+    "get_solar_wind",
+    "kp_g_scale",
+    "parse_noaa_kp_estimated_1m",
+    "parse_noaa_kp_observed_3h",
+)
 
 # ───────────────────────── Константы / лог / кеш ─────────────────────────
 
@@ -52,21 +65,36 @@ REQUEST_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "10"))
 CACHE_DIR = Path.home() / ".cache" / "vaybometer"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Kp cache (2 часа TTL, жёсткий максимум — 4 часа)
+# Kp cache: one slot per provenance kind, so an estimate never overwrites
+# (or masquerades as) an observed 3-hour value.
 KP_CACHE = CACHE_DIR / "kp.json"
-KP_TTL_SEC = 120 * 60
-KP_HARD_MAX_AGE_SEC = 4 * 3600
+KP_CACHE_SCHEMA = 2
 
 # Солнечный ветер — кэш 10 мин
 SW_CACHE = CACHE_DIR / "solar_wind.json"
 SW_TTL_SEC = 10 * 60
 
-KP_URLS = [
-    # Табличный эндпоинт (3-часовой Kp)
-    "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
-    # Резервный (минутные/почасовые оценки)
-    "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json",
-]
+# NOAA SWPC planetary K-index.
+# Official 3-hour Kp: a JSON list of {"time_tag", "Kp", ...}; time_tag (UTC) is
+# the START of the 3-hour interval the value describes.
+KP_OBSERVED_3H_URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+# Operational 1-minute estimate: useful as a live hint, never a confirmed
+# 3-hour observation.
+KP_ESTIMATED_1M_URL = "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json"
+KP_URLS = [KP_OBSERVED_3H_URL, KP_ESTIMATED_1M_URL]
+
+KP_SRC_OBSERVED_3H = "swpc_observed_3h"
+KP_SRC_ESTIMATED_1M = "swpc_estimated_1m"
+KP_SRC_CACHE_PREFIX = "cache:"
+
+KP_INTERVAL_SEC = 3 * 3600
+# A closed bar is at most one interval old when it is published. Tolerate one
+# missed publication cycle plus 30 min latency; anything older is stale.
+KP_OBSERVED_MAX_AGE_SEC = 2 * KP_INTERVAL_SEC + 30 * 60
+KP_ESTIMATED_MAX_AGE_SEC = 30 * 60
+# Runner/NOAA clocks may disagree slightly; a timestamp further ahead than this
+# is not a real observation.
+KP_FUTURE_SKEW_SEC = 10 * 60
 
 # 5-минутные продукты DSCOVR/ACE
 SWP_MAG_5M = "https://services.swpc.noaa.gov/products/solar-wind/mag-5-minute.json"
@@ -249,21 +277,192 @@ def get_sst(lat: float, lon: float) -> Optional[float]:
 
 # ───────────────────────── Kp + кеш (TTL 120 мин) ───────────────────
 
-def _load_kp_cache() -> tuple[Optional[float], Optional[int], Optional[str]]:
+def _now_ts() -> int:
+    return int(time.time())
+
+
+def _finite_kp(raw: Any) -> Optional[float]:
+    """A planetary Kp is a finite number in [0, 9]; 0.0 is a valid value, not "missing"."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw.strip().replace(",", ".")) if isinstance(raw, str) else float(raw)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if not math.isfinite(value) or value < 0.0 or value > 9.0:
+        return None
+    return value
+
+
+def _parse_noaa_time_tag(raw: Any) -> Optional[int]:
+    """UTC unix timestamp for a NOAA time_tag; None (never "now") when unparseable."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip().replace(" ", "T")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.astimezone(timezone.utc).timestamp())
+
+
+def kp_g_scale(kp: Any) -> Optional[str]:
+    """NOAA G-scale for an unrounded Kp (G1 from 5, ... G5 at 9); None below storm level."""
+    value = _finite_kp(kp)
+    if value is None or value < 5.0:
+        return None
+    if value >= 9.0:
+        return "G5"
+    if value >= 8.0:
+        return "G4"
+    if value >= 7.0:
+        return "G3"
+    if value >= 6.0:
+        return "G2"
+    return "G1"
+
+
+def _select_kp_observation(
+    candidates: List[Tuple[Any, Any]],
+    *,
+    now_ts: int,
+    max_age_sec: int,
+    src: str,
+) -> tuple[Optional[Dict[str, Any]], Dict[str, int]]:
+    """Newest valid (time_tag, value) by timestamp, never by array position."""
+    rejected = {"invalid_kp": 0, "invalid_time": 0, "future": 0, "stale": 0}
+    best: Optional[tuple[int, float]] = None
+    for raw_time, raw_kp in candidates:
+        ts = _parse_noaa_time_tag(raw_time)
+        if ts is None:
+            rejected["invalid_time"] += 1
+            continue
+        kp = _finite_kp(raw_kp)
+        if kp is None:
+            rejected["invalid_kp"] += 1
+            continue
+        if ts > now_ts + KP_FUTURE_SKEW_SEC:
+            rejected["future"] += 1
+            continue
+        if now_ts - ts > max_age_sec:
+            rejected["stale"] += 1
+            continue
+        if best is None or ts >= best[0]:
+            best = (ts, kp)
+    if best is None:
+        return None, rejected
+    ts, kp = best
+    # Within the skew tolerance a timestamp may sit slightly ahead: that is clock
+    # disagreement, not a negative age.
+    age_min = max(0, (now_ts - ts) // 60)
+    return {"kp": kp, "ts": ts, "age_min": int(age_min), "src": src, "g_scale": kp_g_scale(kp)}, rejected
+
+
+def _log_kp_rejections(src: str, rejected: Dict[str, int]) -> None:
+    if any(rejected.values()):
+        logging.info("Kp %s rows rejected: %s", src, ", ".join(f"{k}={v}" for k, v in rejected.items() if v))
+
+
+def parse_noaa_kp_observed_3h(data: Any, *, now_ts: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """
+    Newest valid official 3-hour Kp from products/noaa-planetary-k-index.json.
+
+    Current schema: [{"time_tag": "2026-10-10T06:00:00", "Kp": 7.0, ...}, ...].
+    The legacy table schema ([["time_tag", "Kp", ...], [...], ...]) is read by
+    header name, never by column position.
+    """
+    now = _now_ts() if now_ts is None else int(now_ts)
+    if not isinstance(data, list) or not data:
+        return None
+    candidates: List[Tuple[Any, Any]] = []
+    if all(isinstance(row, dict) for row in data):
+        candidates = [(row.get("time_tag"), row.get("Kp")) for row in data]
+    elif isinstance(data[0], list):
+        header = [str(name).strip() for name in data[0]]
+        if "time_tag" not in header:
+            return None
+        kp_column = next((name for name in ("Kp", "kp_index") if name in header), None)
+        if kp_column is None:
+            return None
+        time_i, kp_i = header.index("time_tag"), header.index(kp_column)
+        for row in data[1:]:
+            if isinstance(row, list) and len(row) > max(time_i, kp_i):
+                candidates.append((row[time_i], row[kp_i]))
+            else:
+                candidates.append((None, None))
+    else:
+        return None
+    obs, rejected = _select_kp_observation(
+        candidates, now_ts=now, max_age_sec=KP_OBSERVED_MAX_AGE_SEC, src=KP_SRC_OBSERVED_3H
+    )
+    _log_kp_rejections(KP_SRC_OBSERVED_3H, rejected)
+    return obs
+
+
+def parse_noaa_kp_estimated_1m(data: Any, *, now_ts: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Newest valid operational 1-minute estimate (estimated_kp, else kp_index)."""
+    now = _now_ts() if now_ts is None else int(now_ts)
+    if not isinstance(data, list) or not data or not all(isinstance(row, dict) for row in data):
+        return None
+    candidates: List[Tuple[Any, Any]] = []
+    for row in data:
+        raw = row.get("estimated_kp")
+        if _finite_kp(raw) is None:
+            raw = row.get("kp_index")
+        candidates.append((row.get("time_tag"), raw))
+    obs, rejected = _select_kp_observation(
+        candidates, now_ts=now, max_age_sec=KP_ESTIMATED_MAX_AGE_SEC, src=KP_SRC_ESTIMATED_1M
+    )
+    _log_kp_rejections(KP_SRC_ESTIMATED_1M, rejected)
+    return obs
+
+
+_KP_MAX_AGE_BY_SRC = {
+    KP_SRC_OBSERVED_3H: KP_OBSERVED_MAX_AGE_SEC,
+    KP_SRC_ESTIMATED_1M: KP_ESTIMATED_MAX_AGE_SEC,
+}
+
+
+def _load_kp_cache() -> Dict[str, Any]:
     try:
         data = json.loads(KP_CACHE.read_text(encoding="utf-8"))
-        return data.get("kp"), data.get("ts"), data.get("src")
     except Exception:
-        return None, None, None
+        return {}
+    # Pre-schema-2 caches did not record provenance reliably: ignore them.
+    if not isinstance(data, dict) or data.get("schema") != KP_CACHE_SCHEMA:
+        return {}
+    return data
 
-def _save_kp_cache(kp: float, ts: int, src: str) -> None:
+
+def _save_kp_cache(obs: Dict[str, Any]) -> None:
+    data = _load_kp_cache() or {"schema": KP_CACHE_SCHEMA}
+    data[str(obs["src"])] = {"kp": float(obs["kp"]), "ts": int(obs["ts"])}
     try:
-        KP_CACHE.write_text(
-            json.dumps({"kp": kp, "ts": int(ts), "src": src}, ensure_ascii=False),
-            encoding="utf-8"
-        )
+        KP_CACHE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         logging.warning("Kp cache write error: %s", e)
+
+
+def _cached_kp(src: str, *, now_ts: int) -> Optional[Dict[str, Any]]:
+    """A cached value keeps its original kind and its original freshness bound."""
+    entry = _load_kp_cache().get(src)
+    if not isinstance(entry, dict):
+        return None
+    ts = entry.get("ts")
+    if not isinstance(ts, int) or isinstance(ts, bool):
+        return None
+    obs, _rejected = _select_kp_observation(
+        [(datetime.fromtimestamp(ts, timezone.utc).isoformat(), entry.get("kp"))],
+        now_ts=now_ts,
+        max_age_sec=_KP_MAX_AGE_BY_SRC[src],
+        src=KP_SRC_CACHE_PREFIX + src,
+    )
+    return obs
+
 
 def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optional[Any]:
     data = None
@@ -277,88 +476,57 @@ def _fetch_kp_data(url: str, attempts: int = 3, backoff: float = 2.0) -> Optiona
             pass
     return data
 
-def _parse_kp_from_table(data: Any) -> tuple[Optional[float], Optional[int]]:
-    """
-    products/noaa-planetary-k-index.json
-    Формат: [ ["time_tag","kp_index"], ["2025-08-30 09:00:00","2.67"], ... ]
-    Берём последнюю строку и преобразуем время в ts (UTC).
-    """
-    try:
-        if not isinstance(data, list) or len(data) < 2 or not isinstance(data[0], list):
-            return None, None
-        for row in reversed(data[1:]):
-            if not isinstance(row, list) or len(row) < 2:
-                continue
-            tstr = str(row[0]).replace("Z", "").replace("T", " ")
-            val  = float(str(row[-1]).replace(",", "."))
-            try:
-                dt = pendulum.parse(tstr, tz="UTC")  # 'YYYY-MM-DD HH:MM:SS'
-                ts = int(dt.int_timestamp)
-            except Exception:
-                ts = int(time.time())
-            return val, ts
-    except Exception:
-        pass
-    return None, None
-
-def _parse_kp_from_dicts(data: Any) -> tuple[Optional[float], Optional[int]]:
-    """
-    json/planetary_k_index_1m.json
-    Формат: [{time_tag:"2025-08-30T10:27:00Z", kp_index:3.0}, ...]
-    """
-    try:
-        if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-            return None, None
-        for item in reversed(data):
-            raw = item.get("kp_index") or item.get("estimated_kp") or item.get("kp")
-            tstr = item.get("time_tag") or item.get("time_tag_estimated")
-            if raw is None or not tstr:
-                continue
-            val = float(str(raw).replace(",", "."))
-            dt = pendulum.parse(str(tstr).replace(" ", "T"), tz="UTC")
-            return val, int(dt.int_timestamp)
-    except Exception:
-        pass
-    return None, None
 
 def _kp_state(kp: float) -> str:
     if kp < 3.0: return "спокойно"
     if kp < 5.0: return "неспокойно"
     return "буря"
 
+
+def _fetch_kp_observed_3h(now_ts: int) -> Optional[Dict[str, Any]]:
+    obs = parse_noaa_kp_observed_3h(_fetch_kp_data(KP_OBSERVED_3H_URL), now_ts=now_ts)
+    if obs is not None:
+        _save_kp_cache(obs)
+    return obs
+
+
+def get_kp_observed_3h() -> Optional[Dict[str, Any]]:
+    """
+    Confirmed NOAA 3-hour Kp only: live, else a cached observed value within the
+    same freshness bound. Never an estimate. Returns
+    {"kp", "ts", "age_min", "src", "g_scale"} or None.
+    """
+    now_ts = _now_ts()
+    return _fetch_kp_observed_3h(now_ts) or _cached_kp(KP_SRC_OBSERVED_3H, now_ts=now_ts)
+
+
 def get_kp() -> tuple[Optional[float], str, Optional[int], str]:
     """
-    Возвращает (kp_value, state, ts_unix, src_tag)
-    src_tag ∈ {"swpc_table","swpc_1m","cache","n/d"}
+    Возвращает (kp_value, state, ts_unix, src_tag).
+
+    src_tag ∈ {"swpc_observed_3h", "swpc_estimated_1m",
+               "cache:swpc_observed_3h", "cache:swpc_estimated_1m", "n/d"}.
+    Только swpc_observed_3h (в том числе из кэша) — подтверждённое трёхчасовое
+    наблюдение NOAA; оценка 1m и кэш всегда помечены своим источником.
     """
-    now_ts = int(time.time())
+    now_ts = _now_ts()
 
-    # 1) Табличный 3-часовой Kp
-    data = _fetch_kp_data(KP_URLS[0])
-    if data:
-        kp, ts = _parse_kp_from_table(data)
-        if isinstance(kp, (int, float)) and isinstance(ts, int):
-            _save_kp_cache(kp, ts, "swpc_table")
-            return kp, _kp_state(kp), ts, "swpc_table"
+    # 1) Официальный 3-часовой Kp
+    obs = _fetch_kp_observed_3h(now_ts)
 
-    # 2) Резерв — 1m JSON
-    data = _fetch_kp_data(KP_URLS[1])
-    if data:
-        kp, ts = _parse_kp_from_dicts(data)
-        if isinstance(kp, (int, float)) and isinstance(ts, int):
-            _save_kp_cache(kp, ts, "swpc_1m")
-            return kp, _kp_state(kp), ts, "swpc_1m"
+    # 2) Оперативная 1-минутная оценка (явно помечена как оценка)
+    if obs is None:
+        obs = parse_noaa_kp_estimated_1m(_fetch_kp_data(KP_ESTIMATED_1M_URL), now_ts=now_ts)
+        if obs is not None:
+            _save_kp_cache(obs)
 
-    # 3) Кэш, если он не старый
-    c_kp, c_ts, c_src = _load_kp_cache()
-    if isinstance(c_kp, (int, float)) and isinstance(c_ts, int):
-        age = now_ts - c_ts
-        if age <= KP_TTL_SEC:
-            return c_kp, _kp_state(c_kp), c_ts, (c_src or "cache")
-        if age <= KP_HARD_MAX_AGE_SEC:
-            return c_kp, _kp_state(c_kp), c_ts, (c_src or "cache")
+    # 3) Кэш: сначала наблюдение, затем оценка — каждое в своих границах свежести
+    if obs is None:
+        obs = _cached_kp(KP_SRC_OBSERVED_3H, now_ts=now_ts) or _cached_kp(KP_SRC_ESTIMATED_1M, now_ts=now_ts)
 
-    return None, "н/д", None, "n/d"
+    if obs is None:
+        return None, "н/д", None, "n/d"
+    return obs["kp"], _kp_state(obs["kp"]), obs["ts"], obs["src"]
 
 # ───────────────────────── Солнечный ветер (5-мин) ─────────────────
 
