@@ -132,6 +132,10 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_history.py
+      - name: KLD H1 NOAA observed-3h transport regressions (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_noaa_transport.py
       - name: KLD visual regressions (offline)
         run: |
           set -euo pipefail
