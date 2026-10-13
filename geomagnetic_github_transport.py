@@ -147,11 +147,17 @@ class GitHubRESTTransport:
             raise StoreError("wrong Git ref or object type")
         return _sha(p["object"].get("sha"))
 
-    def _get_commit(self, sha: str) -> tuple[str, tuple[str, ...]]:
+    def _get_commit(self, sha: str, *, require_verified: bool = False) -> tuple[str, tuple[str, ...]]:
         sha = _sha(sha)
         _, p = self._call("GET", "/git/commits/" + sha)
         if _sha(p.get("sha")) != sha or type(p.get("tree")) is not dict:
             raise StoreError("unexpected commit identity")
+        if require_verified:
+            verification = p.get("verification")
+            if (type(verification) is not dict
+                    or verification.get("verified") is not True
+                    or verification.get("reason") != "valid"):
+                raise StoreError("created Git commit is not GitHub verified/valid")
         tree = _sha(p["tree"].get("sha"))
         ps = p.get("parents")
         if type(ps) is not list or len(ps) > 1 or any(type(x) is not dict for x in ps):
@@ -229,7 +235,7 @@ class GitHubRESTTransport:
         result_sha = _sha(commit.get("sha"))
         if result_sha == parent_sha:
             raise StoreError("new commit aliases parent")
-        actual_tree, parents = self._get_commit(result_sha)
+        actual_tree, parents = self._get_commit(result_sha, require_verified=True)
         if actual_tree != new_tree or parents != (parent_sha,):
             raise StoreError("created commit ancestry/tree unverified")
         if self._get_blob(self._get_tree_blob_sha(new_tree, path)) != content:
