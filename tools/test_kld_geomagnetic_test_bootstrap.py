@@ -19,7 +19,8 @@ from geomagnetic_github_transport import HTTPResponse, GitHubRESTTransport, _sha
 from geomagnetic_gitref_store import GitRefCASStore, STATE_PATH, STATE_REF_TEST, StoreError, UncertainCommit
 from geomagnetic_reconciliation import GeomagneticState
 from geomagnetic_state_codec import encode_state
-from tools.test_geomagnetic_github_transport import FakeAPI, REPO, blob_sha, body, sha
+from tools.test_geomagnetic_github_transport import (FakeAPI, REPO, KLD_REPO,
+    KLD_REPO_ID, blob_sha, body, sha)
 
 EXPECTED_ID = 4571  # Synthetic immutable repository identity; never a live GitHub ID.
 
@@ -138,6 +139,82 @@ def call(api, *, environment='test', repository_id=EXPECTED_ID, repo_full_name=R
     return bootstrap_test_state(repo_full_name=repo_full_name,
                                 repository_id=repository_id, environment=environment,
                                 requester=api)
+
+
+class SameRepoBootstrapAPI(BootstrapAPI):
+    """Zero-network KLD metadata and URL wrapper for the existing bootstrap fake."""
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.live_calls = []
+        self.metadata_overrides = kwargs
+
+    def __call__(self, method, path, payload):
+        self.live_calls.append((method, path, payload))
+        root = 'repos/' + KLD_REPO
+        assert path == root or path.startswith(root + '/'), path
+        mapped = 'repos/' + REPO + path[len(root):]
+        result = super().__call__(method, mapped, payload)
+        if path == root and result.status == 200:
+            obj = json.loads(result.body)
+            obj.update({'id': KLD_REPO_ID, 'full_name': KLD_REPO, 'private': False})
+            obj.update(self.metadata_overrides)
+            return HTTPResponse(200, body(obj))
+        return result
+
+
+def test_same_repo_orphan_test_bootstrap_and_readback():
+    api = SameRepoBootstrapAPI()
+    result = bootstrap_test_state(repo_full_name=KLD_REPO,
+                                  repository_id=KLD_REPO_ID,
+                                  environment='test', requester=api)
+    assert result.status == 'CONFIRMED'
+    assert result.repository_id == KLD_REPO_ID
+    assert api.create_ref_attempts == 1
+    assert api.commits[result.head_sha][1] == []  # parentless orphan root
+    assert all(path.startswith('repos/' + KLD_REPO) for _, path, _ in api.live_calls)
+    assert not any('/git/ref/heads/main' in path for _, path, _ in api.live_calls)
+    assert not any(method in ('PUT','PATCH','DELETE') for method, _, _ in api.live_calls)
+    with pytest.raises(ExistingTestRef):
+        bootstrap_test_state(repo_full_name=KLD_REPO,
+                             repository_id=KLD_REPO_ID,
+                             environment='test', requester=api)
+    assert api.create_ref_attempts == 1
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'repository_id': KLD_REPO_ID + 1},
+    {'metadata_overrides': {'id': KLD_REPO_ID + 1}},
+    {'metadata_overrides': {'permissions': {'push': False}}},
+    {'metadata_overrides': {'private': True}},
+])
+def test_same_repo_bootstrap_wrong_identity_denied(kwargs):
+    overrides = kwargs.get('metadata_overrides', {})
+    api = SameRepoBootstrapAPI(**overrides)
+    with pytest.raises(StoreError):
+        bootstrap_test_state(repo_full_name=KLD_REPO,
+                             repository_id=kwargs.get('repository_id', KLD_REPO_ID),
+                             environment='test', requester=api)
+    assert not any(method != 'GET' for method, _, _ in api.live_calls)
+
+
+@pytest.mark.parametrize('fault,expected', [
+    ('timeout-before', 'UNCERTAIN'), ('timeout-after', 'CONFIRMED'),
+    ('422-other', 'UNCERTAIN'), ('422-ours', 'CONFIRMED'),
+])
+def test_same_repo_bootstrap_uncertain_ref_no_replay(fault, expected):
+    api = SameRepoBootstrapAPI()
+    api.fault = fault
+    if expected == 'UNCERTAIN':
+        with pytest.raises(UncertainCommit):
+            bootstrap_test_state(repo_full_name=KLD_REPO,
+                                 repository_id=KLD_REPO_ID,
+                                 environment='test', requester=api)
+    else:
+        assert bootstrap_test_state(repo_full_name=KLD_REPO,
+                                    repository_id=KLD_REPO_ID,
+                                    environment='test', requester=api).status == expected
+    assert api.create_ref_attempts == 1
+    assert not any('/git/ref/heads/main' in path for _, path, _ in api.live_calls)
 
 
 def no_prohibited_mutations(api):
