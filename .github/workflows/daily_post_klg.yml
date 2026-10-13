@@ -5,7 +5,9 @@ on:
     # Утренний пост: 07:30 по времени Калининграда
     - cron: '30 7 * * *'
       timezone: 'Europe/Kaliningrad'
-    - cron: '0 14 * * *'
+    # Вечерний пост: 16:00 по времени Калининграда
+    - cron: '0 16 * * *'
+      timezone: 'Europe/Kaliningrad'
     - cron: '0 12 * * *'
       timezone: 'Europe/Kaliningrad'
   workflow_dispatch:
@@ -368,7 +370,7 @@ jobs:
     if: >
       always() &&
       (
-        (github.event_name == 'schedule' && github.event.schedule == '0 14 * * *') ||
+        (github.event_name == 'schedule' && github.event.schedule == '0 16 * * *') ||
         (github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.run_evening))
       )
     env:
