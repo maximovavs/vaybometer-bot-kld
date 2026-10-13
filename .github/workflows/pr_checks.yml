@@ -156,6 +156,10 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py -m pytest -q tools/test_kld_geomagnetic_bootstrap_recovery.py
+      - name: KLD H2-B2-C1 end-to-end geomagnetic integration (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py -m pytest -q tools/test_kld_geomagnetic_e2e.py
       - name: KLD visual regressions (offline)
         run: |
           set -euo pipefail
