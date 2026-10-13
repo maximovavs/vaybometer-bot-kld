@@ -24,6 +24,8 @@ from geomagnetic_github_transport import GitHubRESTTransport, HTTPResponse
 
 REPO = 'maximovavs/private-kld-state'
 BASE = 'a' * 40
+KLD_REPO = 'maximovavs/vaybometer-bot-kld'
+KLD_REPO_ID = 993750565
 
 
 def blob_sha(content: bytes) -> str:
@@ -151,10 +153,95 @@ def prohibit_network(monkeypatch):
     monkeypatch.setattr(socket,'create_connection',fail)
 
 
-@pytest.mark.parametrize('repo',[None,'','maximovavs/vaybometer-bot-kld','MAXIMOVAVS/VAYBOMETER-BOT-KLD',
+@pytest.mark.parametrize('repo',[None,'','MAXIMOVAVS/VAYBOMETER-BOT-KLD',
                                 '/foo','foo/','../repo','foo/..','foo/bar/extra','foo bar/repo'])
 def test_require_explicit_isolated_repo(repo):
     with pytest.raises(StoreError):GitHubRESTTransport(repo_full_name=repo, environment='test', requester=FakeAPI())
+
+
+class SameRepoAPI:
+    """KLD URL-preserving wrapper over the existing no-network GitHub API fake."""
+    def __init__(self, *, repo_id=KLD_REPO_ID, private=False, push=True,
+                 full_name=KLD_REPO, response_status=200):
+        self.delegate = FakeAPI(environment='test')
+        self.calls = []
+        self.repo_id, self.private, self.push = repo_id, private, push
+        self.full_name, self.response_status = full_name, response_status
+
+    def __call__(self, method, path, payload):
+        self.calls.append((method, path, payload))
+        root = 'repos/' + KLD_REPO
+        assert path == root or path.startswith(root + '/'), path
+        if path == root:
+            if self.response_status != 200:
+                return HTTPResponse(self.response_status, body({'message': 'unavailable'}))
+            return HTTPResponse(200, body({
+                'id': self.repo_id, 'full_name': self.full_name,
+                'private': self.private, 'archived': False, 'disabled': False,
+                'default_branch': 'main', 'permissions': {'push': self.push}}))
+        return self.delegate(method, 'repos/' + REPO + path[len(root):], payload)
+
+
+def same_repo_setup(api=None):
+    api = api or SameRepoAPI()
+    adapter = GitHubRESTTransport(repo_full_name=KLD_REPO,
+                                  environment='test', requester=api)
+    return api, adapter, GitRefCASStore(adapter, environment='test')
+
+
+def test_same_repo_test_cas_and_ref_path_guards():
+    api, adapter, store = same_repo_setup()
+    assert store.load_current().state == GeomagneticState()
+    with pytest.raises(StoreError):
+        adapter.read_ref('refs/heads/main')
+    with pytest.raises(StoreError):
+        adapter.update_ref('refs/heads/main', BASE, force=False)
+    with pytest.raises(StoreError):
+        adapter.update_ref(STATE_REF, BASE, force=False)
+    with pytest.raises(StoreError):
+        adapter.create_state_commit(BASE, 'README.md', b'not-state')
+    with pytest.raises(StoreError):
+        adapter.update_ref(STATE_REF_TEST, BASE, force=True)
+    result = store.commit_cas(expected_head_sha=BASE, expected_state_version=0,
+                              new_state=changed_state())
+    assert result.status == 'COMMITTED'
+    assert store.load_current().state == changed_state()
+    writes = [(m, p) for m, p, _ in api.calls if m != 'GET']
+    assert any(m == 'PATCH' for m, _ in writes)
+    assert all(p.startswith('repos/' + KLD_REPO + '/git/') for _, p in writes)
+    assert all(p != 'repos/' + KLD_REPO + '/git/ref/heads/main' for _, p in writes)
+
+
+@pytest.mark.parametrize('metadata', [
+    {'repo_id': KLD_REPO_ID + 1}, {'repo_id': True},
+    {'full_name': 'other/repo'}, {'private': True},
+    {'push': False}, {'response_status': 403}, {'response_status': 404},
+])
+def test_same_repo_wrong_identity_denied_before_writes(metadata):
+    api = SameRepoAPI(**metadata)
+    with pytest.raises((StoreError, UncertainCommit)):
+        same_repo_setup(api)
+    assert len(api.calls) == 1 and api.calls[0][0] == 'GET'
+
+
+def test_same_repo_production_denied_before_io():
+    api = SameRepoAPI()
+    with pytest.raises(StoreError):
+        GitHubRESTTransport(repo_full_name=KLD_REPO,
+                            environment='production', requester=api)
+    assert not api.calls
+
+
+@pytest.mark.parametrize('fault', ['timeout-before','timeout-after',
+                                    'validation-422','forbidden-403'])
+def test_same_repo_uncertain_git_ack_never_retried(fault):
+    api, _, store = same_repo_setup()
+    api.delegate.inject = fault
+    with pytest.raises(UncertainCommit):
+        store.commit_cas(expected_head_sha=BASE, expected_state_version=0,
+                         new_state=changed_state())
+    assert sum(m == 'PATCH' for m, _, _ in api.calls) <= 1
+    assert not any(p.endswith('/git/ref/heads/main') for _, p, _ in api.calls)
 
 @pytest.mark.parametrize('environment',['productionx','',None,'TEST',123])
 def test_environment_allowlist(environment):

@@ -1,8 +1,8 @@
 """Dormant H2-B2-A GitHub Git Database API transport with an injected HTTP client.
 
 No credentials, HTTP stack, socket, default repository, bootstrap, or workflow
-entry point is supplied. The caller must explicitly configure a *different*
-state repository and provide a scoped HTTPS requester after separate approval.
+entry point is supplied. Same-repository access is TEST-only and requires a
+verified immutable KLD repository identity and a scoped HTTPS requester.
 Only the configured environment's branch and one canonical state file are used.
 """
 from __future__ import annotations
@@ -23,6 +23,7 @@ from geomagnetic_gitref_store import (
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _KLD_CODE_REPO = "maximovavs/vaybometer-bot-kld"
+_KLD_CODE_REPO_ID = 993750565  # Immutable GitHub repository ID, fresh-verified in A2.
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
@@ -80,11 +81,13 @@ class GitHubRESTTransport:
 
     def __init__(self, *, repo_full_name: str, environment: str, requester: HTTPRequester):
         if (type(repo_full_name) is not str or _REPO.fullmatch(repo_full_name) is None
-                or repo_full_name.lower() == _KLD_CODE_REPO or any(
-                    part in (".", "..") for part in repo_full_name.split("/"))):
-            raise StoreError("explicit separate state repository required")
+                or any(part in (".", "..") for part in repo_full_name.split("/"))):
+            raise StoreError("invalid explicit state repository")
         if environment not in ("production", "test") or type(environment) is not str:
             raise StoreError("unapproved state namespace")
+        same_repo = repo_full_name.lower() == _KLD_CODE_REPO
+        if same_repo and (repo_full_name != _KLD_CODE_REPO or environment != "test"):
+            raise StoreError("same-repository transport requires canonical KLD TEST namespace")
         if requester is None or not callable(requester):
             raise StoreError("injected HTTP requester required")
         self.repo_full_name = repo_full_name
@@ -93,6 +96,19 @@ class GitHubRESTTransport:
         self.state_path = STATE_PATH
         self._requester = requester
         self._root = f"repos/{repo_full_name}"
+        if same_repo:
+            # Fail closed *before* any Git object or ref mutation. This GET
+            # authenticates the repository identity using the injected requester.
+            _, meta = self._call("GET", "")
+            perms = meta.get("permissions")
+            if (type(meta.get("id")) is not int or meta["id"] != _KLD_CODE_REPO_ID
+                    or meta.get("full_name") != _KLD_CODE_REPO
+                    or meta.get("private") is not False
+                    or meta.get("archived") is not False
+                    or meta.get("disabled") is not False
+                    or meta.get("default_branch") != "main"
+                    or type(perms) is not dict or perms.get("push") is not True):
+                raise StoreError("same-repository TEST identity/write capability unverified")
 
     def _call(self, method: str, endpoint: str, payload: dict[str, Any] | None = None,
               *, allowed: tuple[int, ...] = (200,)) -> tuple[int, dict[str, Any]]:
