@@ -1271,11 +1271,20 @@ def kld_morning_calm_without_source_score_does_not_repeat_label() -> None:
 
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
-    assert "cron: '30 0 * * *'" in workflow
-    assert "github.event.schedule == '30 0 * * *'" in workflow
-    assert "cron: '0 14 * * *'" in workflow
-    assert "cron: '0 8 * * *'" in workflow
-    assert "github.event.schedule == '0 2 * * *'" not in workflow
+    approved = (
+        ("morning", "30 7 * * *", "evening"),
+        ("evening", "0 16 * * *", "noon_fx"),
+        ("noon_fx", "0 12 * * *", None),
+    )
+    assert len(re.findall(r"(?m)^    - cron:", workflow)) == len(approved)
+    for job, cron, next_job in approved:
+        schedule = f"    - cron: '{cron}'\n      timezone: 'Europe/Kaliningrad'"
+        assert workflow.count(schedule) == 1
+        section = workflow.split(f"\n  {job}:\n", 1)[1]
+        if next_job is not None:
+            section = section.split(f"\n  {next_job}:\n", 1)[0]
+        assert f"github.event.schedule == '{cron}'" in section
+        assert workflow.count(f"github.event.schedule == '{cron}'") == 1
 
 
 # ───────────── NOAA SWPC observed 3-hour Kp source contract (offline) ─────────────

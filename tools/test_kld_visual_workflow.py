@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 
@@ -40,6 +41,29 @@ def _load_delivery_restore_module():
     return module
 
 
+def _assert_approved_daily_schedule(workflow: str) -> None:
+    """Keep all scheduled triggers and their job routing consistent with KLD local time."""
+    approved = (
+        ("morning", "30 7 * * *", "evening"),
+        ("evening", "0 16 * * *", "noon_fx"),
+        ("noon_fx", "0 12 * * *", None),
+    )
+    _assert("exactly_three_local_crons", len(re.findall(r"(?m)^    - cron:", workflow)) == len(approved))
+    for job, cron, next_job in approved:
+        key = f"    - cron: '{cron}'\n      timezone: 'Europe/Kaliningrad'"
+        _assert(f"{job}_approved_local_cron", workflow.count(key) == 1)
+        block = workflow.split(f"\n  {job}:\n", 1)
+        _assert(f"{job}_exists", len(block) == 2)
+        section = block[1]
+        if next_job is not None:
+            next_block = section.split(f"\n  {next_job}:\n", 1)
+            _assert(f"{job}_boundary", len(next_block) == 2)
+            section = next_block[0]
+        trigger = f"github.event.schedule == '{cron}'"
+        _assert(f"{job}_matching_trigger", trigger in section)
+        _assert(f"{job}_unique_trigger", workflow.count(trigger) == 1)
+
+
 def test_daily_visual_history_cache() -> None:
     text = _read(DAILY)
     _assert("daily_cache_action", "uses: actions/cache@v4" in text)
@@ -56,9 +80,7 @@ def test_daily_visual_history_cache() -> None:
     _assert("daily_prod_prefix", "kld-visual-history-prod-" in text)
     _assert("daily_test_prefix", "kld-visual-history-test-" in text)
     _assert("daily_namespace_arg", "--history-namespace\", history_namespace" in text)
-    _assert("daily_schedule_morning_unchanged", "cron: '30 0 * * *'" in text)
-    _assert("daily_schedule_evening_unchanged", "cron: '0 14 * * *'" in text)
-    _assert("daily_schedule_fx_unchanged", "cron: '0 8 * * *'" in text)
+    _assert_approved_daily_schedule(text)
     print("PASS daily_visual_history_cache")
 
 
@@ -76,7 +98,7 @@ def test_production_delivery_idempotency_persistence_contract() -> None:
     _assert("delivery_restore_twice", text.count("restore_kld_delivery_snapshot.py") == 2)
     _assert("delivery_snapshot_twice", text.count("Upload KLD delivery snapshot") == 2)
     _assert("workflow_dispatch_preserved", "workflow_dispatch:" in text)
-    _assert("native_crons_preserved", all(item in text for item in ("cron: '30 0 * * *'", "cron: '0 14 * * *'", "cron: '0 8 * * *'")))
+    _assert_approved_daily_schedule(text)
     _assert("production_contract_both_jobs", text.count("production=production_delivery") == 2)
     _assert("delivery_dir_both_jobs", text.count('delivery_dir=os.getenv("KLD_DELIVERY_DIR", ".cache/kld_delivery")') == 2)
     _assert("production_forces_guarded_path", text.count("format_v2 = production_requested or") == 2)
@@ -192,7 +214,7 @@ def test_evening_waits_for_morning_without_losing_dispatch_paths() -> None:
     evening = _block(text, "  evening:", "  noon_fx:")
     _assert("evening_needs_morning", "needs: morning" in evening)
     _assert("evening_always_condition", "always() &&" in evening)
-    _assert("evening_schedule_still_allowed", "github.event.schedule == '0 14 * * *'" in evening)
+    _assert("evening_schedule_still_allowed", "github.event.schedule == '0 16 * * *'" in evening)
     _assert("evening_manual_still_allowed", "github.event.inputs.run_evening" in evening)
     _assert("evening_no_morning_gate", "github.event.inputs.run_morning" not in evening)
     print("PASS evening_waits_for_morning_without_losing_dispatch_paths")
