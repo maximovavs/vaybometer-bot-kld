@@ -1,0 +1,18 @@
+{
+  "schema": "kld-geomagnetic-bootstrap-recovery-golden-v1",
+  "region": "kld",
+  "as_of_utc": "2026-10-12T12:00:00Z",
+  "storm_observation": {"time_tag": "2026-10-12T09:00:00", "Kp": 6.67},
+  "historical_observation": {"time_tag": "2026-10-01T09:00:00", "Kp": 7.0},
+  "initial_snapshots": {
+    "test": {"ref": "refs/heads/state/kld-geomag-test-v1", "sha256": "dc3e014aa28ab6ab581ae374a0a2050deae6b3ab7a03ba18b2fd0bebaf086842"},
+    "production": {"ref": "refs/heads/state/kld-geomag-v1", "sha256": "e953efe391ceee43406a864f3f05a0e5adf4b6ffe2c692c9de814b217cb10184"}
+  },
+  "cases": [
+    "canonical-test-snapshot", "canonical-production-snapshot", "missing-ref-fail-closed",
+    "missing-blob-fail-closed", "corrupted-snapshot-fail-closed", "wrong-namespace-fail-closed",
+    "corrupt-integrity-fail-closed", "historical-replay-suppressed", "two-writers-one-winner",
+    "ambiguous-before-update-readonly", "ambiguous-after-update-readonly", "sent-receipt-immutable",
+    "uncertain-outbox-nonretryable", "version-reset-rejected", "injected-transport-required"
+  ]
+}
