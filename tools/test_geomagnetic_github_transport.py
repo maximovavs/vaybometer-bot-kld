@@ -50,6 +50,7 @@ class FakeAPI:
         self.calls = []
         self.inject = None
         self.patch_count = 0
+        self.commit_verification = {'verified': True, 'reason': 'valid'}
         content = encode_state(GeomagneticState(), environment=environment)
         self.blobs[blob_sha(content)] = content
         tree = sha('tree-initial')
@@ -87,7 +88,11 @@ class FakeAPI:
             ident = endpoint.rsplit('/', 1)[-1]
             if ident not in self.commits:return HTTPResponse(404, body({'message': 'Not Found'}))
             tree, parents = self.commits[ident]
-            return HTTPResponse(200, body({'sha': ident, 'tree': {'sha': tree}, 'parents': [{'sha': x} for x in parents]}))
+            if ident != BASE and self.inject == 'verify-get-503':
+                return HTTPResponse(503, body({'message': 'unavailable'}))
+            return HTTPResponse(200, body({'sha': ident, 'tree': {'sha': tree},
+                                           'parents': [{'sha': x} for x in parents],
+                                           'verification': self.commit_verification}))
         if endpoint.startswith('/git/trees/') and method == 'GET':
             ident = endpoint[len('/git/trees/'):].split('?')[0]
             if ident not in self.trees:return HTTPResponse(404, body({'message': 'Not Found'}))
@@ -210,6 +215,36 @@ def test_same_repo_test_cas_and_ref_path_guards():
     assert any(m == 'PATCH' for m, _ in writes)
     assert all(p.startswith('repos/' + KLD_REPO + '/git/') for _, p in writes)
     assert all(p != 'repos/' + KLD_REPO + '/git/ref/heads/main' for _, p in writes)
+
+
+@pytest.mark.parametrize('verification', [
+    None, {}, [], True, 'valid',
+    {'verified': False, 'reason': 'unsigned'},
+    {'verified': False, 'reason': 'invalid'},
+    {'verified': True, 'reason': 'invalid'},
+    {'verified': True, 'reason': 'unsigned'},
+    {'verified': True},
+    {'verified': 'true', 'reason': 'valid'},
+])
+def test_same_repo_pre_cas_verified_fail_closed(verification):
+    api, _, store = same_repo_setup()
+    api.delegate.commit_verification = verification
+    with pytest.raises(UncertainCommit):
+        store.commit_cas(expected_head_sha=BASE, expected_state_version=0,
+                         new_state=changed_state())
+    assert api.delegate.head == BASE and api.delegate.patch_count == 0
+    writes = [(m, p) for m, p, _ in api.calls if m != 'GET']
+    assert [m for m, _ in writes] == ['POST', 'POST', 'POST']
+    assert not any(m == 'PATCH' for m, _ in writes)
+
+
+def test_same_repo_pre_cas_verification_http_failure_blocks_ref():
+    api, _, store = same_repo_setup()
+    api.delegate.inject = 'verify-get-503'
+    with pytest.raises(UncertainCommit):
+        store.commit_cas(expected_head_sha=BASE, expected_state_version=0,
+                         new_state=changed_state())
+    assert api.delegate.head == BASE and api.delegate.patch_count == 0
 
 
 @pytest.mark.parametrize('metadata', [
