@@ -1272,7 +1272,7 @@ def kld_morning_calm_without_source_score_does_not_repeat_label() -> None:
 def kld_workflow_morning_schedule_is_earlier() -> None:
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     approved = (
-        ("morning", "30 7 * * *", "evening"),
+        ("morning", "0 6 * * *", "evening"),
         ("evening", "0 16 * * *", "noon_fx"),
         ("noon_fx", "0 12 * * *", None),
     )

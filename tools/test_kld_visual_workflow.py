@@ -44,7 +44,7 @@ def _load_delivery_restore_module():
 def _assert_approved_daily_schedule(workflow: str) -> None:
     """Keep all scheduled triggers and their job routing consistent with KLD local time."""
     approved = (
-        ("morning", "30 7 * * *", "evening"),
+        ("morning", "0 6 * * *", "evening"),
         ("evening", "0 16 * * *", "noon_fx"),
         ("noon_fx", "0 12 * * *", None),
     )
