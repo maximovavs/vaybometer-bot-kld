@@ -18,6 +18,15 @@ from geomagnetic_reconciliation import GeomagneticState
 from geomagnetic_state_codec import CodecError, decode_state, encode_state, validate_transition
 
 STATE_REF = "refs/heads/state/kld-geomag-v1"
+STATE_REF_TEST = "refs/heads/state/kld-geomag-test-v1"
+
+
+def state_ref_for_environment(environment: str) -> str:
+    if type(environment) is not str or environment not in ("production", "test"):
+        raise StoreError("invalid state environment")
+    return STATE_REF if environment == "production" else STATE_REF_TEST
+
+
 STATE_PATH = "state/kld-geomagnetic-v1.json"
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -98,10 +107,14 @@ class GitRefCASStore:
             raise StoreError("injected Git transport required")
         self.transport = transport
         self.environment = environment
+        self.state_ref = state_ref_for_environment(environment)
+        # Explicit scoped transports must match the store environment.
+        if hasattr(transport, "state_ref") and transport.state_ref != self.state_ref:
+            raise StoreError("transport and state store environment differ")
 
     def load_current(self) -> VerifiedSnapshot:
         try:
-            head = self.transport.read_ref(STATE_REF)
+            head = self.transport.read_ref(self.state_ref)
         except Exception as exc:
             raise StoreError("Git ref lookup failed; no empty-state fallback") from exc
         if head is None:
@@ -118,7 +131,7 @@ class GitRefCASStore:
         except (CodecError, ValueError, TypeError) as exc:
             raise StoreError("state snapshot invalid; fail closed") from exc
         try:
-            refreshed = self.transport.read_ref(STATE_REF)
+            refreshed = self.transport.read_ref(self.state_ref)
         except Exception as exc:
             raise StoreError("ref freshness check unavailable") from exc
         if refreshed != head:
@@ -147,10 +160,12 @@ class GitRefCASStore:
                 or created.payload_sha256 != hashlib.sha256(payload).hexdigest()):
             raise UncertainCommit("created commit parent or content cannot be authenticated")
         try:
-            self.transport.update_ref(STATE_REF, created.sha, force=False)
+            self.transport.update_ref(self.state_ref, created.sha, force=False)
         except GitRefConflict as exc:
             if type(exc.status) is int and exc.status in (409, 422):
-                raise StaleStore("non-fast-forward CAS conflict") from exc
+                # Only the transport may raise GitRefConflict, after a fresh
+                # read establishes that a competing writer advanced the ref.
+                raise StaleStore("confirmed non-fast-forward CAS conflict") from exc
             raise UncertainCommit("unexpected GitRefConflict status") from exc
         except Exception as exc:
             raise UncertainCommit("Git ref update response ambiguous; never blind retry") from exc
@@ -165,6 +180,6 @@ class GitRefCASStore:
 
 
 __all__ = (
-    "STATE_REF", "STATE_PATH", "StoreError", "MissingState", "StaleStore", "UncertainCommit",
+    "STATE_REF", "STATE_REF_TEST", "state_ref_for_environment", "STATE_PATH", "StoreError", "MissingState", "StaleStore", "UncertainCommit",
     "GitRefConflict", "CreatedCommit", "VerifiedSnapshot", "CommitResult", "GitRefTransport", "GitRefCASStore",
 )

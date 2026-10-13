@@ -14,7 +14,7 @@ from geomagnetic_history import OBSERVED_SOURCE, parse_observed_3h_history
 from geomagnetic_reconciliation import GeomagneticState,reconcile,record_delivery
 from geomagnetic_state_codec import CodecError,encode_state
 from geomagnetic_gitref_store import (GitRefCASStore,GitRefConflict,CreatedCommit,
-    MissingState,StaleStore,StoreError,UncertainCommit,STATE_REF,STATE_PATH)
+    MissingState,StaleStore,StoreError,UncertainCommit,STATE_REF,STATE_REF_TEST,STATE_PATH,state_ref_for_environment)
 T=datetime(2026,10,12,12,tzinfo=timezone.utc)
 START='a'*40
 
@@ -35,7 +35,7 @@ class FakeGit:
         self.fail=None
         self.fault_on_read=None
     def read_ref(self,ref):
-        assert ref==STATE_REF
+        assert ref==STATE_REF_TEST
         self.reads+=1
         if self.fault_on_read == self.reads: raise TimeoutError('read timeout')
         return self.ref
@@ -53,7 +53,7 @@ class FakeGit:
         if self.fail=='wrong_digest':return CreatedCommit(sha,parent_sha,'0'*64)
         return CreatedCommit(sha,parent_sha,hashlib.sha256(content).hexdigest())
     def update_ref(self,ref,new_commit_sha,*,force):
-        assert ref==STATE_REF and force is False
+        assert ref==STATE_REF_TEST and force is False
         self.updates+=1
         if self.fail=='conflict409':raise GitRefConflict(409)
         if self.fail=='conflict422':raise GitRefConflict(422)
@@ -257,3 +257,19 @@ def test_no_real_github_client_or_fs_imports():
         names=[a.name for x in ast.walk(ast.parse(src)) if isinstance(x,ast.Import) for a in x.names]
         names+=[x.module for x in ast.walk(ast.parse(src)) if isinstance(x,ast.ImportFrom)]
         assert not set(names)&{'requests','socket','urllib','http','os','subprocess','pathlib','sqlite3','telegram'}
+
+
+def test_explicit_environment_ref_separation():
+    assert STATE_REF != STATE_REF_TEST
+    assert state_ref_for_environment('production') == STATE_REF
+    assert state_ref_for_environment('test') == STATE_REF_TEST
+    with pytest.raises(StoreError):state_ref_for_environment('wrong')
+
+
+def test_environment_scoped_transport_rejects_mismatch():
+    fake=FakeGit(GeomagneticState())
+    fake.state_ref=STATE_REF
+    with pytest.raises(StoreError, match='environment differ'):
+        GitRefCASStore(fake, environment='test')
+    fake.state_ref=STATE_REF_TEST
+    assert GitRefCASStore(fake, environment='test').load_current().version == 0
