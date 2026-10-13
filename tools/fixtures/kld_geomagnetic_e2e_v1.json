@@ -1,0 +1,16 @@
+{
+  "schema": "kld-geomagnetic-e2e-golden-v1",
+  "as_of_utc": "2026-10-12T12:00:00Z",
+  "recent_start": "2026-10-12T09:00:00",
+  "earlier_start": "2026-10-12T06:00:00",
+  "historical_start": "2026-10-01T09:00:00",
+  "storm_levels": [
+    {"kp": 5.0, "level": "G1"},
+    {"kp": 6.0, "level": "G2"},
+    {"kp": 7.0, "level": "G3"},
+    {"kp": 8.0, "level": "G4"},
+    {"kp": 9.0, "level": "G5"}
+  ],
+  "delivery_message_id": 901,
+  "environment": "test"
+}
