@@ -164,6 +164,10 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py -m pytest -q tools/test_kld_geomagnetic_test_bootstrap.py
+      - name: KLD D4-S3 TEST-only geomagnetic runtime regressions (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_test_runtime.py
       - name: KLD visual regressions (offline)
         run: |
           set -euo pipefail
