@@ -20,12 +20,32 @@ from geomagnetic_gitref_store import (
 )
 from geomagnetic_reconciliation import GeomagneticState
 from geomagnetic_state_codec import encode_state
-from geomagnetic_github_transport import GitHubRESTTransport, HTTPResponse
+from geomagnetic_github_transport import (
+    GitHubRESTTransport, HTTPResponse, GitSigningIdentity,
+    _unsigned_commit_payload, _signing_identity_fields,
+)
 
 REPO = 'maximovavs/private-kld-state'
 BASE = 'a' * 40
 KLD_REPO = 'maximovavs/vaybometer-bot-kld'
 KLD_REPO_ID = 993750565
+
+
+class FakePGPSigner:
+    """Deterministic fake for IO/guard tests; real PGP tested with disposable GPG key."""
+    identity = GitSigningIdentity("KLD Offline Test", "kld-test@example.invalid",
+                                  "2026-10-14T12:00:00Z", "A" * 40)
+    def __init__(self, *, ready=True, invalid=False):
+        self.ready, self.invalid = ready, invalid
+    def identity_confirmed(self):
+        return self.ready
+    def sign_detached(self, payload):
+        import base64 as b64
+        return ("-----BEGIN PGP SIGNATURE-----\n" +
+                b64.b64encode(hashlib.sha256(payload).digest()).decode() +
+                "\n-----END PGP SIGNATURE-----\n")
+    def verify_detached(self, payload, signature):
+        return not self.invalid and self.sign_detached(payload) == signature
 
 
 def blob_sha(content: bytes) -> str:
@@ -51,6 +71,8 @@ class FakeAPI:
         self.inject = None
         self.patch_count = 0
         self.commit_verification = {'verified': True, 'reason': 'valid'}
+        self.signed_payloads = {}
+        self.corrupt_signed_field = None
         content = encode_state(GeomagneticState(), environment=environment)
         self.blobs[blob_sha(content)] = content
         tree = sha('tree-initial')
@@ -90,9 +112,15 @@ class FakeAPI:
             tree, parents = self.commits[ident]
             if ident != BASE and self.inject == 'verify-get-503':
                 return HTTPResponse(503, body({'message': 'unavailable'}))
+            verification = self.commit_verification
+            if ident != BASE and isinstance(verification, dict) and ident in self.signed_payloads:
+                signature, payload_text = self.signed_payloads[ident]
+                verification = dict(verification, signature=signature, payload=payload_text)
+                if self.corrupt_signed_field == 'signature': verification['signature'] = 'wrong'
+                if self.corrupt_signed_field == 'payload': verification['payload'] += 'X'
             return HTTPResponse(200, body({'sha': ident, 'tree': {'sha': tree},
                                            'parents': [{'sha': x} for x in parents],
-                                           'verification': self.commit_verification}))
+                                           'verification': verification}))
         if endpoint.startswith('/git/trees/') and method == 'GET':
             ident = endpoint[len('/git/trees/'):].split('?')[0]
             if ident not in self.trees:return HTTPResponse(404, body({'message': 'Not Found'}))
@@ -131,7 +159,13 @@ class FakeAPI:
             obj = json.loads(payload)
             assert obj['parents'] == [self.head]
             assert obj['tree'] in self.trees
+            assert 'signature' in obj and 'author' in obj and 'committer' in obj
+            _, identity_line = _signing_identity_fields(GitSigningIdentity(
+                obj['author']['name'], obj['author']['email'], obj['author']['date'], 'A' * 40))
+            unsigned = _unsigned_commit_payload(tree_sha=obj['tree'], parent_sha=obj['parents'][0],
+                                                 message=obj['message'], identity_line=identity_line)
             ident = sha('new-commit' + obj['tree'])
+            self.signed_payloads[ident] = (obj['signature'], unsigned.decode('utf-8'))
             self.commits[ident] = (obj['tree'],obj['parents'])
             if self.inject == 'wrong-created-parent':self.commits[ident]=(obj['tree'],['f'*40])
             return HTTPResponse(201,body({'sha':ident}))
@@ -140,7 +174,8 @@ class FakeAPI:
 
 def setup(environment='test'):
     backend = FakeAPI(environment=environment)
-    adapter = GitHubRESTTransport(repo_full_name=REPO, environment=environment, requester=backend)
+    adapter = GitHubRESTTransport(repo_full_name=REPO, environment=environment,
+                                  requester=backend, commit_signer=FakePGPSigner())
     store = GitRefCASStore(adapter, environment=environment)
     return backend, adapter, store
 
@@ -190,7 +225,8 @@ class SameRepoAPI:
 def same_repo_setup(api=None):
     api = api or SameRepoAPI()
     adapter = GitHubRESTTransport(repo_full_name=KLD_REPO,
-                                  environment='test', requester=api)
+                                  environment='test', requester=api,
+                                  commit_signer=FakePGPSigner())
     return api, adapter, GitRefCASStore(adapter, environment='test')
 
 
@@ -395,3 +431,84 @@ def test_no_real_io_stack():
     modules=[x.name for stmt in ast.walk(ast.parse(src)) if isinstance(stmt,ast.Import) for x in stmt.names]
     modules += [stmt.module for stmt in ast.walk(ast.parse(src)) if isinstance(stmt,ast.ImportFrom)]
     assert not set(modules)&{'requests','socket','urllib','http','os','subprocess','sqlite3','telegram'}
+
+
+@pytest.mark.parametrize('signer', [None, FakePGPSigner(ready=False), FakePGPSigner(invalid=True)])
+def test_signing_guard_no_unsigned_commit_or_ref_update(signer):
+    api = SameRepoAPI()
+    adapter = GitHubRESTTransport(repo_full_name=KLD_REPO, environment='test',
+                                  requester=api, commit_signer=signer)
+    store = GitRefCASStore(adapter, environment='test')
+    with pytest.raises((StoreError, UncertainCommit)):
+        store.commit_cas(expected_head_sha=BASE, expected_state_version=0,
+                         new_state=changed_state())
+    assert api.delegate.patch_count == 0
+    assert all(m != 'PATCH' for m, _, _ in api.calls)
+    assert not any(m == 'POST' for m, _, _ in api.calls)
+
+
+@pytest.mark.parametrize('field', ['signature', 'payload'])
+def test_signed_commit_must_match_github_verified_payload_and_signature(field):
+    api = SameRepoAPI()
+    api.delegate.corrupt_signed_field = field
+    _, _, store = same_repo_setup(api)
+    with pytest.raises((StoreError, UncertainCommit)):
+        store.commit_cas(expected_head_sha=BASE, expected_state_version=0,
+                         new_state=changed_state())
+    assert api.delegate.patch_count == 0
+
+
+def test_signed_identity_and_commit_payload_are_pinned_to_parent_and_tree():
+    _, line = _signing_identity_fields(FakePGPSigner.identity)
+    payload = _unsigned_commit_payload(tree_sha='a'*40, parent_sha='b'*40,
+                                       message='Advance isolated KLD geomagnetic state\n', identity_line=line)
+    signer = FakePGPSigner()
+    signature = signer.sign_detached(payload)
+    assert signer.verify_detached(payload, signature)
+    assert not signer.verify_detached(payload.replace(b'parent ' + b'b'*40,
+                                                     b'parent ' + b'c'*40), signature)
+    assert not signer.verify_detached(payload.replace(b'tree ' + b'a'*40,
+                                                     b'tree ' + b'c'*40), signature)
+
+
+def test_commit_signing_identity_cannot_be_forged_or_missing():
+    for identity in (None, GitSigningIdentity('bad\nname', 'kld@example.invalid',
+                      '2026-10-14T12:00:00Z', 'A'*40),
+                     GitSigningIdentity('ok', 'invalid', '2026-10-14T12:00:00Z', 'A'*40)):
+        with pytest.raises(StoreError):_signing_identity_fields(identity)
+
+
+def test_s1_direct_git_post_without_signer_denied_before_io():
+    api = SameRepoAPI()
+    adapter = GitHubRESTTransport(repo_full_name=KLD_REPO, environment='test',
+                                  requester=api, commit_signer=None)
+    with pytest.raises(StoreError):
+        adapter._call('POST', '/git/blobs', {'content': 'AA==', 'encoding': 'base64'}, allowed=(201,))
+    assert not [m for m, _, _ in api.calls if m != 'GET']
+
+
+@pytest.mark.parametrize('verification', [
+    None, {'verified': False, 'reason': 'unsigned'},
+    {'verified': True, 'reason': 'invalid'},
+])
+def test_s9_direct_ref_update_requires_verified_candidate(verification):
+    api, adapter, _ = same_repo_setup()
+    data = encode_state(changed_state(), environment='test')
+    candidate = adapter.create_state_commit(BASE, STATE_PATH, data)
+    api.delegate.commit_verification = verification
+    with pytest.raises(StoreError):
+        adapter.update_ref(STATE_REF_TEST, candidate.sha, force=False)
+    assert api.delegate.patch_count == 0
+    assert not any(m == 'PATCH' for m, _, _ in api.calls)
+
+
+def test_s10_direct_ref_update_must_check_current_head_against_parent():
+    api, adapter, _ = same_repo_setup()
+    data = encode_state(changed_state(), environment='test')
+    candidate = adapter.create_state_commit(BASE, STATE_PATH, data)
+    api.delegate.head = 'f' * 40  # Simulated concurrent writer before CAS.
+    with pytest.raises(GitRefConflict) as error:
+        adapter.update_ref(STATE_REF_TEST, candidate.sha, force=False)
+    assert error.value.status == 409
+    assert api.delegate.patch_count == 0
+    assert not any(m == 'PATCH' for m, _, _ in api.calls)

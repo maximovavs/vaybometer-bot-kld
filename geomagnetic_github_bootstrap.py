@@ -12,7 +12,8 @@ import hashlib
 from typing import Literal
 
 from geomagnetic_github_transport import (
-    GitHubRESTTransport, HTTPRequester, HTTPResponse, _body, _load, _sha, _sha1,
+    GitHubRESTTransport, HTTPRequester, HTTPResponse, GitCommitSigner,
+    _body, _load, _sha, _sha1, _unsigned_commit_payload, _locally_verified_signature,
 )
 from geomagnetic_gitref_store import (
     GitRefCASStore, StoreError, UncertainCommit, STATE_PATH, STATE_REF_TEST,
@@ -68,8 +69,11 @@ def _require_repo_identity(requester: HTTPRequester, root: str,
         raise StoreError("state repository identity or scoped write capability unverified")
 
 
-def _verify_root(transport: GitHubRESTTransport, head: str, canonical: bytes) -> None:
-    tree, parents = transport._get_commit(head)
+def _verify_root(transport: GitHubRESTTransport, head: str, canonical: bytes,
+                 signature: str, payload: str) -> None:
+    tree, parents = transport._get_commit(
+        head, require_verified=True, expected_signature=signature,
+        expected_payload=payload)
     if parents != () or tree != INITIAL_TREE_SHA:
         raise StoreError("initial commit is not a canonical parentless root")
     if transport._get_tree_blob_sha(tree, STATE_PATH) != INITIAL_BLOB_SHA:
@@ -79,13 +83,14 @@ def _verify_root(transport: GitHubRESTTransport, head: str, canonical: bytes) ->
 
 
 def _confirm_ref(transport: GitHubRESTTransport, root_sha: str,
-                 canonical: bytes, repository_id: int) -> BootstrapReceipt:
+                 canonical: bytes, repository_id: int,
+                 signature: str, payload: str) -> BootstrapReceipt:
     # This function never creates objects or modifies a ref, including on 201.
     try:
         head = transport.read_ref(STATE_REF_TEST)
         if head != root_sha:
             raise StoreError("created test ref is missing or points to a different commit")
-        _verify_root(transport, root_sha, canonical)
+        _verify_root(transport, root_sha, canonical, signature, payload)
         snap = GitRefCASStore(transport, environment="test").load_current()
         if (snap.head_sha != root_sha or snap.state != GeomagneticState()
                 or transport.read_snapshot(root_sha, STATE_PATH) != canonical):
@@ -96,7 +101,8 @@ def _confirm_ref(transport: GitHubRESTTransport, root_sha: str,
 
 
 def bootstrap_test_state(*, repo_full_name: str, repository_id: int,
-                         environment: str, requester: HTTPRequester) -> BootstrapReceipt:
+                         environment: str, requester: HTTPRequester,
+                         commit_signer: GitCommitSigner | None = None) -> BootstrapReceipt:
     """One-shot test ref creation; any uncertain outcome ends in a read-only check.
 
     The caller must explicitly authorize every actual invocation. No production
@@ -107,7 +113,8 @@ def bootstrap_test_state(*, repo_full_name: str, repository_id: int,
     if type(repository_id) is not int or repository_id <= 0:
         raise StoreError("expected immutable state repository ID required")
     transport = GitHubRESTTransport(repo_full_name=repo_full_name,
-                                   environment=environment, requester=requester)
+                                   environment=environment, requester=requester,
+                                   commit_signer=commit_signer)
     root = f"repos/{repo_full_name}"
     # A 404 means absent only after this independently authenticated identity
     # and write-permission check. Missing permissions deliberately fail closed.
@@ -121,6 +128,14 @@ def bootstrap_test_state(*, repo_full_name: str, repository_id: int,
             or _sha1("blob", canonical) != INITIAL_BLOB_SHA
             or decode_state(canonical, expected_environment="test") != GeomagneticState()):
         raise StoreError("initial snapshot does not match pinned canonical identity")
+    # One-shot root uses the same explicit PGP signing contract as CAS.
+    # Preflight identity and actual detached signature BEFORE any object POST.
+    signer, identity, identity_line = transport._ready_signer()
+    message = "Initialize isolated KLD geomagnetic TEST state\n"
+    unsigned = _unsigned_commit_payload(
+        tree_sha=INITIAL_TREE_SHA, parent_sha=None, message=message,
+        identity_line=identity_line)
+    signature = _locally_verified_signature(signer, unsigned)
 
     blob = _exchange(requester, "POST", root + "/git/blobs", {
         "content": base64.b64encode(canonical).decode("ascii"), "encoding": "base64"})
@@ -137,12 +152,12 @@ def bootstrap_test_state(*, repo_full_name: str, repository_id: int,
         raise StoreError("Git root tree read-back invalid; no ref write")
 
     commit_resp = _exchange(requester, "POST", root + "/git/commits", {
-        "message": "Initialize isolated KLD geomagnetic TEST state",
-        "tree": INITIAL_TREE_SHA, "parents": []})
+        "message": message, "tree": INITIAL_TREE_SHA, "parents": [],
+        "author": identity, "committer": identity, "signature": signature})
     if commit_resp.status != 201:
         raise StoreError("initial root commit creation unverified; no ref write")
     root_sha = _sha(_load(commit_resp.body).get("sha"))
-    _verify_root(transport, root_sha, canonical)
+    _verify_root(transport, root_sha, canonical, signature, unsigned.decode("utf-8"))
 
     # Exactly one CREATE ref call. ANY acknowledgement, including timeout, 422,
     # 201, or malformed response, is followed ONLY by independent GET/read-back.
@@ -153,7 +168,8 @@ def bootstrap_test_state(*, repo_full_name: str, repository_id: int,
             "ref": STATE_REF_TEST, "sha": root_sha})
     except UncertainCommit:
         pass
-    verified = _confirm_ref(transport, root_sha, canonical, repository_id)
+    verified = _confirm_ref(transport, root_sha, canonical, repository_id,
+                            signature, unsigned.decode("utf-8"))
     # An explicit permission/server rejection is not an accepted CREATE result,
     # even when independent reads observe the expected ref. A lost response is
     # distinguishable from an explicit HTTP error; neither is ever retried.

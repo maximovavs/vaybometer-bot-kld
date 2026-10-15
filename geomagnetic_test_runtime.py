@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
-from geomagnetic_github_transport import GitHubRESTTransport, HTTPRequester
+from geomagnetic_github_transport import GitHubRESTTransport, HTTPRequester, GitCommitSigner
 from geomagnetic_gitref_store import GitRefCASStore, UncertainCommit
 from geomagnetic_noaa_transport import NOAAResponse, load_observed_3h_history
 from geomagnetic_reconciliation import reconcile
@@ -33,6 +33,7 @@ def run_test_once(
     clock: Callable[[], datetime],
     noaa_transport: Callable[..., NOAAResponse],
     github_requester: HTTPRequester,
+    commit_signer: GitCommitSigner | None = None,
 ) -> TestRunReceipt:
     """Reconcile one validated NOAA response into TEST state, with read-back.
 
@@ -45,6 +46,7 @@ def run_test_once(
     def new_store() -> GitRefCASStore:
         transport = GitHubRESTTransport(
             repo_full_name=_KLD_REPO, environment="test", requester=github_requester,
+            commit_signer=commit_signer,
         )
         return GitRefCASStore(transport, environment="test")
 

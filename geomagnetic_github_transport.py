@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -35,6 +36,69 @@ class HTTPResponse:
 
 class HTTPRequester(Protocol):
     def __call__(self, method: str, path: str, body: bytes | None) -> HTTPResponse: ...
+
+
+@dataclass(frozen=True, slots=True)
+class GitSigningIdentity:
+    """Explicit PGP key identity; never contains private-key material."""
+    name: str
+    email: str
+    utc_date: str
+    fingerprint: str
+
+
+class GitCommitSigner(Protocol):
+    """Injected real OpenPGP implementation; no default keyring or subprocess."""
+    identity: GitSigningIdentity
+
+    def identity_confirmed(self) -> bool: ...
+    def sign_detached(self, payload: bytes) -> str: ...
+    def verify_detached(self, payload: bytes, signature: str) -> bool: ...
+
+
+def _signing_identity_fields(value: object) -> tuple[dict[str, str], bytes]:
+    if not isinstance(value, GitSigningIdentity):
+        raise StoreError("explicit Git PGP signing identity required")
+    name, email, stamp, fingerprint = value.name, value.email, value.utc_date, value.fingerprint
+    if (type(name) is not str or not name or len(name) > 128
+            or any(c in name for c in "\r\n<>\0")
+            or type(email) is not str or re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", email) is None
+            or type(fingerprint) is not str or re.fullmatch(r"(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})", fingerprint) is None
+            or type(stamp) is not str or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", stamp) is None):
+        raise StoreError("untrusted Git PGP identity or UTC commit timestamp")
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if when.tzinfo != timezone.utc or when.year < 2000:
+            raise ValueError("non UTC or ancient signing time")
+        seconds = int(when.timestamp())
+    except (ValueError, OverflowError, OSError) as exc:
+        raise StoreError("invalid Git signing timestamp") from exc
+    return ({"name": name, "email": email, "date": stamp},
+            f"{name} <{email}> {seconds} +0000".encode("utf-8"))
+
+
+def _unsigned_commit_payload(*, tree_sha: str, parent_sha: str | None,
+                             message: str, identity_line: bytes) -> bytes:
+    # Exactly the bytes GitHub must report in verification.payload (no gpgsig).
+    if type(message) is not str or not message.endswith("\n") or "\0" in message:
+        raise StoreError("invalid canonical Git commit message")
+    parent = f"parent {_sha(parent_sha)}\n" if parent_sha is not None else ""
+    return (f"tree {_sha(tree_sha)}\n{parent}".encode("ascii")
+            + b"author " + identity_line + b"\ncommitter " + identity_line
+            + b"\n\n" + message.encode("utf-8"))
+
+
+def _locally_verified_signature(signer: GitCommitSigner, unsigned: bytes) -> str:
+    try:
+        signature = signer.sign_detached(unsigned)
+        confirmed = signer.verify_detached(unsigned, signature)
+    except Exception as exc:
+        raise StoreError("local detached PGP signing or verification failed") from exc
+    if (type(signature) is not str or not signature.startswith("-----BEGIN PGP SIGNATURE-----\n")
+            or "-----END PGP SIGNATURE-----" not in signature or confirmed is not True):
+        raise StoreError("detached PGP signature missing or invalid")
+    return signature
+
 
 
 def _sha(value: Any) -> str:
@@ -79,7 +143,8 @@ class GitHubRESTTransport:
     that another writer advanced the head. Otherwise the outcome is uncertain.
     """
 
-    def __init__(self, *, repo_full_name: str, environment: str, requester: HTTPRequester):
+    def __init__(self, *, repo_full_name: str, environment: str, requester: HTTPRequester,
+                 commit_signer: GitCommitSigner | None = None):
         if (type(repo_full_name) is not str or _REPO.fullmatch(repo_full_name) is None
                 or any(part in (".", "..") for part in repo_full_name.split("/"))):
             raise StoreError("invalid explicit state repository")
@@ -96,6 +161,7 @@ class GitHubRESTTransport:
         self.state_path = STATE_PATH
         self._requester = requester
         self._root = f"repos/{repo_full_name}"
+        self._commit_signer = commit_signer
         if same_repo:
             # Fail closed *before* any Git object or ref mutation. This GET
             # authenticates the repository identity using the injected requester.
@@ -110,8 +176,23 @@ class GitHubRESTTransport:
                     or type(perms) is not dict or perms.get("push") is not True):
                 raise StoreError("same-repository TEST identity/write capability unverified")
 
+    def _ready_signer(self) -> tuple[GitCommitSigner, dict[str, str], bytes]:
+        signer = self._commit_signer
+        if signer is None:
+            raise StoreError("signed Git state commit requires explicit PGP signer")
+        identity, identity_line = _signing_identity_fields(getattr(signer, "identity", None))
+        try:
+            ready = signer.identity_confirmed()
+        except Exception as exc:
+            raise StoreError("PGP signing identity preflight unavailable") from exc
+        if ready is not True:
+            raise StoreError("PGP signing identity not independently confirmed")
+        return signer, identity, identity_line
+
     def _call(self, method: str, endpoint: str, payload: dict[str, Any] | None = None,
               *, allowed: tuple[int, ...] = (200,)) -> tuple[int, dict[str, Any]]:
+        if method in ("POST", "PATCH"):
+            self._ready_signer()  # Never write without a preflighted identity.
         path = self._root + endpoint
         try:
             response = self._requester(method, path, None if payload is None else _body(payload))
@@ -147,7 +228,9 @@ class GitHubRESTTransport:
             raise StoreError("wrong Git ref or object type")
         return _sha(p["object"].get("sha"))
 
-    def _get_commit(self, sha: str, *, require_verified: bool = False) -> tuple[str, tuple[str, ...]]:
+    def _get_commit(self, sha: str, *, require_verified: bool = False,
+                    expected_signature: str | None = None,
+                    expected_payload: str | None = None) -> tuple[str, tuple[str, ...]]:
         sha = _sha(sha)
         _, p = self._call("GET", "/git/commits/" + sha)
         if _sha(p.get("sha")) != sha or type(p.get("tree")) is not dict:
@@ -158,6 +241,10 @@ class GitHubRESTTransport:
                     or verification.get("verified") is not True
                     or verification.get("reason") != "valid"):
                 raise StoreError("created Git commit is not GitHub verified/valid")
+            if expected_signature is not None and verification.get("signature") != expected_signature:
+                raise StoreError("GitHub commit signature differs from locally verified PGP")
+            if expected_payload is not None and verification.get("payload") != expected_payload:
+                raise StoreError("GitHub signed commit payload differs from canonical bytes")
         tree = _sha(p["tree"].get("sha"))
         ps = p.get("parents")
         if type(ps) is not list or len(ps) > 1 or any(type(x) is not dict for x in ps):
@@ -218,9 +305,16 @@ class GitHubRESTTransport:
         parent_sha = _sha(parent_sha)
         if path != self.state_path or type(content) is not bytes or not content:
             raise StoreError("invalid state write path/payload")
+        # Preflight strictly before ANY GitHub object POST or ref PATCH.
+        signer, identity, identity_line = self._ready_signer()
         # Independently pin and verify the predecessor's expected state tree.
         predecessor_tree, _ = self._get_commit(parent_sha)
         self._get_blob(self._get_tree_blob_sha(predecessor_tree, path))
+        # Prove local key readiness before ANY blob/tree/commit POST.
+        proof_payload = _unsigned_commit_payload(
+            tree_sha=predecessor_tree, parent_sha=parent_sha,
+            message="Advance isolated KLD geomagnetic state\n", identity_line=identity_line)
+        _locally_verified_signature(signer, proof_payload)
         blob_sha = _sha1("blob", content)
         _, blob = self._call("POST", "/git/blobs", {"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"}, allowed=(201,))
         if _sha(blob.get("sha")) != blob_sha:
@@ -230,12 +324,20 @@ class GitHubRESTTransport:
         new_tree = _sha(tree.get("sha"))
         if new_tree == predecessor_tree or self._get_tree_blob_sha(new_tree, path) != blob_sha:
             raise StoreError("created state tree not verified")
-        _, commit = self._call("POST", "/git/commits", {"message": "Advance isolated KLD geomagnetic state",
-            "tree": new_tree, "parents": [parent_sha]}, allowed=(201,))
+        message = "Advance isolated KLD geomagnetic state\n"
+        unsigned = _unsigned_commit_payload(tree_sha=new_tree, parent_sha=parent_sha,
+                                            message=message, identity_line=identity_line)
+        signature = _locally_verified_signature(signer, unsigned)
+        _, commit = self._call("POST", "/git/commits", {
+            "message": message, "tree": new_tree, "parents": [parent_sha],
+            "author": identity, "committer": identity, "signature": signature,
+        }, allowed=(201,))
         result_sha = _sha(commit.get("sha"))
         if result_sha == parent_sha:
             raise StoreError("new commit aliases parent")
-        actual_tree, parents = self._get_commit(result_sha, require_verified=True)
+        actual_tree, parents = self._get_commit(
+            result_sha, require_verified=True, expected_signature=signature,
+            expected_payload=unsigned.decode("utf-8"))
         if actual_tree != new_tree or parents != (parent_sha,):
             raise StoreError("created commit ancestry/tree unverified")
         if self._get_blob(self._get_tree_blob_sha(new_tree, path)) != content:
@@ -246,8 +348,9 @@ class GitHubRESTTransport:
         endpoint = self._ref_endpoint(ref)
         if force is not False:
             raise StoreError("force or invalid force argument forbidden")
+        self._ready_signer()  # Direct ref updates without signing identity are forbidden.
         new_commit_sha = _sha(new_commit_sha)
-        new_tree, parents = self._get_commit(new_commit_sha)
+        new_tree, parents = self._get_commit(new_commit_sha, require_verified=True)
         if len(parents) != 1 or self._get_tree_blob_sha(new_tree, self.state_path) is None:
             raise StoreError("updated head must have single parent and state file")
         predecessor = parents[0]
@@ -278,4 +381,5 @@ class GitHubRESTTransport:
             raise UncertainCommit("GitHub response confirmed wrong ref/commit")
 
 
-__all__ = ("HTTPResponse", "HTTPRequester", "GitHubRESTTransport")
+__all__ = ("HTTPResponse", "HTTPRequester", "GitHubRESTTransport",
+           "GitSigningIdentity", "GitCommitSigner", "_unsigned_commit_payload")
