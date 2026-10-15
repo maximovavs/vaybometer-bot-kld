@@ -390,6 +390,28 @@ def _kp_morning_chunks(
         age_txt = f", 🕓 {kp_age_min // 60}ч назад" if kp_age_min > 180 else f", 🕓 {kp_age_min} мин назад"
     return f"Кр {kp_val:.1f} ({kp_status}{age_txt})", f"Кр {kp_val:.1f}"
 
+# The 24h observation is separate from the *current* Kp. Fail closed on NOAA errors.
+def _kld_geomag_24h_peak_line(*, clock=None, transport=None) -> str:
+    from geomagnetic_history import rolling_24h_peak
+    from geomagnetic_noaa_transport import load_observed_3h_history
+
+    try:
+        utc_clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        peak = rolling_24h_peak(load_observed_3h_history(clock=utc_clock, transport=transport))
+        coverage = f"{peak.coverage} ({peak.observed_count}/{peak.expected_count})"
+        if peak.peak_kp_raw is None or peak.peak_interval_start_utc is None:
+            return f"🛰 Пик Kp за 24 ч: н/д • полнота {coverage}."
+        begin = peak.peak_interval_start_utc
+        end = begin + dt.timedelta(hours=3)
+        interval = f"{begin:%d.%m %H:%M}–{end:%d.%m %H:%M} UTC"
+        scale = peak.peak_g_level or "ниже G1"
+        qualifier = " • максимум среди доступных наблюдений" if peak.coverage != "COMPLETE" else ""
+        return (f"🛰 Пик Kp за 24 ч: {peak.peak_kp_raw} ({scale})"
+                f" • {interval} • полнота {coverage}{qualifier}.")
+    except Exception:
+        logging.warning("KLD 24h Kp peak unavailable; report UNKNOWN", exc_info=True)
+        return "🛰 Пик Kp за 24 ч: н/д • полнота UNKNOWN (NOAA недоступен)."
+
 # ────────────────────────── Open-Meteo helpers ──────────────────────────
 def _hourly_times(wm: Dict[str, Any]) -> List[pendulum.DateTime]:
     hourly = wm.get("hourly") or {}
@@ -2109,6 +2131,9 @@ def build_message_morning_compact(
     P.append(build_astro_section(date_local=date_local, tz_local=tz_obj.name))
     if SHOW_SPACE:
         P.append(space_line)
+        # No network or display change unless separately activated.
+        if os.getenv("KLD_GEOMAG_24H_PEAK_ENABLED", "0") == "1":
+            P.append(_kld_geomag_24h_peak_line())
     if storm_line_alert:
         P.append(storm_line_alert)
     sc_block_parts = [x for x in (sc_line, official_rad) if x]

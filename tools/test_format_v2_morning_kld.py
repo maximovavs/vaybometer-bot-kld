@@ -1653,6 +1653,72 @@ def kld_kp_morning_formatting_stays_valid_for_observed_values() -> None:
         assert "🌇 Закат сегодня: 21:32" in text
 
 
+def _kld_peak_test_rows(values):
+    moment = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+    return [{"time_tag": (moment - timedelta(hours=(8 - i) * 3)).strftime("%Y-%m-%dT%H:%M:%S"),
+             "Kp": value} for i, value in enumerate(values)]
+
+
+def _kld_peak_test_line(rows, *, error=None):
+    from geomagnetic_noaa_transport import NOAAResponse, NOAA_OBSERVED_3H_URL
+
+    now = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+    def fake_transport(url, **_kwargs):
+        assert url == NOAA_OBSERVED_3H_URL
+        if error is not None:
+            raise error
+        return NOAAResponse(status=200, final_url=url, body=json.dumps(rows).encode("utf-8"))
+
+    return post_common._kld_geomag_24h_peak_line(clock=lambda: now, transport=fake_transport)
+
+
+def kld_peak_24h_keeps_g3_after_current_calm() -> None:
+    rows = _kld_peak_test_rows([1.0, 2.0, 7.33, 2.0, 1.0, 1.0, 1.0, 1.0])
+    peak = _kld_peak_test_line(rows)
+    assert "7.33 (G3)" in peak and "COMPLETE (8/8)" in peak and "UTC" in peak
+    fixture = _legacy_with_space_line("🧲 Космопогода: Кр 1.0 (умеренно)")
+    fixture = fixture.replace("🧲 Космопогода: Кр 1.0 (умеренно)",
+                              "🧲 Космопогода: Кр 1.0 (умеренно)\n" + peak)
+    v2 = build_morning_format_v2("Калининградская область", fixture)
+    final = _apply_format_v2_safe_postprocess(v2, fixture, fixture, "morning")
+    assert final.count("🛰 Пик Kp за 24 ч:") == 1
+    assert "7.33 (G3)" in final and "Kp 1.0" in final
+    assert "Kp 7.3." not in final
+
+
+def kld_peak_24h_partial_has_explicit_uncertainty() -> None:
+    line = _kld_peak_test_line(_kld_peak_test_rows([1.0, 6.67, 1.0, 1.0, 1.0, 1.0, 1.0]))
+    assert "6.67 (G2)" in line and "PARTIAL (7/8)" in line
+    assert "максимум среди доступных" in line
+
+
+def kld_peak_24h_unknown_and_stale_are_not_calm() -> None:
+    for rows in ([], [{"time_tag": "2026-10-08T00:00:00", "Kp": 2.0}]):
+        line = _kld_peak_test_line(rows)
+        assert "н/д" in line and "UNKNOWN" in line
+        assert "спокойно" not in line and "ниже G1" not in line
+
+
+def kld_peak_24h_conflicts_do_not_invent_severity() -> None:
+    rows = _kld_peak_test_rows([1.0] * 8)
+    rows += [{**rows[3], "Kp": 8.99}]
+    line = _kld_peak_test_line(rows)
+    assert "PARTIAL (7/8)" in line and "1.0 (ниже G1)" in line
+    assert "G4" not in line
+
+
+def kld_peak_24h_noaa_failure_fails_closed() -> None:
+    line = _kld_peak_test_line([], error=OSError("offline NOAA unavailable"))
+    assert "UNKNOWN" in line and "н/д" in line and "спокойно" not in line
+
+
+def kld_peak_24h_g_boundaries_are_unrounded() -> None:
+    for value, grade in [(4.99, "ниже G1"), (5.0, "G1"), (6.0, "G2"),
+                         (7.0, "G3"), (8.0, "G4"), (9.0, "G5")]:
+        line = _kld_peak_test_line(_kld_peak_test_rows([value] + [1.0] * 7))
+        assert f"{value} ({grade})" in line, line
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
@@ -1721,6 +1787,12 @@ def main() -> None:
         kld_kp_primary_cache_write_never_promotes_estimates,
         kld_kp_cache_keeps_the_newest_observation_and_survives_write_failure,
         kld_kp_public_signatures_are_unchanged,
+        kld_peak_24h_keeps_g3_after_current_calm,
+        kld_peak_24h_partial_has_explicit_uncertainty,
+        kld_peak_24h_unknown_and_stale_are_not_calm,
+        kld_peak_24h_conflicts_do_not_invent_severity,
+        kld_peak_24h_noaa_failure_fails_closed,
+        kld_peak_24h_g_boundaries_are_unrounded,
     )
     for check in checks:
         check()
