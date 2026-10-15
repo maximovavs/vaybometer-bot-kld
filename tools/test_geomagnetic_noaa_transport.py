@@ -262,5 +262,110 @@ def test_default_transport_redirect_policy_is_fail_closed(monkeypatch):
     assert records[0].redirect_request(None, None, 302, "Moved", {}, "https://evil.invalid", "https://evil.invalid") is None
 
 
+def _peak_real_pendulum_rows(as_of_utc, kp_values):
+    """NOAA-style observed 3h bars ending at the latest completed UTC slot."""
+    last_end = as_of_utc.replace(
+        hour=(as_of_utc.hour // 3) * 3, minute=0, second=0, microsecond=0,
+    )
+    return [
+        {"time_tag": (last_end - timedelta(hours=24 - 3 * index)).strftime("%Y-%m-%dT%H:%M:%S"),
+         "Kp": kp}
+        for index, kp in enumerate(kp_values)
+    ]
+
+
+def test_kld_peak_real_pendulum_live_clock(monkeypatch):
+    """Pendulum 3 object must become a stdlib aware UTC datetime, not UNKNOWN."""
+    import pendulum
+    import post_common
+    import geomagnetic_noaa_transport as noaa
+
+    pinned = pendulum.datetime(2026, 10, 12, 12, 45, tz="UTC")
+    monkeypatch.setattr(pendulum, "now", lambda zone=None: pinned.in_tz(zone) if zone else pinned)
+    transport, calls = fake(_peak_real_pendulum_rows(T, [1, 7.33] + [1] * 6))
+    actual_loader = noaa.load_observed_3h_history
+
+    def inspect_clock(*, clock, transport):
+        now = clock()
+        assert type(now) is datetime and now.tzinfo is not None
+        assert now.utcoffset() == timedelta(0) and now == T.replace(minute=45)
+        return actual_loader(clock=lambda: now, transport=transport)
+
+    monkeypatch.setattr(noaa, "load_observed_3h_history", inspect_clock)
+    result = post_common._kld_geomag_24h_peak_line(transport=transport)
+    assert "7.33 (G3)" in result and "COMPLETE (8/8)" in result
+    assert len(calls) == 1 and calls[0][0] == NOAA_OBSERVED_3H_URL
+
+
+@pytest.mark.parametrize("source", ["WORK_DATE", "--date"])
+def test_kld_peak_real_todaypatch_work_date_and_date_arg(source, monkeypatch):
+    """Both WORK_DATE and --date follow the real runner's parse/in_tz path."""
+    import pendulum
+    import post_common
+    from safe_test_post import _TodayPatch
+
+    if source == "WORK_DATE":
+        monkeypatch.setenv("WORK_DATE", "2026-10-10")
+        date_arg = os.getenv("WORK_DATE", "")
+    else:
+        date_arg = "2026-10-10T14:00:00+02:00"
+    base_date = pendulum.parse(date_arg).in_tz(pendulum.timezone("Europe/Kaliningrad"))
+    as_of = datetime.fromtimestamp(base_date.timestamp(), timezone.utc)
+    transport, calls = fake(_peak_real_pendulum_rows(as_of, [1, 7.33] + [1] * 6))
+    with _TodayPatch(base_date):
+        line = post_common._kld_geomag_24h_peak_line(transport=transport)
+    assert "7.33 (G3)" in line and "COMPLETE (8/8)" in line
+    assert len(calls) == 1
+
+
+def test_kld_peak_real_todaypatch_rejects_wall_clock_observations():
+    """A replayed historical post must not print a current G3 as historical."""
+    import pendulum
+    import post_common
+    from safe_test_post import _TodayPatch
+
+    real_now = datetime.now(timezone.utc)
+    current_rows = _peak_real_pendulum_rows(real_now, [1, 7.33] + [1] * 6)
+    transport, calls = fake(current_rows)
+    historical = pendulum.datetime(2020, 10, 10, 14, tz="Europe/Kaliningrad")
+    with _TodayPatch(historical):
+        line = post_common._kld_geomag_24h_peak_line(transport=transport)
+    assert "UNKNOWN" in line and "7.33" not in line and "спокойно" not in line
+    assert len(calls) == 1
+
+
+def test_kld_peak_explicit_stdlib_clock_overrides_todaypatch():
+    import pendulum
+    import post_common
+    from safe_test_post import _TodayPatch
+
+    transport, calls = fake(_peak_real_pendulum_rows(T, [1, 7.33] + [1] * 6))
+    with _TodayPatch(pendulum.datetime(2020, 10, 10, 14, tz="Europe/Kaliningrad")):
+        line = post_common._kld_geomag_24h_peak_line(clock=lambda: T, transport=transport)
+    assert "7.33 (G3)" in line and "COMPLETE (8/8)" in line
+    assert len(calls) == 1
+
+
+def test_kld_peak_real_todaypatch_partial_and_noaa_failure():
+    import pendulum
+    import post_common
+    from safe_test_post import _TodayPatch
+
+    base = pendulum.datetime(2026, 10, 10, 14, tz="Europe/Kaliningrad")
+    as_of = datetime.fromtimestamp(base.timestamp(), timezone.utc)
+    partial, partial_calls = fake(_peak_real_pendulum_rows(as_of, [1, 6.67] + [1] * 5))
+
+    def unavailable(_url, **_kwargs):
+        raise TimeoutError("offline simulated NOAA outage")
+
+    with _TodayPatch(base):
+        partial_line = post_common._kld_geomag_24h_peak_line(transport=partial)
+        error_line = post_common._kld_geomag_24h_peak_line(transport=unavailable)
+    assert "6.67 (G2)" in partial_line and "PARTIAL (7/8)" in partial_line
+    assert "максимум среди доступных" in partial_line
+    assert "UNKNOWN" in error_line and "н/д" in error_line and "спокойно" not in error_line
+    assert len(partial_calls) == 1
+
+
 def test_network_attempt_ledger_empty():
     assert NETWORK_ATTEMPTS == []

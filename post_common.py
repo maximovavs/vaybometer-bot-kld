@@ -396,7 +396,13 @@ def _kld_geomag_24h_peak_line(*, clock=None, transport=None) -> str:
     from geomagnetic_noaa_transport import load_observed_3h_history
 
     try:
-        utc_clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        # _TodayPatch pins pendulum.now() for WORK_DATE / --date.
+        # NOAA/history must receive a stdlib datetime, not pendulum.DateTime.
+        utc_clock = clock or (
+            lambda: dt.datetime.fromtimestamp(
+                pendulum.now("UTC").timestamp(), dt.timezone.utc
+            )
+        )
         peak = rolling_24h_peak(load_observed_3h_history(clock=utc_clock, transport=transport))
         coverage = f"{peak.coverage} ({peak.observed_count}/{peak.expected_count})"
         if peak.peak_kp_raw is None or peak.peak_interval_start_utc is None:
