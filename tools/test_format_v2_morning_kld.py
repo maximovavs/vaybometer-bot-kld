@@ -1719,6 +1719,40 @@ def kld_peak_24h_g_boundaries_are_unrounded() -> None:
         assert f"{value} ({grade})" in line, line
 
 
+def kld_peak_24h_missing_weather_keeps_observed_peak() -> None:
+    peak = _kld_peak_test_line(_kld_peak_test_rows([1.0, 7.33] + [1.0] * 6))
+    assert "7.33 (G3)" in peak and "COMPLETE (8/8)" in peak
+    source = MISSING_CORE_REAL_FIXTURE.replace("🏭 Воздух:", peak + "\n🏭 Воздух:", 1)
+    legacy = sanitize_post_text(source).text
+    v2 = build_morning_format_v2("Калининградская область", legacy)
+    assert v2.count("🛰 Пик Kp за 24 ч:") == 1
+    final = _apply_format_v2_safe_postprocess(v2, source, legacy, "morning")
+    final = sanitize_post_text(final).text
+    final = _finalize_kld_morning_safe_text(final, source, legacy, "morning")
+    assert final.count("🛰 Пик Kp за 24 ч:") == 1
+    assert "7.33 (G3)" in final and "COMPLETE (8/8)" in final
+    assert "⚠️ Данные по Калининграду обновились не полностью" in final
+    assert "✅ План: перед выходом проверьте актуальный прогноз" in final
+    assert "🧲 Космопогода:" not in final  # Do not invent a current Kp.
+    assert "🏙 Калининград —" not in final and "VayboMeter: 8.6" not in final
+    assert final.splitlines()[-1] == "#Калининград #погода #здоровье #сегодня #море"
+
+
+def kld_peak_24h_missing_weather_keeps_partial_and_unknown() -> None:
+    partial = _kld_peak_test_line(_kld_peak_test_rows([1.0, 6.67] + [1.0] * 5))
+    unknown = _kld_peak_test_line([], error=OSError("offline NOAA unavailable"))
+    for peak in (partial, unknown):
+        source = MISSING_CORE_REAL_FIXTURE.replace("🏭 Воздух:", peak + "\n🏭 Воздух:", 1)
+        v2 = build_morning_format_v2("Калининградская область", source)
+        final = _apply_format_v2_safe_postprocess(v2, source, source, "morning")
+        assert final.count("🛰 Пик Kp за 24 ч:") == 1
+        assert peak in final
+        assert "⚠️ Данные по Калининграду обновились не полностью" in final
+        assert "спокойно" not in final.lower()
+    assert "PARTIAL (7/8)" in partial and "максимум среди доступных" in partial
+    assert "UNKNOWN" in unknown and "н/д" in unknown
+
+
 def main() -> None:
     checks = (
         kld_morning_has_sunset,
@@ -1793,6 +1827,8 @@ def main() -> None:
         kld_peak_24h_conflicts_do_not_invent_severity,
         kld_peak_24h_noaa_failure_fails_closed,
         kld_peak_24h_g_boundaries_are_unrounded,
+        kld_peak_24h_missing_weather_keeps_observed_peak,
+        kld_peak_24h_missing_weather_keeps_partial_and_unknown,
     )
     for check in checks:
         check()

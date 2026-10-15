@@ -1535,6 +1535,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if not _morning_core_weather_available(weather):
         out.append(_KLD_MISSING_CORE_LINE)
+        # Verified NOAA peak remains useful even when local weather is unavailable.
+        if kp_peak:
+            out.append(kp_peak)
         if astro:
             out.append("")
             out.extend(astro)
