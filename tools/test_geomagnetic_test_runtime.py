@@ -19,7 +19,7 @@ from geomagnetic_gitref_store import (
 )
 from geomagnetic_noaa_transport import NOAA_OBSERVED_3H_URL, NOAAResponse, NoaaTransportError
 from geomagnetic_reconciliation import record_delivery
-from tools.test_geomagnetic_github_transport import BASE, SameRepoAPI, same_repo_setup
+from tools.test_geomagnetic_github_transport import BASE, SameRepoAPI, same_repo_setup, FakePGPSigner
 
 AS_OF = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 RECENT = "2026-10-14 06:00:00"
@@ -52,7 +52,7 @@ def row(tag=RECENT, kp=5.0):
 def run(api, rows, *, now=AS_OF):
     noaa, calls = observed(rows)
     receipt = run_test_once(clock=lambda: now, noaa_transport=noaa,
-                            github_requester=api)
+                            github_requester=api, commit_signer=FakePGPSigner())
     assert calls == [NOAA_OBSERVED_3H_URL]
     return receipt
 
@@ -229,7 +229,7 @@ def test_independent_readback_detects_mismatch_without_retry(monkeypatch, phase,
     noaa, calls = observed(rows)
     with pytest.raises(UncertainCommit, match="independent TEST state read-back"):
         runtime.run_test_once(clock=lambda: AS_OF, noaa_transport=noaa,
-                              github_requester=api)
+                              github_requester=api, commit_signer=FakePGPSigner())
     assert calls == [NOAA_OBSERVED_3H_URL]
     assert len(created_stores) == 2
     assert len(independent_reads) == 1
@@ -251,3 +251,13 @@ def test_no_credentials_and_no_implicit_provider_calls():
         run_test_once(clock=None, noaa_transport=lambda *_a: None,
                       github_requester=api)
     assert not api.calls
+
+
+def test_missing_runtime_signer_fails_before_any_git_write():
+    api = SameRepoAPI()
+    noaa, calls = observed([row(kp=6.0)])
+    with pytest.raises(UncertainCommit):
+        run_test_once(clock=lambda: AS_OF, noaa_transport=noaa,
+                      github_requester=api)
+    assert calls == [NOAA_OBSERVED_3H_URL]
+    assert not [m for m, _, _ in api.calls if m != 'GET']

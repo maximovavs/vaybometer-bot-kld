@@ -20,7 +20,9 @@ from geomagnetic_gitref_store import GitRefCASStore, STATE_PATH, STATE_REF_TEST,
 from geomagnetic_reconciliation import GeomagneticState
 from geomagnetic_state_codec import encode_state
 from tools.test_geomagnetic_github_transport import (FakeAPI, REPO, KLD_REPO,
-    KLD_REPO_ID, blob_sha, body, sha)
+    KLD_REPO_ID, blob_sha, body, sha, FakePGPSigner)
+from geomagnetic_github_transport import (
+    GitSigningIdentity, _signing_identity_fields, _unsigned_commit_payload)
 
 EXPECTED_ID = 4571  # Synthetic immutable repository identity; never a live GitHub ID.
 
@@ -92,7 +94,20 @@ class BootstrapAPI(FakeAPI):
             self.calls.append((method, path, payload))
             req = json.loads(payload)
             assert req['parents'] == [] and req['tree'] == bootstrap.INITIAL_TREE_SHA
+            assert 'signature' in req and req['author'] == req['committer']
+            # B5: independently reconstruct the parentless Git payload.
+            # Never call the production _unsigned_commit_payload helper.
+            from datetime import datetime, timezone
+            ident = req['author']
+            when = datetime.fromisoformat(ident['date'].replace('Z', '+00:00'))
+            assert when.tzinfo == timezone.utc
+            who = f"{ident['name']} <{ident['email']}> {int(when.timestamp())} +0000"
+            assert req['message'] == "Initialize isolated KLD geomagnetic TEST state\n"
+            expected_root = (f"tree {bootstrap.INITIAL_TREE_SHA}\nauthor {who}\n"
+                             f"committer {who}\n\n{req['message']}")
+            assert "\nparent " not in expected_root
             new = sha('test-root-commit')
+            self.signed_payloads[new] = (req['signature'], expected_root)
             self.commits[new] = (req['tree'], [])
             if self.fault == 'wrong-commit-sha':
                 return HTTPResponse(201, body({'sha':'f'*40}))
@@ -138,7 +153,7 @@ class BootstrapAPI(FakeAPI):
 def call(api, *, environment='test', repository_id=EXPECTED_ID, repo_full_name=REPO):
     return bootstrap_test_state(repo_full_name=repo_full_name,
                                 repository_id=repository_id, environment=environment,
-                                requester=api)
+                                requester=api, commit_signer=FakePGPSigner())
 
 
 class SameRepoBootstrapAPI(BootstrapAPI):
@@ -166,7 +181,7 @@ def test_same_repo_orphan_test_bootstrap_and_readback():
     api = SameRepoBootstrapAPI()
     result = bootstrap_test_state(repo_full_name=KLD_REPO,
                                   repository_id=KLD_REPO_ID,
-                                  environment='test', requester=api)
+                                  environment='test', requester=api, commit_signer=FakePGPSigner())
     assert result.status == 'CONFIRMED'
     assert result.repository_id == KLD_REPO_ID
     assert api.create_ref_attempts == 1
@@ -177,7 +192,7 @@ def test_same_repo_orphan_test_bootstrap_and_readback():
     with pytest.raises(ExistingTestRef):
         bootstrap_test_state(repo_full_name=KLD_REPO,
                              repository_id=KLD_REPO_ID,
-                             environment='test', requester=api)
+                             environment='test', requester=api, commit_signer=FakePGPSigner())
     assert api.create_ref_attempts == 1
 
 
@@ -193,7 +208,7 @@ def test_same_repo_bootstrap_wrong_identity_denied(kwargs):
     with pytest.raises(StoreError):
         bootstrap_test_state(repo_full_name=KLD_REPO,
                              repository_id=kwargs.get('repository_id', KLD_REPO_ID),
-                             environment='test', requester=api)
+                             environment='test', requester=api, commit_signer=FakePGPSigner())
     assert not any(method != 'GET' for method, _, _ in api.live_calls)
 
 
@@ -208,11 +223,11 @@ def test_same_repo_bootstrap_uncertain_ref_no_replay(fault, expected):
         with pytest.raises(UncertainCommit):
             bootstrap_test_state(repo_full_name=KLD_REPO,
                                  repository_id=KLD_REPO_ID,
-                                 environment='test', requester=api)
+                                 environment='test', requester=api, commit_signer=FakePGPSigner())
     else:
         assert bootstrap_test_state(repo_full_name=KLD_REPO,
                                     repository_id=KLD_REPO_ID,
-                                    environment='test', requester=api).status == expected
+                                    environment='test', requester=api, commit_signer=FakePGPSigner()).status == expected
     assert api.create_ref_attempts == 1
     assert not any('/git/ref/heads/main' in path for _, path, _ in api.live_calls)
 
@@ -238,7 +253,7 @@ def test_success_and_existing_ref_is_never_reinitialized():
     result = call(api)
     assert result.status == 'CONFIRMED' and result.head_sha == api.head == api.ref_commit
     assert result.ref == STATE_REF_TEST and result.repository_id == EXPECTED_ID
-    adapter = GitHubRESTTransport(repo_full_name=REPO, environment='test', requester=api)
+    adapter = GitHubRESTTransport(repo_full_name=REPO, environment='test', requester=api, commit_signer=FakePGPSigner())
     assert GitRefCASStore(adapter,environment='test').load_current().state == GeomagneticState()
     assert api.create_ref_attempts == 1
     previous = len(api.calls)
@@ -356,3 +371,52 @@ def test_no_implicit_io_stack_or_real_sender_imports():
         if isinstance(node,__import__('ast').ImportFrom):imported.append(node.module)
     assert not set(imported)&{'requests','urllib','socket','os','subprocess','telegram','http.client'}
     assert 'bootstrap_test_state' in bootstrap.__all__
+
+
+def test_bootstrap_requires_signer_before_creating_any_git_object():
+    api = BootstrapAPI()
+    with pytest.raises(StoreError):
+        bootstrap_test_state(repo_full_name=REPO, repository_id=EXPECTED_ID,
+                             environment='test', requester=api)
+    assert not any(method != 'GET' for method, _, _ in api.calls)
+    assert api.create_ref_attempts == 0
+
+
+@pytest.mark.parametrize('fault', ['signature', 'payload'])
+def test_bootstrap_pins_github_signed_payload_before_ref_create(fault):
+    api = BootstrapAPI()
+    api.corrupt_signed_field = fault
+    with pytest.raises(StoreError):
+        call(api)
+    assert api.create_ref_attempts == 0
+    assert not any(method == 'POST' and path.endswith('/git/refs')
+                   for method, path, _ in api.calls)
+
+
+def test_bootstrap_rejects_unsigned_or_invalid_root_without_ref_create():
+    api = BootstrapAPI()
+    api.commit_verification = {'verified': False, 'reason': 'unsigned'}
+    with pytest.raises(StoreError):
+        call(api)
+    assert api.create_ref_attempts == 0
+
+
+def test_b5_root_commit_signature_payload_is_independently_parentless():
+    from datetime import datetime, timezone
+    api = BootstrapAPI()
+    result = call(api)
+    commits = [json.loads(raw) for method, path, raw in api.calls
+               if method == 'POST' and path.endswith('/git/commits')]
+    assert len(commits) == 1
+    posted = commits[0]
+    assert posted['parents'] == []
+    assert posted['tree'] == bootstrap.INITIAL_TREE_SHA
+    assert posted['author'] == posted['committer']
+    identity = posted['author']
+    stamp = datetime.fromisoformat(identity['date'].replace('Z', '+00:00'))
+    assert stamp.tzinfo == timezone.utc
+    who = f"{identity['name']} <{identity['email']}> {int(stamp.timestamp())} +0000"
+    expected = (f"tree {bootstrap.INITIAL_TREE_SHA}\nauthor {who}\n"
+                f"committer {who}\n\nInitialize isolated KLD geomagnetic TEST state\n")
+    assert '\nparent ' not in expected
+    assert api.signed_payloads[result.head_sha] == (posted['signature'], expected)
