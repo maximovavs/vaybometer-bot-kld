@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -206,12 +206,23 @@ def _week_label(start: date) -> str:
     return f"{start.day} {RUSSIAN_MONTHS[start.month]} – {end.day} {RUSSIAN_MONTHS[end.month]}"
 
 
+def _kld_autumn_photo_week(start: date) -> bool:
+    """Only full October/November weeks match the three autumn foliage backdrops."""
+    end = start + timedelta(days=6)
+    return start.month in (10, 11) and end.month in (10, 11)
+
+
 def render_photo_cover(text: str, *, start: date, output_path: str | Path, region: str) -> dict[str, Any]:
     from PIL import Image, ImageDraw, PngImagePlugin
     if region not in ASSETS:
         raise ValueError("Unsupported weekly cover region")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Weekly cover text required: do not invent data")
+    # These three KLD JPGs show autumn foliage. Never use them for a week
+    # containing September, December, winter, spring or summer dates.
+    # The caller catches this refusal and keeps the complete legacy cover.
+    if region == "kld" and not _kld_autumn_photo_week(start):
+        raise ValueError("KLD autumn-only photo assets cannot cover this week")
     main_fact = _section(text, "✨ Главный фон недели")
     weather_fact = _section(text, "🌦 Погода")
     sea_fact = _section(text, "🌊 Море" if region == "cyprus" else "🌊 Балтика")

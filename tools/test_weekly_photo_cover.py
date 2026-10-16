@@ -83,6 +83,41 @@ def run_tests() -> None:
             raise AssertionError('Expected fail closed on missing source sections')
     if region == 'kld':
         from unittest.mock import patch
+        import weekly_cover as wrapper
+        # Only full October/November weeks may use the autumn foliage JPGs.
+        # Boundary weeks crossing into/out of that range must fail closed.
+        season_cases = (
+            ('winter', date(2026, 1, 12), False),
+            ('spring', date(2026, 4, 13), False),
+            ('summer', date(2026, 7, 13), False),
+            ('early_autumn', date(2026, 9, 14), False),
+            ('september_october', date(2026, 9, 28), False),
+            ('october', date(2026, 10, 12), True),
+            ('october_november', date(2026, 10, 26), True),
+            ('november', date(2026, 11, 23), True),
+            ('november_december', date(2026, 11, 30), False),
+            ('december', date(2026, 12, 14), False),
+        )
+        with tempfile.TemporaryDirectory() as season_dir:
+            for name, week_start, supported in season_cases:
+                target = Path(season_dir) / f'{name}.png'
+                assert photo._kld_autumn_photo_week(week_start) is supported, name
+                if not supported:
+                    try:
+                        photo.render_photo_cover(base_text, start=week_start,
+                                                 output_path=target, region='kld')
+                    except ValueError as exc:
+                        assert 'autumn-only' in str(exc), (name, exc)
+                    else:
+                        raise AssertionError(f'{name}: non-autumn photo accepted')
+                    assert not target.exists(), f'{name}: wrote unsupported photo'
+                with patch.dict(os.environ, {'WEEKLY_PHOTO_COVER_ENABLED': '1'}):
+                    actual = wrapper.render_weekly_cover(base_text, start=week_start, output_path=target)
+                assert (actual['renderer_version'] == photo.PHOTO_RENDERER_VERSION) is supported, name
+                with patch.dict(os.environ, {'WEEKLY_PHOTO_COVER_ENABLED': '0'}):
+                    off = wrapper.render_weekly_cover(base_text, start=week_start, output_path=target)
+                assert off['renderer_version'] != photo.PHOTO_RENDERER_VERSION, name
+        print(f'PASS KLD seasonal weekly photo: {len(season_cases)} dates, ON/OFF, boundaries + fallback')
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "bounded.png"
             cases = (
