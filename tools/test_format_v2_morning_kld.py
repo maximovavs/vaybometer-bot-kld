@@ -1287,6 +1287,38 @@ def kld_workflow_morning_schedule_is_earlier() -> None:
         assert workflow.count(f"github.event.schedule == '{cron}'") == 1
 
 
+def kld_peak_24h_workflow_is_morning_only_and_disarmed() -> None:
+    """The Actions repository variable cannot activate Kp until a separate approval."""
+    workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
+    flag = "KLD_GEOMAG_24H_PEAK_ENABLED"
+    prefix, jobs = workflow.split("\njobs:\n", 1)
+    morning, rest = jobs.split("\n  evening:\n", 1)
+    assert morning.startswith("  morning:\n")
+    evening, noon_fx = rest.split("\n  noon_fx:\n", 1)
+    header = morning.split("\n    steps:\n", 1)[0]
+
+    # Never leak this flag through global env, other jobs, or the step body.
+    assert flag not in prefix and flag not in evening and flag not in noon_fx
+    # One job env key plus one reference in the GitHub vars expression.
+    assert morning.count(flag) == workflow.count(flag) == 2
+    assert flag not in morning.split("\n    steps:\n", 1)[1]
+    assert 'SHOW_SPACE: "1"' in header
+    assert 'SHOW_SPACE: "0"' in evening
+
+    # Match the *actual checked-in GitHub expression*, not a separately
+    # simulated policy. Its literal false is a mandatory activation interlock.
+    expected = (
+        "false && vars.KLD_GEOMAG_24H_PEAK_ENABLED == '1' "
+        "&& '1' || '0'"
+    )
+    matches = re.findall(r"(?m)^      KLD_GEOMAG_24H_PEAK_ENABLED: \$\{\{ (.*?) \}\}$", header)
+    assert matches == [expected], matches
+    for repository_value in (None, "", "0", "1", "true", "TRUE", "1 ", "unexpected"):
+        # GitHub Actions: false && X == false; false || '0' == '0'.
+        computed = "1" if (False and repository_value == "1") else "0"
+        assert computed == "0", repository_value
+
+
 # ───────────── NOAA SWPC observed 3-hour Kp source contract (offline) ─────────────
 import io  # noqa: E402
 import json  # noqa: E402
@@ -1801,6 +1833,7 @@ def main() -> None:
         kld_morning_supported_specific_source_nuance_is_preserved,
         kld_morning_calm_without_source_score_does_not_repeat_label,
         kld_workflow_morning_schedule_is_earlier,
+        kld_peak_24h_workflow_is_morning_only_and_disarmed,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,
