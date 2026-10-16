@@ -1523,6 +1523,7 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
     safecast = _morning_pick(lines, ("🧪",))
     sea = _morning_sea_lines(lines)
     space = [x for x in _morning_pick(lines, ("🧲",)) if "н/д" not in x]
+    kp_peak = _first_morning_pick(lines, ("🛰 Пик Kp за 24 ч:",))
     tags = _hashtags(lines, "#Калининград #погода #здоровье #сегодня #море")
     flags = _morning_flags(weather_lines, uv_line)
     scenario = _ground_morning_source_wind_line(scenario, flags)
@@ -1534,6 +1535,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
 
     if not _morning_core_weather_available(weather):
         out.append(_KLD_MISSING_CORE_LINE)
+        # Verified NOAA peak remains useful even when local weather is unavailable.
+        if kp_peak:
+            out.append(kp_peak)
         if astro:
             out.append("")
             out.extend(astro)
@@ -1574,6 +1578,9 @@ def build_morning_format_v2(region_name: str, safe_legacy_text: str) -> str:
             out.append(sensor_line)
     if space:
         out.append(_clean_kp_line(space[0]))
+    # Preserve history verbatim: _clean_kp_line applies to *current* Kp only.
+    if kp_peak:
+        out.append(kp_peak)
     for line in sea:
         if line not in out:
             out.append(line)
