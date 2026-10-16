@@ -127,6 +127,9 @@ jobs:
       SHOW_SPACE: "1"
       SHOW_SCHUMANN: "1"
       DISABLE_SCHUMANN: "0"
+      # Stage-only wiring: repository var alone MUST NOT activate production.
+      # Separate approved activation changes `false` to `true` here.
+      KLD_GEOMAG_24H_PEAK_ENABLED: ${{ false && vars.KLD_GEOMAG_24H_PEAK_ENABLED == '1' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - name: Restore KLD delivery receipts
