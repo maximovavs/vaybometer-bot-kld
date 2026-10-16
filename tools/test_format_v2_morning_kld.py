@@ -1287,8 +1287,8 @@ def kld_workflow_morning_schedule_is_earlier() -> None:
         assert workflow.count(f"github.event.schedule == '{cron}'") == 1
 
 
-def kld_peak_24h_workflow_is_morning_only_and_disarmed() -> None:
-    """The Actions repository variable cannot activate Kp until a separate approval."""
+def kld_peak_24h_workflow_is_morning_only_and_repo_var_gated() -> None:
+    """Only exact repository value '1' may activate the morning peak."""
     workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
     flag = "KLD_GEOMAG_24H_PEAK_ENABLED"
     prefix, jobs = workflow.split("\njobs:\n", 1)
@@ -1306,17 +1306,17 @@ def kld_peak_24h_workflow_is_morning_only_and_disarmed() -> None:
     assert 'SHOW_SPACE: "0"' in evening
 
     # Match the *actual checked-in GitHub expression*, not a separately
-    # simulated policy. Its literal false is a mandatory activation interlock.
+    # simulated policy. Its true gate requires an exact variable match.
     expected = (
-        "false && vars.KLD_GEOMAG_24H_PEAK_ENABLED == '1' "
+        "true && vars.KLD_GEOMAG_24H_PEAK_ENABLED == '1' "
         "&& '1' || '0'"
     )
     matches = re.findall(r"(?m)^      KLD_GEOMAG_24H_PEAK_ENABLED: \$\{\{ (.*?) \}\}$", header)
     assert matches == [expected], matches
     for repository_value in (None, "", "0", "1", "true", "TRUE", "1 ", "unexpected"):
-        # GitHub Actions: false && X == false; false || '0' == '0'.
-        computed = "1" if (False and repository_value == "1") else "0"
-        assert computed == "0", repository_value
+        # GitHub Actions: true && (X == '1') && '1' || '0'.
+        computed = "1" if (True and repository_value == "1") else "0"
+        assert computed == ("1" if repository_value == "1" else "0"), repository_value
 
 
 # ───────────── NOAA SWPC observed 3-hour Kp source contract (offline) ─────────────
@@ -1833,7 +1833,7 @@ def main() -> None:
         kld_morning_supported_specific_source_nuance_is_preserved,
         kld_morning_calm_without_source_score_does_not_repeat_label,
         kld_workflow_morning_schedule_is_earlier,
-        kld_peak_24h_workflow_is_morning_only_and_disarmed,
+        kld_peak_24h_workflow_is_morning_only_and_repo_var_gated,
         kld_morning_astro_block_has_sunset_if_available,
         kld_evening_astro_block_has_tomorrow_wording,
         kld_astro_block_stays_compact,
