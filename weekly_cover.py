@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -74,6 +77,12 @@ def _wrap(draw: Any, text: str, font: Any, max_width: int, max_lines: int = 2) -
 
 
 def render_weekly_cover(text: str, *, start: date, output_path: str | Path) -> dict[str, Any]:
+    if os.getenv("WEEKLY_PHOTO_COVER_ENABLED", "0").strip() == "1":
+        try:
+            from weekly_photo_cover import render_photo_cover
+            return render_photo_cover(text, start=start, output_path=output_path, region="kld")
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Weekly photo cover failed; reverting to legacy cover: %s", exc)
     from PIL import Image, ImageDraw, PngImagePlugin
 
     week_label = _week_label(text, start)

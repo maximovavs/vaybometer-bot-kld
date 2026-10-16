@@ -113,6 +113,7 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py tools/test_weekly_forecast.py
+          python tools/ci_offline_guard/runner.py tools/test_weekly_photo_cover.py
       - name: Fixture-based daily and FX CLI smoke (offline)
         env:
           OPENAI_API_KEY: ""
