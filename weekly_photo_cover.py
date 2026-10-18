@@ -212,6 +212,49 @@ def _kld_autumn_photo_week(start: date) -> bool:
     return start.month in (10, 11) and end.month in (10, 11)
 
 
+# KLD weekly images are 1080×1350; keep header overlays below Telegram's top 10%.
+_KLD_TELEGRAM_SAFE_TOP = 135
+_KLD_HEADER_GLASS = (36, 150, 1044, 330)
+_KLD_COLUMN_LEFT = (82, 421, 760)
+_KLD_COLUMN_TEXT_WIDTH = 264
+
+
+def _kld_header_glass(image: Any) -> Any:
+    """Dark translucent heading on non-coast KLD JPGs, preserving top 135px."""
+    from PIL import Image, ImageDraw
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).rounded_rectangle(
+        _KLD_HEADER_GLASS, radius=28, fill=(12, 27, 37, 225),
+        outline=(245, 250, 252, 180), width=2,
+    )
+    return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+
+
+# Baked-in coast glass occupies x≈44–939, y≈66–243 on the original JPG.
+# Do not composite a second panel; all text must stay below Telegram y=135.
+_KLD_COAST_HEADER_SAFE = (60, 135, 920, 233)
+
+
+def _kld_coast_header(draw: Any, start: date) -> tuple[tuple[int, int, int, int], ...]:
+    """Render two lines INSIDE the original coast panel, without new glass."""
+    lines = (
+        ("ВАЙБ НЕДЕЛИ", (70, 137), _font(46, True)),
+        (f"{_week_label(start)} · VAYBOMETER · KALININGRAD", (70, 205), _font(19)),
+    )
+    left, top, right, bottom = _KLD_COAST_HEADER_SAFE
+    boxes = []
+    # Check *all* glyphs before painting; a new/longer locale must fail closed.
+    for content, origin, font in lines:
+        bbox = draw.textbbox(origin, content, font=font, stroke_width=1)
+        if not (left <= bbox[0] <= bbox[2] <= right and top <= bbox[1] <= bbox[3] <= bottom):
+            raise ValueError("KLD coast heading outside baked glass safe zone")
+        boxes.append(bbox)
+    for content, origin, font in lines:
+        draw.text(origin, content, font=font, fill=(250, 250, 251),
+                  stroke_width=1, stroke_fill=(17, 30, 39))
+    return tuple(boxes)
+
+
 def render_photo_cover(text: str, *, start: date, output_path: str | Path, region: str) -> dict[str, Any]:
     from PIL import Image, ImageDraw, PngImagePlugin
     if region not in ASSETS:
@@ -239,17 +282,23 @@ def render_photo_cover(text: str, *, start: date, output_path: str | Path, regio
         if source.width < WIDTH or source.height < HEIGHT:
             raise ValueError("Weekly template resolution too low")
         image = source.convert("RGB").resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+    if region == "kld" and asset.name != "kld_baltic_coast.jpg":
+        image = _kld_header_glass(image)
     draw = ImageDraw.Draw(image)
     white = (250, 250, 251)
     light = (221, 236, 243)
-    draw.text((65, 76), "VAYBOMETER · " + ("CYPRUS" if region == "cyprus" else "KALININGRAD"), font=_font(22, True), fill=light)
-    draw.text((64, 116), "ВАЙБ НЕДЕЛИ", font=_font(53, True), fill=white, stroke_width=1, stroke_fill=(40, 55, 64))
-    draw.text((66, 192), _week_label(start), font=_font(29), fill=white)
-    small_region = "ЛИМАССОЛ\nИ ОСТРОВ" if region == "cyprus" else "КАЛИНИНГРАД\nИ ОБЛАСТЬ"
-    right_font = _font(17, True)
-    for index, s in enumerate(small_region.splitlines()):
-        box = draw.textbbox((0, 0), s, font=right_font)
-        draw.text((896-(box[2]-box[0]), 145 + 23*index), s, font=right_font, fill=light)
+    if region == "kld" and asset.name == "kld_baltic_coast.jpg":
+        _kld_coast_header(draw, start)
+    else:
+        brand_y, title_y, date_y, region_y = (170, 207, 270, 179) if region == "kld" else (76, 116, 192, 145)
+        draw.text((65, brand_y), "VAYBOMETER · " + ("CYPRUS" if region == "cyprus" else "KALININGRAD"), font=_font(22, True), fill=light)
+        draw.text((64, title_y), "ВАЙБ НЕДЕЛИ", font=_font(53, True), fill=white, stroke_width=1, stroke_fill=(40, 55, 64))
+        draw.text((66, date_y), _week_label(start), font=_font(29), fill=white)
+        small_region = "ЛИМАССОЛ\nИ ОСТРОВ" if region == "cyprus" else "КАЛИНИНГРАД\nИ ОБЛАСТЬ"
+        right_font = _font(17, True)
+        for index, s in enumerate(small_region.splitlines()):
+            box = draw.textbbox((0, 0), s, font=right_font)
+            draw.text((896-(box[2]-box[0]), region_y + 23*index), s, font=right_font, fill=light)
 
     weather_summary = _weather_summary(weather_fact, main_fact)
     # This three-column cover cannot safely show independent marine alerts.
@@ -273,17 +322,24 @@ def render_photo_cover(text: str, *, start: date, output_path: str | Path, regio
         "kld_golden_city.jpg": 1038,
     }.get(asset.name, 1075)
     for index, (heading, value, symbol) in enumerate(facts):
-        left = 49 + index * 339
+        # Inset all KLD columns past the widest baked-in frame (R12-V).
+        # Cyprus remains unchanged; original JPGs and their glass are untouched.
+        left = _KLD_COLUMN_LEFT[index] if region == "kld" else 49 + index * 339
+        text_width = _KLD_COLUMN_TEXT_WIDTH if region == "kld" else 293
         font = _font(24, bold=(index != 0))
-        wrapped_lines = _fit(draw, value, font, 293, 3)
+        wrapped_lines = _fit(draw, value, font, text_width, 3)
         # Explicit geometry contract: even the lowest glyph must remain in glass.
         glass_bottom = panel_top + 207
         for lineno, wrapped in enumerate(wrapped_lines):
             bounds = draw.textbbox((left, panel_top + 107 + lineno*31), wrapped, font=font, stroke_width=1)
-            if bounds[3] > glass_bottom:
+            if bounds[3] > glass_bottom or (region == "kld" and (bounds[0] < left - 1 or bounds[2] > left + text_width + 2)):
                 raise ValueError("Weekly photo text outside glass safe zone")
+        heading_font = _font(19, True)
+        heading_bounds = draw.textbbox((left, panel_top + 73), heading, font=heading_font)
+        if region == "kld" and heading_bounds[2] > left + text_width:
+            raise ValueError("Weekly photo heading outside glass safe zone")
         _icon(draw, symbol, left + 24, panel_top + 38)
-        draw.text((left, panel_top + 73), heading, font=_font(19, True), fill=white)
+        draw.text((left, panel_top + 73), heading, font=heading_font, fill=white)
         for lineno, wrapped in enumerate(wrapped_lines):
             draw.text((left, panel_top + 107 + lineno*31), wrapped, font=font, fill=white, stroke_width=1, stroke_fill=(38, 44, 49))
     output = Path(output_path)
