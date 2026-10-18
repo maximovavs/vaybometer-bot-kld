@@ -334,5 +334,53 @@ def run_tests() -> None:
                 disabled = wrapper.render_weekly_cover(clear_text,start=date(2026,10,12),output_path=p)
             assert disabled['renderer_version'] != photo.PHOTO_RENDERER_VERSION
         print(f'PASS KLD critical-warning negation: {len(clear_cues)} negated, {len(hazardous_cues)} hazardous + render/fallback checks')
+        # R26-E: the columns show only the first line of a section, so a warning
+        # on any later line, or in the water/sport section, forces legacy.
+        full = (
+            "🗓 Вайб недели: 19–25 октября\n\n"
+            "✨ Главный фон недели\nвлажная и ветреная неделя; у Балтики лучше выбирать защищённые прогулки.\n\n"
+            "🌦 Погода\nТемпература держится в диапазоне 11–17°C; дождевые окна возможны во второй половине недели.\n\n"
+            "🌊 Балтика\nВода 13–15°C; у открытой воды ветер ощущается сильнее.\n\n"
+            "🏄 Вода и спорт\nSUP: короткие окна в защищённых местах.\n"
+            "Кайт/винг/винд: только опытным; проверять порывы и направление.\n"
+            "Серф: по фактической волне; Балтика быстро меняется.\n\n"
+            "🏭 Воздух сейчас\nТекущий снимок воздуха: AQI 66 (умеренный)."
+        )
+        def add_line(text, heading, line):
+            head, sep, tail = text.partition(heading + "\n")
+            first, nl, rest = tail.partition("\n")
+            return head + sep + first + "\n" + line + nl + rest
+        unsafe = (
+            ("weather later line", add_line(full, "🌦 Погода", "Штормовое предупреждение: порывы до 25 м/с у побережья.")),
+            ("headline later line", add_line(full, "✨ Главный фон недели", "Возможна гроза в выходные.")),
+            ("sea later line", add_line(full, "🌊 Балтика", "Опасные волны у открытого берега.")),
+            ("sport gust value", full.replace("проверять порывы и направление.", "проверять порывы до 20 м/с.")),
+            ("sport strong wind", full.replace("SUP: короткие окна в защищённых местах.", "SUP: сильный ветер, не выходить на воду.")),
+            ("sport unsafe", full.replace("Серф: по фактической волне; Балтика быстро меняется.", "Серф: небезопасно, высокие волны.")),
+            ("sport not advised", full.replace("SUP: короткие окна в защищённых местах.", "SUP: не рекомендуется.")),
+        )
+        safe = (
+            ("natural", full),
+            ("weather later benign", add_line(full, "🌦 Погода", "Ночами прохладно.")),
+            ("sport negated storm", full.replace("SUP: короткие окна в защищённых местах.", "SUP: шторм не ожидается.")),
+            ("air boundary", full.replace("AQI 66 (умеренный)", "AQI 160 (опасный для чувствительных)")),
+        )
+        assert photo._section_lines(full, "🏄 Вода и спорт")[-1].startswith("Серф:")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'r26e.png'
+            for name, text in unsafe:
+                try:
+                    photo.render_photo_cover(text, start=date(2026, 10, 19), output_path=target, region='kld')
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f'{name}: warning hidden by photo cover')
+                with patch.dict(os.environ, {'WEEKLY_PHOTO_COVER_ENABLED': '1'}):
+                    legacy = wrapper.render_weekly_cover(text, start=date(2026, 10, 19), output_path=target)
+                assert legacy['renderer_version'] != photo.PHOTO_RENDERER_VERSION, name
+            for name, text in safe:
+                meta = photo.render_photo_cover(text, start=date(2026, 10, 19), output_path=target, region='kld')
+                assert meta['renderer_version'] == photo.PHOTO_RENDERER_VERSION, name
+        print(f'PASS KLD R26-E multi-line and water/sport warnings: {len(unsafe)} unsafe → legacy, {len(safe)} safe → photo')
     print(f'PASS {region}: factual gating, source hashes, 1080x1350, real-example label, invalid-input refusal')
 if __name__=='__main__':run_tests()

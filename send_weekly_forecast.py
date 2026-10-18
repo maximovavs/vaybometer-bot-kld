@@ -538,18 +538,21 @@ async def _send(
     if not token: raise SystemExit("TELEGRAM_TOKEN_KLG is not set")
     destination=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
     bot=Bot(token=token)
-    try:
-        cover=render_weekly_cover(text,start=start,output_path=Path("weekly_cover.png"))
-        with Path(cover["path"]).open("rb") as photo:
-            await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
-    except Exception as exc:
-        print(f"Weekly cover unavailable; text will still be sent: {type(exc).__name__}: {exc}",file=sys.stderr)
+    # Full text (with every warning) goes first. A failed or ambiguous text
+    # send raises without any retry, so no cover is ever published alone.
     message=await bot.send_message(chat_id=destination,text=text,parse_mode=constants.ParseMode.HTML,disable_web_page_preview=True)
     message_id=getattr(message,"message_id",None)
     if (snapshot_candidate is not None and production_snapshot_out is not None and str(production_chat_id).strip()
         and str(chat_id)==str(production_chat_id) and isinstance(message_id,int) and not isinstance(message_id,bool) and message_id>0):
         write_snapshot_atomic(production_snapshot_out,finalize_snapshot(snapshot_candidate,message_id))
         print(f"WEEKLY_SNAPSHOT: {production_snapshot_out}")
+    # The cover is optional: its failure never undoes the text or snapshot.
+    try:
+        cover=render_weekly_cover(text,start=start,output_path=Path("weekly_cover.png"))
+        with Path(cover["path"]).open("rb") as photo:
+            await bot.send_photo(chat_id=destination,photo=photo,caption=f"Вайб недели: {_fmt_week_range(start)}")
+    except Exception as exc:
+        print(f"Weekly cover unavailable; text already sent: {type(exc).__name__}: {exc}",file=sys.stderr)
     return message_id if isinstance(message_id,int) and not isinstance(message_id,bool) else None
 
 async def main() -> None:

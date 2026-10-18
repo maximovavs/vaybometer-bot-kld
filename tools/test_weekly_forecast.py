@@ -162,7 +162,7 @@ def test_weekly_cover_is_high_contrast_factual_projection() -> None:
 
 
 
-def _run_weekly_send_case(*, render_fails: bool = False, image_fails: bool = False) -> list[str]:
+def _run_weekly_send_case(*, render_fails: bool = False, image_fails: bool = False, text_fails: bool = False) -> list[str]:
     events: list[str] = []
     old_token = os.environ.get("TELEGRAM_TOKEN_KLG")
     old_telegram = sys.modules.get("telegram")
@@ -191,6 +191,8 @@ def _run_weekly_send_case(*, render_fails: bool = False, image_fails: bool = Fal
             assert kwargs["chat_id"] == -100123
             assert kwargs["text"] == "weekly text"
             assert kwargs["parse_mode"] == "HTML"
+            if text_fails:
+                raise RuntimeError("synthetic text send failure")
             return object()
 
     telegram_module = ModuleType("telegram")
@@ -212,7 +214,12 @@ def _run_weekly_send_case(*, render_fails: bool = False, image_fails: bool = Fal
             os.environ["TELEGRAM_TOKEN_KLG"] = "weekly-test-token"
             sys.modules["telegram"] = telegram_module
             weekly_module.render_weekly_cover = fake_render
-            asyncio.run(weekly_module._send("weekly text", "-100123", date(2026, 7, 1)))
+            try:
+                asyncio.run(weekly_module._send("weekly text", "-100123", date(2026, 7, 1)))
+            except RuntimeError:
+                if not text_fails:
+                    raise
+                events.append("raised")
         finally:
             weekly_module.render_weekly_cover = old_renderer
             if old_telegram is None:
@@ -226,16 +233,28 @@ def _run_weekly_send_case(*, render_fails: bool = False, image_fails: bool = Fal
     return events
 
 
-def test_weekly_send_orders_cover_before_text_without_network() -> None:
-    assert _run_weekly_send_case() == ["cover", "photo", "text"]
+def test_weekly_send_orders_text_before_cover_without_network() -> None:
+    assert _run_weekly_send_case() == ["text", "cover", "photo"]
 
 
 def test_weekly_send_survives_cover_render_failure() -> None:
-    assert _run_weekly_send_case(render_fails=True) == ["cover", "text"]
+    assert _run_weekly_send_case(render_fails=True) == ["text", "cover"]
 
 
 def test_weekly_send_survives_image_send_failure() -> None:
-    assert _run_weekly_send_case(image_fails=True) == ["cover", "photo", "text"]
+    assert _run_weekly_send_case(image_fails=True) == ["text", "cover", "photo"]
+
+
+def test_weekly_text_failure_never_publishes_orphan_cover() -> None:
+    # One text attempt, no retry, no cover render and no photo.
+    assert _run_weekly_send_case(text_fails=True) == ["text", "raised"]
+
+
+def test_weekly_generated_sport_lines_are_not_photo_alerts() -> None:
+    import weekly_photo_cover as photo_module
+    for metrics in ({}, {"gust_max": 25.0, "wave_max": 3.0, "rain": True}):
+        lines = weekly_module._water_sport_lines(metrics)
+        assert lines and not any(photo_module._sport_warning(line) for line in lines), lines
 
 
 def _weekly_api_fixture(dates: list[str]) -> dict:
@@ -463,7 +482,8 @@ def test_weekly_incomplete_current_is_not_snapshot_authority() -> None:
         if key!="time" and isinstance(values,list): partial["daily"][key]=values[:-1]
     assert weekly_module._build_snapshot_candidate(date(2026,7,1),partial,[20.0]*len(weekly_module.SEA_POINTS)) is None
 
-def _run_snapshot_authority_case(*, cover_fails=False, text_fails=False, production=True) -> bool:
+def _run_snapshot_authority_case(*, cover_fails=False, text_fails=False, image_fails=False, production=True,
+                                 observed: dict | None = None) -> bool:
     old_token=os.environ.get("TELEGRAM_TOKEN_KLG"); old_telegram=sys.modules.get("telegram"); old_renderer=weekly_module.render_weekly_cover
     class Message: message_id=777
     class ParseMode: HTML="HTML"
@@ -471,7 +491,10 @@ def _run_snapshot_authority_case(*, cover_fails=False, text_fails=False, product
     Constants.ParseMode=ParseMode
     class Bot:
         def __init__(self,token): pass
-        async def send_photo(self,**kwargs): return object()
+        async def send_photo(self,**kwargs):
+            if observed is not None: observed["snapshot_before_photo"]=out.exists()
+            if image_fails: raise RuntimeError("synthetic image failure")
+            return object()
         async def send_message(self,**kwargs):
             if text_fails: raise RuntimeError("synthetic text failure")
             return Message()
@@ -499,6 +522,10 @@ def test_weekly_snapshot_authority_follows_production_text_success() -> None:
     assert _run_snapshot_authority_case(cover_fails=True) is True
     assert _run_snapshot_authority_case(text_fails=True) is False
     assert _run_snapshot_authority_case(production=False) is False
+    # The text receipt is recorded before the cover and survives its failure.
+    observed: dict = {}
+    assert _run_snapshot_authority_case(image_fails=True, observed=observed) is True
+    assert observed == {"snapshot_before_photo": True}, observed
 
 def test_weekly_first_run_without_history_and_delta_labeling() -> None:
     text=build_weekly_forecast(date(2026,7,1),weather_payload=WEATHER,air_data=AIR,sea_temps=[20.1,21.8,20.6],kp_tuple=KP,lunar_data=LUNAR,
@@ -535,9 +562,11 @@ def main() -> None:
         test_weekly_forecast_structure_without_optional_config,
         test_weekly_forecast_includes_curated_astro_events,
         test_weekly_cover_is_high_contrast_factual_projection,
-        test_weekly_send_orders_cover_before_text_without_network,
+        test_weekly_send_orders_text_before_cover_without_network,
         test_weekly_send_survives_cover_render_failure,
         test_weekly_send_survives_image_send_failure,
+        test_weekly_text_failure_never_publishes_orphan_cover,
+        test_weekly_generated_sport_lines_are_not_photo_alerts,
     )
     for check in checks:
         check()
