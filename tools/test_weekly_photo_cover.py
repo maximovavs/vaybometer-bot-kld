@@ -84,6 +84,59 @@ def run_tests() -> None:
     if region == 'kld':
         from unittest.mock import patch
         import weekly_cover as wrapper
+        from PIL import ImageDraw
+        # Unit checks independent of photographic file availability. The next
+        # stage must still inspect all three original JPGs before activation.
+        assert photo._KLD_TELEGRAM_SAFE_TOP == 135
+        assert photo._KLD_HEADER_GLASS[1] >= photo._KLD_TELEGRAM_SAFE_TOP
+        for source_rgb in ((255, 255, 255), (0, 0, 0), (226, 160, 90)):
+            source = Image.new('RGB', (1080, 1350), source_rgb)
+            glass = photo._kld_header_glass(source)
+            assert ImageChops.difference(source.crop((0, 0, 1080, 135)),
+                                         glass.crop((0, 0, 1080, 135))).getbbox() is None
+            # The translucent dark panel remains high-contrast even on white sky.
+            assert max(glass.getpixel((100, 210))) < 70, source_rgb
+            draw = ImageDraw.Draw(glass)
+            for value, font, origin in (
+                ('VAYBOMETER · KALININGRAD', photo._font(22, True), (65, 170)),
+                ('ВАЙБ НЕДЕЛИ', photo._font(53, True), (64, 207)),
+                (photo._week_label(date(2026, 10, 26)), photo._font(29), (66, 270)),
+            ):
+                bbox = draw.textbbox(origin, value, font=font, stroke_width=1)
+                assert bbox[1] >= 135 and bbox[3] <= photo._KLD_HEADER_GLASS[3], bbox
+        # Pillow's stroke_width=1 extends one pixel beyond its text anchor.
+        stroke_bbox = ImageDraw.Draw(Image.new('RGB', (1080, 1350))).textbbox(
+            (photo._KLD_COLUMN_LEFT[0], 1180), 'дождевые окна',
+            font=photo._font(24), stroke_width=1,
+        )
+        assert stroke_bbox[0] == photo._KLD_COLUMN_LEFT[0] - 1, stroke_bbox
+        # x≈54, 36 and 50 are the independently measured first-frame edges.
+        for frame_left in (54, 36, 50):
+            for index, left in enumerate(photo._KLD_COLUMN_LEFT):
+                assert left + 1 >= frame_left + index * 339 + 16
+                assert left + photo._KLD_COLUMN_TEXT_WIDTH < 1080
+        for content in ('дождевые окна возможны во второй половине недели.',
+                        'штормовые порывы до 24 м/с.',
+                        'ясно и сухо, ночами прохладно.'):
+            d = ImageDraw.Draw(Image.new('RGB', (1080, 1350)))
+            lines = photo._fit(d, content, photo._font(24),
+                               photo._KLD_COLUMN_TEXT_WIDTH, 3)
+            assert 1 <= len(lines) <= 3 and ''.join(lines).replace(' ', '') == content.replace(' ', '')
+        print('PASS KLD header and horizontal geometry: 3 contrast backgrounds, 3 source summaries, 3 frames')
+        # Coast has its own baked glass: two lines, no duplicate overlay.
+        for week in (date(2026, 10, 12), date(2026, 10, 26)):
+            blank = Image.new('RGB', (1080, 1350), (230, 235, 240))
+            coast_draw = ImageDraw.Draw(blank)
+            boxes = photo._kld_coast_header(coast_draw, week)
+            assert len(boxes) == 2
+            for x1, y1, x2, y2 in boxes:
+                assert 60 <= x1 <= x2 <= 920 and 135 <= y1 <= y2 <= 233
+            assert boxes[0][3] + 8 <= boxes[1][1], boxes
+            assert ImageChops.difference(
+                blank.crop((0, 0, 1080, 135)),
+                Image.new('RGB', (1080, 135), (230, 235, 240))
+            ).getbbox() is None
+        print('PASS KLD coast baked single-header: 2 dates, bounds, line separation, safe-top')
         # Only full October/November weeks may use the autumn foliage JPGs.
         # Boundary weeks crossing into/out of that range must fail closed.
         season_cases = (
@@ -142,6 +195,18 @@ def run_tests() -> None:
                         unmarked.crop((0, bottom, 1080, 1350)),
                     )
                     assert outside.getbbox() is None, f'{name}: painted below glass safe zone'
+                    # The real JPG is unchanged in Telegram's upper 10%; the
+                    # completed header remains dark on all three originals.
+                    assert ImageChops.difference(
+                        im.convert('RGB').crop((0, 0, 1080, 135)),
+                        unmarked.crop((0, 0, 1080, 135)),
+                    ).getbbox() is None, f'{name}: painted in unsafe header strip'
+                    if name == 'coast':
+                        # This pixel is outside the two text lines; no second
+                        # glass panel is allowed over the baked coast header.
+                        assert im.convert('RGB').getpixel((100, 310)) == unmarked.getpixel((100, 310)), 'coast: duplicate header panel'
+                    else:
+                        assert max(im.convert('RGB').getpixel((100, 310))) < 70, f'{name}: weak header contrast'
             # A long safety warning never gets shortened to an ellipsis or drawn below the glass.
             too_long = "Температура 11–15°C; штормовые порывы до 24 м/с, опасные волны, " + "сильный ветер и риск для судов; " * 9
             source = f"✨ Главный фон недели\nштормовая неделя\n\n🌦 Погода\n{too_long}\n\n🌊 Балтика\nВода 15–16°C."
