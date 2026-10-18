@@ -222,6 +222,7 @@ jobs:
           python tools/ci_offline_guard/runner.py tools/test_kld_visual_decision_policy.py
           python tools/ci_offline_guard/runner.py tools/test_kld_august_2026_visual_regression.py
           python tools/ci_offline_guard/runner.py tools/test_kld_image_first.py
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_seam.py
           python tools/ci_offline_guard/runner.py tools/test_kld_visual_workflow.py
       - name: Verify zero attempted network connections in PR regressions
         if: always()

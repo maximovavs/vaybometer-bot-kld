@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Offline checks for the injection-only KLD semantic QA seam.
+
+The real ``execute_image_delivery`` ladder is exercised with fixture
+providers and an injected evaluator.  Production never injects one.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import socket
+import time
+from hashlib import sha256
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+NETWORK_ATTEMPTS: list[object] = []
+
+
+def _deny_network(self, address, *args, **kwargs):
+    NETWORK_ATTEMPTS.append(address)
+    raise OSError("network disabled in KLD semantic QA seam checks")
+
+
+socket.socket.connect = _deny_network  # type: ignore[method-assign]
+socket.socket.connect_ex = _deny_network  # type: ignore[method-assign]
+
+from test_kld_image_first import (  # noqa: E402
+    ROOT,
+    _args,
+    _bounded_cover_renderer,
+    _cover_renderer,
+    _duplicate,
+    _image,
+    _orchestrate,
+    _record,
+    _write_delivery_fixture,
+    MESSAGE,
+)
+from kld_visual_semantic_qa import SCHEMA, evaluate_semantic_qa  # noqa: E402
+from tools.kld_visual_fixture_image import build_payload, execute_image_delivery  # noqa: E402
+
+TARGET_DATE = "2026-07-20"
+FACTS = {
+    "target_date": TARGET_DATE,
+    "post_type": "evening",
+    "weather_target_date": TARGET_DATE,
+    "visibility_target_date": TARGET_DATE,
+    "lunar_target_date": TARGET_DATE,
+    "lunar_phase": "waxing_crescent",
+    "visibility_condition": "reduced_visibility",
+}
+OBSERVATIONS = {
+    "moon_visibility": "not_visible",
+    "moon_shape": "not_applicable",
+    "dominant_moon": "no",
+    "visibility_appearance": "mist",
+    "weather_appearance": "cloudy",
+}
+
+
+def _response(image: bytes, decision: str = "ACCEPT", **overrides):
+    payload = {
+        "qa_schema_version": SCHEMA,
+        "model_or_evaluator_version": "fixture-evaluator-1",
+        "raw_image_sha256": sha256(image).hexdigest(),
+        "decision": decision,
+        "reason_codes": [] if decision == "ACCEPT" else ["fixture_" + decision.lower()],
+        "observations": dict(OBSERVATIONS),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _evaluator(calls: list[tuple[bytes, dict]], decide):
+    def evaluate(image: bytes, facts):
+        calls.append((image, dict(facts)))
+        return decide(len(calls), image)
+
+    return evaluate
+
+
+def _ai_or_cover_evaluate(*, ai, cover):
+    """Fixture dedup that tells AI candidates (ai-*.png) from local covers."""
+
+    def evaluate(path, **_kwargs):
+        return ai(path) if Path(path).name.startswith("ai-") else cover(path)
+
+    return evaluate
+
+
+def _generate(root: Path):
+    count = 0
+
+    def generate(**_kwargs):
+        nonlocal count
+        count += 1
+        return _image(root / f"ai-{count}.png", (60 + count, 100, 140))
+
+    return generate
+
+
+def _deliver(root: Path, *, generate, evaluate, cover_renderer, events, semantic_qa=None,
+             semantic_qa_facts=None, timeout_s=None, omit_qa=False, presentation_renderer=None):
+    args = _args(root)
+    visibility = {
+        "visibility_condition": "reduced_visibility",
+        "morning_min_visibility_m": 5500,
+        "reported_visibility_threshold_m": 6000,
+    }
+    kwargs = {}
+    if not omit_qa:
+        kwargs.update(semantic_qa=semantic_qa, semantic_qa_facts=semantic_qa_facts)
+        if timeout_s is not None:
+            kwargs["semantic_qa_timeout_s"] = timeout_s
+    if presentation_renderer is not None:
+        kwargs["presentation_renderer"] = presentation_renderer
+    return execute_image_delivery(
+        args=args,
+        message=MESSAGE,
+        initial_payload=build_payload(MESSAGE, "test", post_type="evening", visibility_context=visibility),
+        visibility_context=visibility,
+        history_path=root / "history.json",
+        generate_image=generate,
+        evaluate_candidate=evaluate,
+        cover_renderer=cover_renderer,
+        validate_cover=lambda *_a, **_k: {"valid": True, "errors": []},
+        send_photo=lambda path, *_a, **_k: events.append("photo:" + Path(path).name) or 901,
+        record_publication=_record(events),
+        **kwargs,
+    )
+
+
+def _accept_all(*_args, **_kwargs):
+    return _duplicate(accepted=True, reason="accepted", distance=22)
+
+
+def qa_accept_publishes_hash_bound_raw_candidate() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        calls: list[tuple[bytes, dict]] = []
+        outcome = _deliver(
+            root,
+            generate=_generate(root),
+            evaluate=_accept_all,
+            cover_renderer=_cover_renderer(events),
+            events=events,
+            semantic_qa=_evaluator(calls, lambda _n, image: _response(image)),
+            semantic_qa_facts=FACTS,
+        )
+        assert outcome["result"] == "sent" and outcome["backend"] == "pollinations"
+        assert outcome["cover_attempted"] is False
+        assert len(calls) == 1
+        raw = (root / "ai-1.png").read_bytes()
+        assert calls[0][0] == raw and calls[0][1]["target_date"] == TARGET_DATE
+        qa = outcome["semantic_qa_results"]
+        assert [item["decision"] for item in qa] == ["ACCEPT"]
+        assert qa[0]["image_sha256"] == sha256(raw).hexdigest() == outcome["source_sha256"]
+        assert qa[0]["image_sha256"] != outcome["published_sha256"]
+        assert outcome["provider_attempts"][0]["semantic_qa"]["decision"] == "ACCEPT"
+        assert events == ["photo:ai-1.branded.png", "history"]
+
+
+def qa_reject_rotates_to_next_candidate() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        calls: list[tuple[bytes, dict]] = []
+
+        def decide(n, image):
+            if n == 1:
+                return _response(image, "REJECT", reason_codes=["moon_phase_conflict"])
+            return _response(image)
+
+        outcome = _deliver(
+            root,
+            generate=_generate(root),
+            evaluate=_accept_all,
+            cover_renderer=_cover_renderer(events),
+            events=events,
+            semantic_qa=_evaluator(calls, decide),
+            semantic_qa_facts=FACTS,
+        )
+        assert outcome["result"] == "sent" and outcome["cover_attempted"] is False
+        assert [item["decision"] for item in outcome["semantic_qa_results"]] == ["REJECT", "ACCEPT"]
+        assert outcome["semantic_qa_results"][0]["reason"] == "moon_phase_conflict"
+        attempts = outcome["provider_attempts"]
+        assert len(attempts) == 2
+        assert attempts[0]["scene_family"] != attempts[1]["scene_family"]
+        assert outcome["source_sha256"] == sha256((root / "ai-2.png").read_bytes()).hexdigest()
+        assert events == ["photo:ai-2.branded.png", "history"]
+
+
+def _all_rejected(root: Path, decide, *, facts=FACTS, timeout_s=None):
+    events: list[str] = []
+    calls: list[tuple[bytes, dict]] = []
+    outcome = _deliver(
+        root,
+        generate=_generate(root),
+        evaluate=_accept_all,
+        cover_renderer=_cover_renderer(events),
+        events=events,
+        semantic_qa=_evaluator(calls, decide),
+        semantic_qa_facts=facts,
+        timeout_s=timeout_s,
+    )
+    return outcome, events, calls
+
+
+def qa_unknown_on_every_candidate_uses_curated_fallback() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        outcome, events, calls = _all_rejected(root, lambda _n, image: _response(image, "UNKNOWN"))
+        assert len(calls) == 3, "local cover must not be routed through semantic QA"
+        assert outcome["result"] == "fallback_sent"
+        assert outcome["backend"] == "local_informative_cover"
+        assert outcome["local_cover_published"] is True
+        assert outcome["fallback_reason"] == "semantic_qa_rejected"
+        assert outcome["error_type"] == "CandidateRejected"
+        assert "semantic_qa:UNKNOWN:fixture_unknown" in outcome["error_message"]
+        assert [item["decision"] for item in outcome["semantic_qa_results"]] == ["UNKNOWN"] * 3
+        assert events == ["cover", "photo:cover.png", "history"]
+
+
+def malformed_timeout_and_failing_evaluators_fail_closed() -> None:
+    def hang(_n, image):
+        time.sleep(1.0)
+        return _response(image)
+
+    def boom(_n, _image):
+        raise RuntimeError("fixture evaluator crash")
+
+    bad_obs = dict(OBSERVATIONS, moon_shape="banana")
+    full_disk = dict(OBSERVATIONS, moon_visibility="visible", moon_shape="full_disk", dominant_moon="yes")
+    fog = dict(OBSERVATIONS, visibility_appearance="dense_fog")
+    cases = [
+        (hang, "UNKNOWN", "qa_timeout", {"timeout_s": 0.1}),
+        (boom, "UNKNOWN", "qa_unavailable", {}),
+        (lambda _n, _i: "ACCEPT", "UNKNOWN", "schema_error", {}),
+        (lambda _n, i: _response(i, qa_schema_version="v0"), "UNKNOWN", "schema_error", {}),
+        (lambda _n, i: _response(i, model_or_evaluator_version=""), "UNKNOWN", "schema_error", {}),
+        (lambda _n, i: _response(i, raw_image_sha256="0" * 64), "UNKNOWN", "image_hash_mismatch", {}),
+        (lambda _n, i: _response(i, decision="accept"), "UNKNOWN", "invalid_decision", {}),
+        (lambda _n, i: _response(i, observations=None), "UNKNOWN", "missing_observations", {}),
+        (lambda _n, i: _response(i, observations=bad_obs), "UNKNOWN", "invalid_observations", {}),
+        (lambda _n, i: _response(i, reason_codes="ok"), "UNKNOWN", "invalid_reason_codes", {}),
+        (lambda _n, i: _response(i, reason_codes=["invented_dense_fog"]), "UNKNOWN", "contradictory_verdict", {}),
+        (lambda _n, i: _response(i, observations=dict(OBSERVATIONS, weather_appearance="ambiguous")),
+         "UNKNOWN", "insufficient_visual_evidence", {}),
+        (lambda _n, i: _response(i, observations=full_disk), "REJECT", "moon_phase_conflict", {}),
+        (lambda _n, i: _response(i, observations=fog), "REJECT", "invented_dense_fog",
+         {"facts": dict(FACTS, visibility_condition="clear")}),
+    ]
+    for decide, decision, reason, extra in cases:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = time.monotonic()
+            outcome, events, calls = _all_rejected(root, decide, **extra)
+            assert len(calls) == 3, reason
+            results = outcome["semantic_qa_results"]
+            assert [(item["decision"], item["reason"]) for item in results] == [(decision, reason)] * 3, (reason, results)
+            assert outcome["backend"] == "local_informative_cover", reason
+            assert outcome["fallback_reason"] == "semantic_qa_rejected", reason
+            assert not any(event.startswith("photo:ai-") for event in events), reason
+            if reason == "qa_timeout":
+                assert time.monotonic() - started < 2.5, "timeout must bound each QA call"
+
+
+def temporal_mismatch_is_unknown_without_calling_evaluator() -> None:
+    for facts in (
+        dict(FACTS, target_date="2026-07-19"),
+        dict(FACTS, post_type="morning"),
+        dict(FACTS, weather_target_date="2026-07-21"),
+        dict(FACTS, visibility_target_date="2026-07-19"),
+        dict(FACTS, lunar_target_date=""),
+        None,
+    ):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outcome, events, calls = _all_rejected(root, lambda _n, image: _response(image), facts=facts)
+            assert calls == [], facts
+            assert {item["reason"] for item in outcome["semantic_qa_results"]} == {"temporal_mismatch"}
+            assert outcome["backend"] == "local_informative_cover"
+            assert not any(event.startswith("photo:ai-") for event in events)
+
+
+def unreadable_image_and_hash_are_bound_to_bytes() -> None:
+    calls: list[object] = []
+    verdict = evaluate_semantic_qa(lambda *a: calls.append(a), None, FACTS,
+                                   expected_target_date=TARGET_DATE, expected_post_type="evening")
+    assert (verdict.decision, verdict.reason, calls) == ("UNKNOWN", "image_unreadable", [])
+    image = b"fixture-bytes"
+    other = b"other-bytes"
+    ok = evaluate_semantic_qa(lambda img, _f: _response(img), image, FACTS,
+                              expected_target_date=TARGET_DATE, expected_post_type="evening")
+    swapped = evaluate_semantic_qa(lambda _img, _f: _response(other), image, FACTS,
+                                   expected_target_date=TARGET_DATE, expected_post_type="evening")
+    assert ok.accepted and ok.image_sha256 == sha256(image).hexdigest()
+    assert (swapped.decision, swapped.reason) == ("UNKNOWN", "image_hash_mismatch")
+
+
+def upstream_guard_rejections_never_invoke_semantic_qa() -> None:
+    for reason, fallback in (
+        ("content_guard:summer_dry_steppe", "semantic_mismatch"),
+        ("content_guard:season_snow_in_july", "semantic_mismatch"),
+        ("scene_cooldown", "scene_policy_rejected"),
+        ("near_duplicate", "near_duplicate"),
+        ("exact_duplicate", "exact_duplicate"),
+    ):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events: list[str] = []
+            calls: list[tuple[bytes, dict]] = []
+            outcome = _deliver(
+                root,
+                generate=_generate(root),
+                evaluate=_ai_or_cover_evaluate(
+                    ai=lambda _p: _duplicate(accepted=False, reason=reason, distance=3),
+                    cover=lambda _p: _duplicate(accepted=True, reason="accepted", distance=30),
+                ),
+                cover_renderer=_cover_renderer(events),
+                events=events,
+                semantic_qa=_evaluator(calls, lambda _n, image: _response(image)),
+                semantic_qa_facts=FACTS,
+            )
+            assert calls == [], reason
+            assert "semantic_qa_results" not in outcome
+            assert all("semantic_qa" not in item for item in outcome["provider_attempts"])
+            assert outcome["fallback_reason"] == fallback, (reason, outcome["fallback_reason"])
+            assert outcome["backend"] == "local_informative_cover"
+
+
+def qa_rejections_keep_terminal_relaxation_for_older_near_duplicates() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        calls: list[tuple[bytes, dict]] = []
+        outcome = _deliver(
+            root,
+            generate=_generate(root),
+            evaluate=_ai_or_cover_evaluate(
+                ai=lambda _p: _duplicate(accepted=True, reason="accepted", distance=25),
+                cover=lambda _p: _duplicate(
+                    accepted=False, reason="near_duplicate", distance=0, matched_target_date="2026-07-19",
+                ),
+            ),
+            cover_renderer=_bounded_cover_renderer(events),
+            events=events,
+            semantic_qa=_evaluator(calls, lambda _n, image: _response(image, "REJECT")),
+            semantic_qa_facts=FACTS,
+        )
+        assert len(calls) == 3
+        assert outcome["result"] == "fallback_sent"
+        assert outcome["fallback_reason"] == "semantic_qa_rejected"
+        assert outcome["dedup_reason"] == "near_duplicate_terminal_local_allowed"
+        assert outcome["terminal_local_relaxation"]["used"] is True
+        assert events == ["cover:kld_overcast_01", "cover:kld_overcast_02", "photo:cover.png", "history"]
+
+
+def qa_rejections_with_blocked_covers_remain_text_only() -> None:
+    for reason, matched in (("near_duplicate", TARGET_DATE), ("exact_duplicate", "2026-07-19")):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events: list[str] = []
+            calls: list[tuple[bytes, dict]] = []
+            outcome = _deliver(
+                root,
+                generate=_generate(root),
+                evaluate=_ai_or_cover_evaluate(
+                    ai=lambda _p: _duplicate(accepted=True, reason="accepted", distance=25),
+                    cover=lambda _p, r=reason, m=matched: _duplicate(
+                        accepted=False, reason=r, distance=0, matched_target_date=m,
+                    ),
+                ),
+                cover_renderer=_bounded_cover_renderer(events),
+                events=events,
+                semantic_qa=_evaluator(calls, lambda _n, image: _response(image, "UNKNOWN")),
+                semantic_qa_facts=FACTS,
+            )
+            assert len(calls) == 3
+            assert outcome["result"] == "skipped_duplicate", (reason, outcome["result"])
+            assert outcome["telegram_image_sent"] is False and outcome["history_recorded"] is False
+            assert not any(event.startswith("photo:") for event in events)
+            final, order = _orchestrate(root, outcome)
+            assert final["text_sent"] is True and order == ["preview", "image", "text"]
+
+
+def qa_accept_keeps_presentation_failure_fallback() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        events: list[str] = []
+        calls: list[tuple[bytes, dict]] = []
+
+        def fail_presentation(*_a, **_k):
+            raise RuntimeError("fixture presentation failure")
+
+        outcome = _deliver(
+            root,
+            generate=_generate(root),
+            evaluate=_accept_all,
+            cover_renderer=_cover_renderer(events),
+            events=events,
+            semantic_qa=_evaluator(calls, lambda _n, image: _response(image)),
+            semantic_qa_facts=FACTS,
+            presentation_renderer=fail_presentation,
+        )
+        assert len(calls) == 1
+        assert outcome["fallback_reason"] == "presentation_failure"
+        assert outcome["backend"] == "local_informative_cover"
+        assert events == ["cover", "photo:cover.png", "history"]
+
+
+def existing_receipts_skip_image_step_and_semantic_qa() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_delivery_fixture(root, image_id=711)
+        outcome, order = _orchestrate(
+            root,
+            {"result": "sent", "telegram_image_sent": True, "telegram_image_message_id": 999},
+            production=True,
+        )
+        assert order == ["preview", "text"], "image subprocess (and its QA) must not run"
+        assert outcome["image_send_skipped_receipt"] is True
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_delivery_fixture(root, image_id=711, text_ids=[712])
+        outcome, order = _orchestrate(root, {"result": "sent"}, production=True)
+        assert outcome["result"] == "skipped_delivery_receipt_complete" and order == []
+
+
+def default_without_evaluator_is_unchanged() -> None:
+    def normalise(outcome, root):
+        return json.loads(json.dumps(outcome, sort_keys=True, default=str).replace(str(root), "<ROOT>"))
+
+    results = []
+    for omit in (True, False):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events: list[str] = []
+            outcome = _deliver(
+                root,
+                generate=_generate(root),
+                evaluate=_accept_all,
+                cover_renderer=_cover_renderer(events),
+                events=events,
+                omit_qa=omit,
+                semantic_qa_facts=FACTS,
+            )
+            assert "semantic_qa_results" not in outcome
+            assert all("semantic_qa" not in item for item in outcome["provider_attempts"])
+            assert outcome["result"] == "sent" and events == ["photo:ai-1.branded.png", "history"]
+            results.append(normalise(outcome, root))
+    assert results[0] == results[1]
+
+
+def production_call_site_never_injects_semantic_qa() -> None:
+    source = (ROOT / "tools" / "kld_visual_fixture_image.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "execute_image_delivery"
+    ]
+    assert len(calls) == 1
+    assert not any(kw.arg and kw.arg.startswith("semantic_qa") for kw in calls[0].keywords)
+    seam = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "execute_image_delivery"
+    )
+    defaults = {arg.arg: value for arg, value in zip(seam.args.kwonlyargs, seam.args.kw_defaults)}
+    assert isinstance(defaults["semantic_qa"], ast.Constant) and defaults["semantic_qa"].value is None
+    importers = [
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.rglob("*.py")
+        if ".git" not in path.parts and "kld_visual_semantic_qa" in path.read_text(encoding="utf-8", errors="ignore")
+    ]
+    assert sorted(importers) == ["tools/kld_visual_fixture_image.py", "tools/test_kld_semantic_qa_seam.py"], importers
+    qa_source = (ROOT / "kld_visual_semantic_qa.py").read_text(encoding="utf-8")
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(ast.parse(qa_source))
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in (node.names if isinstance(node, ast.Import) else [ast.alias(node.module or "")])
+    }
+    assert imported <= {"__future__", "concurrent", "dataclasses", "hashlib", "typing"}, imported
+    for path in (ROOT / ".github" / "workflows").glob("*.y*ml"):
+        assert "semantic_qa" not in path.read_text(encoding="utf-8") or path.name == "pr_checks.yml", path.name
+
+
+def network_attempt_ledger_is_empty() -> None:
+    assert NETWORK_ATTEMPTS == [], NETWORK_ATTEMPTS
+
+
+TESTS = [
+    qa_accept_publishes_hash_bound_raw_candidate,
+    qa_reject_rotates_to_next_candidate,
+    qa_unknown_on_every_candidate_uses_curated_fallback,
+    malformed_timeout_and_failing_evaluators_fail_closed,
+    temporal_mismatch_is_unknown_without_calling_evaluator,
+    unreadable_image_and_hash_are_bound_to_bytes,
+    upstream_guard_rejections_never_invoke_semantic_qa,
+    qa_rejections_keep_terminal_relaxation_for_older_near_duplicates,
+    qa_rejections_with_blocked_covers_remain_text_only,
+    qa_accept_keeps_presentation_failure_fallback,
+    existing_receipts_skip_image_step_and_semantic_qa,
+    default_without_evaluator_is_unchanged,
+    production_call_site_never_injects_semantic_qa,
+    network_attempt_ledger_is_empty,
+]
+
+
+def main() -> None:
+    for test in TESTS:
+        test()
+        print(f"PASS: {test.__name__}")
+    print(f"OK: {len(TESTS)} KLD semantic QA seam offline checks passed")
+
+
+if __name__ == "__main__":
+    main()

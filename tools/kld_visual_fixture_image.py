@@ -60,6 +60,7 @@ from kld_visual_policy import (  # noqa: E402
     scene_macro_family,
     scene_policy_rejection,
 )
+from kld_visual_semantic_qa import DEFAULT_TIMEOUT_S as SEMANTIC_QA_TIMEOUT_S, evaluate_semantic_qa  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues, to_json  # noqa: E402
 
@@ -645,6 +646,8 @@ def _provider_attempt_payload(
 def _rejection_fallback_reason(reasons: list[str]) -> str:
     if any(str(reason).startswith("content_guard:") for reason in reasons):
         return "semantic_mismatch"
+    if any(str(reason).startswith("semantic_qa:") for reason in reasons):
+        return "semantic_qa_rejected"
     if any(reason in {"scene_cooldown", "scene_macro_cooldown"} for reason in reasons):
         return "scene_policy_rejected"
     if "near_duplicate" in reasons:
@@ -670,6 +673,9 @@ def execute_image_delivery(
     send_photo: Callable[..., int | None] | None = None,
     record_publication: Callable[..., Mapping[str, Any]] = record_kld_visual_publication,
     presentation_renderer: Callable[..., Mapping[str, Any]] = ai_presentation.render_branded_ai_presentation,
+    semantic_qa: Callable[[bytes, Mapping[str, Any]], Any] | None = None,
+    semantic_qa_facts: Mapping[str, Any] | None = None,
+    semantic_qa_timeout_s: float = SEMANTIC_QA_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Try two providers, then a validated factual cover, without fatal image-only exits."""
     if generate_image is None:
@@ -829,6 +835,35 @@ def execute_image_delivery(
                 f"scene={metadata['scene_family']} composition={metadata['composition']} "
                 f"min_distance={duplicate.min_distance}"
             )
+            if duplicate.accepted and semantic_qa is not None:
+                # Injection-only: runs after every existing guard accepted the
+                # candidate and can only veto it.  REJECT and UNKNOWN are hard
+                # rejections that fall through to the existing ladder.
+                try:
+                    qa_image: bytes | None = Path(img_path).read_bytes()
+                except OSError:
+                    qa_image = None
+                verdict = evaluate_semantic_qa(
+                    semantic_qa,
+                    qa_image,
+                    semantic_qa_facts or {},
+                    expected_target_date=str(metadata["target_date"]),
+                    expected_post_type=args.post_type,
+                    timeout_s=semantic_qa_timeout_s,
+                )
+                qa_payload = verdict.as_payload()
+                outcome.setdefault("semantic_qa_results", []).append(
+                    {"attempt": int(candidate["variation_attempt"]), "backend": backend, **qa_payload}
+                )
+                outcome["provider_attempts"][-1]["semantic_qa"] = qa_payload
+                print(
+                    "KLD image semantic QA: "
+                    f"backend={backend} variation={candidate['variation_attempt']} "
+                    f"decision={verdict.decision} reason={verdict.reason}"
+                )
+                if not verdict.accepted:
+                    duplicate_reasons.append(f"semantic_qa:{verdict.decision}:{verdict.reason}")
+                    continue
             if duplicate.accepted:
                 print(f"Selected KLD raw image: backend={backend} path={img_path}")
                 try:
