@@ -317,6 +317,77 @@ def codex_p2_ambiguous_and_contradictory_accept_fail_closed() -> None:
         assert (verdict.decision, verdict.reason) == ("ACCEPT", "observed_consistent"), verdict
 
 
+def codex_p2_lunar_phase_shape_matrix_fail_closed() -> None:
+    """R2m: all eight known phases must match a visible moon's shape."""
+    valid_shapes = {
+        "new": None,
+        "waxing_crescent": "crescent",
+        "first_quarter": "quarter",
+        "waxing_gibbous": "gibbous",
+        "full": "full_disk",
+        "waning_gibbous": "gibbous",
+        "last_quarter": "quarter",
+        "waning_crescent": "crescent",
+    }
+    shapes = ("crescent", "quarter", "gibbous", "full_disk")
+    for phase, allowed_shape in valid_shapes.items():
+        facts = dict(FACTS, lunar_phase=phase)
+        for shape in shapes:
+            observations = dict(OBSERVATIONS, moon_visibility="visible", moon_shape=shape)
+            verdict = evaluate_semantic_qa(
+                lambda img, _f, observations=observations: _response(img, observations=observations),
+                (phase + ":" + shape).encode("ascii"), facts,
+                expected_target_date=TARGET_DATE, expected_post_type="evening",
+            )
+            expected = ("ACCEPT", "observed_consistent") if shape == allowed_shape else (
+                "REJECT", "moon_phase_conflict"
+            )
+            assert (verdict.decision, verdict.reason) == expected, (phase, shape, verdict)
+        # Correctly hidden Moon is compatible with every known phase.
+        hidden = evaluate_semantic_qa(
+            lambda img, _f: _response(img), phase.encode("ascii"), facts,
+            expected_target_date=TARGET_DATE, expected_post_type="evening",
+        )
+        assert (hidden.decision, hidden.reason) == ("ACCEPT", "observed_consistent"), phase
+
+    for phase in (None, "", "unknown", "unrecognised"):
+        facts = dict(FACTS, lunar_phase=phase)
+        image = b"lunar-phase-unknown"
+        observations = dict(OBSERVATIONS, moon_visibility="visible", moon_shape="crescent")
+        verdict = evaluate_semantic_qa(
+            lambda raw, _f: _response(raw, observations=observations), image, facts,
+            expected_target_date=TARGET_DATE, expected_post_type="evening",
+        )
+        assert (verdict.decision, verdict.reason) == ("UNKNOWN", "lunar_phase_unknown"), phase
+        # A clearly moonless image asserts no phase-specific lunar fact.
+        hidden = evaluate_semantic_qa(
+            lambda raw, _f: _response(raw), image, facts,
+            expected_target_date=TARGET_DATE, expected_post_type="evening",
+        )
+        assert (hidden.decision, hidden.reason) == ("ACCEPT", "observed_consistent"), phase
+
+    # Exercise the genuine provider -> semantic veto -> curated fallback path.
+    for phase, shape, expected_decision, expected_reason in (
+        ("new", "crescent", "REJECT", "moon_phase_conflict"),
+        ("first_quarter", "full_disk", "REJECT", "moon_phase_conflict"),
+        ("full", "crescent", "REJECT", "moon_phase_conflict"),
+        ("waning_gibbous", "quarter", "REJECT", "moon_phase_conflict"),
+        ("unknown", "crescent", "UNKNOWN", "lunar_phase_unknown"),
+    ):
+        observations = dict(OBSERVATIONS, moon_visibility="visible", moon_shape=shape)
+        facts = dict(FACTS, lunar_phase=phase)
+        with TemporaryDirectory() as tmp:
+            outcome, events, calls = _all_rejected(
+                Path(tmp), lambda _n, raw: _response(raw, observations=observations), facts=facts,
+            )
+            assert len(calls) == 3
+            assert all((item["decision"], item["reason"]) == (expected_decision, expected_reason)
+                       for item in outcome["semantic_qa_results"]), (phase, shape, outcome)
+            assert outcome["backend"] == "local_informative_cover"
+            assert outcome["fallback_reason"] == "semantic_qa_rejected"
+            assert not any(event.startswith("photo:ai-") for event in events)
+
+
 def temporal_mismatch_is_unknown_without_calling_evaluator() -> None:
     for facts in (
         dict(FACTS, target_date="2026-07-19"),
@@ -547,6 +618,7 @@ TESTS = [
     qa_unknown_on_every_candidate_uses_curated_fallback,
     malformed_timeout_and_failing_evaluators_fail_closed,
     codex_p2_ambiguous_and_contradictory_accept_fail_closed,
+    codex_p2_lunar_phase_shape_matrix_fail_closed,
     temporal_mismatch_is_unknown_without_calling_evaluator,
     unreadable_image_and_hash_are_bound_to_bytes,
     upstream_guard_rejections_never_invoke_semantic_qa,

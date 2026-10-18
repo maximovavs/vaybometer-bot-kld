@@ -27,6 +27,18 @@ _OBSERVATIONS = {
     "weather_appearance": {"cloudy", "rain", "clear", "other", "ambiguous"},
 }
 _CONFLICT_CODES = {"moon_phase_conflict", "invented_dense_fog", "other_weather_conflict"}
+# Only apparent shape can be checked by the current evaluator schema.
+# Waxing/waning orientation and illumination remain outside this contract.
+_PHASE_SHAPES = {
+    "new": frozenset(),
+    "waxing_crescent": frozenset({"crescent"}),
+    "first_quarter": frozenset({"quarter"}),
+    "waxing_gibbous": frozenset({"gibbous"}),
+    "full": frozenset({"full_disk"}),
+    "waning_gibbous": frozenset({"gibbous"}),
+    "last_quarter": frozenset({"quarter"}),
+    "waning_crescent": frozenset({"crescent"}),
+}
 
 
 @dataclass(frozen=True)
@@ -124,9 +136,12 @@ def evaluate_semantic_qa(
         if moon_visibility == "visible" and moon_shape == "not_applicable":
             return verdict("UNKNOWN", "contradictory_observations", version)
         lunar = str(facts.get("lunar_phase") or "")
-        if (lunar in {"waxing_crescent", "waning_crescent"} and observations["moon_visibility"] == "visible"
-                and observations["moon_shape"] == "full_disk"):
-            return verdict("REJECT", "moon_phase_conflict", version)
+        if moon_visibility == "visible":
+            # Unknown or missing source phase cannot substantiate any visible moon.
+            if lunar not in _PHASE_SHAPES:
+                return verdict("UNKNOWN", "lunar_phase_unknown", version)
+            if moon_shape not in _PHASE_SHAPES[lunar]:
+                return verdict("REJECT", "moon_phase_conflict", version)
         if str(facts.get("visibility_condition") or "") == "clear" and observations["visibility_appearance"] == "dense_fog":
             return verdict("REJECT", "invented_dense_fog", version)
     return verdict(decision, codes[0] if codes else "observed_consistent", version)
