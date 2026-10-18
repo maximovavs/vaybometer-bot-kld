@@ -26,6 +26,14 @@ RUSSIAN_MONTHS = (
 )
 
 
+_SECTION_HEADINGS = (
+    "✨ Главный фон недели", "🌿 Смысл недели", "🌦 Погода", "🌊 Море", "🌊 Балтика",
+    "🏄 Вода и спорт", "🏭 Воздух сейчас", "🧲 Космопогода сейчас",
+    "🌙 Луна и астроритм (интерпретация)", "↔️ К прошлому недельному прогнозу",
+    "✅ Как прожить неделю",
+)
+
+
 def _section(text: str, heading: str) -> str:
     """Stop at another section header: missing weather must never borrow another fact."""
     lines = [line.strip() for line in text.splitlines()]
@@ -34,16 +42,26 @@ def _section(text: str, heading: str) -> str:
             for candidate in lines[i + 1:]:
                 if not candidate:
                     continue
-                if candidate in (
-                    "✨ Главный фон недели", "🌿 Смысл недели", "🌦 Погода", "🌊 Море", "🌊 Балтика",
-                    "🏄 Вода и спорт", "🏭 Воздух сейчас", "🧲 Космопогода сейчас",
-                    "🌙 Луна и астроритм (интерпретация)", "↔️ К прошлому недельному прогнозу",
-                    "✅ Как прожить неделю",
-                ):
+                if candidate in _SECTION_HEADINGS:
                     return ""
                 return candidate
             return ""
     return ""
+
+
+def _section_lines(text: str, heading: str) -> list[str]:
+    """Every non-empty line of a section, for safety scans (not for display)."""
+    lines = [line.strip() for line in text.splitlines()]
+    for i, line in enumerate(lines):
+        if line == heading:
+            found: list[str] = []
+            for candidate in lines[i + 1:]:
+                if candidate in _SECTION_HEADINGS:
+                    break
+                if candidate:
+                    found.append(candidate)
+            return found
+    return []
 
 
 def _is_partial(text: str) -> bool:
@@ -91,6 +109,23 @@ def _critical_warning(content: str) -> bool:
         r"высоки[ех] волны|не выходить|отложить|запрещен\w*|запрещён\w*)\b",
         signal,
     ))
+
+
+# Routine advice such as "проверять порывы и направление" is not itself a
+# gust warning.  Only that bounded phrase is neutralised; a gust value or any
+# other hazard cue on the same line still counts.
+_SPORT_ADVICE = re.compile(
+    r"\b(?:провер\w*|учитыва\w*|следить\s+за)\s+порыв\w*(?:\s+и\s+направлени\w*)?(?=\s*(?:[.;,]|$))"
+)
+_SPORT_DANGER = re.compile(
+    r"\b(?:сильн\w*\s+(?:ветер|ветр\w*|порыв\w*|волн\w*)|небезопасн\w*|не\s+рекоменд\w*)\b"
+)
+
+
+def _sport_warning(content: str) -> bool:
+    """A water/sport line that reports dangerous wind, gusts, waves or unsafe activity."""
+    signal = _SPORT_ADVICE.sub(" ", content.casefold())
+    return _critical_warning(signal) or bool(_SPORT_DANGER.search(signal))
 
 
 def _weather_summary(weather: str, main_fact: str) -> str:
@@ -268,7 +303,8 @@ def render_photo_cover(text: str, *, start: date, output_path: str | Path, regio
         raise ValueError("KLD autumn-only photo assets cannot cover this week")
     main_fact = _section(text, "✨ Главный фон недели")
     weather_fact = _section(text, "🌦 Погода")
-    sea_fact = _section(text, "🌊 Море" if region == "cyprus" else "🌊 Балтика")
+    sea_heading = "🌊 Море" if region == "cyprus" else "🌊 Балтика"
+    sea_fact = _section(text, sea_heading)
     if not main_fact or not weather_fact or not sea_fact:
         raise ValueError("Weekly source sections are incomplete; refusing photo cover")
     scenario = _scenario(region, weather_fact, main_fact)
@@ -303,10 +339,17 @@ def render_photo_cover(text: str, *, start: date, output_path: str | Path, regio
     weather_summary = _weather_summary(weather_fact, main_fact)
     # This three-column cover cannot safely show independent marine alerts.
     # Reject it rather than display a reassuring temperature-only sea column.
-    if _critical_warning(sea_fact):
+    # Scan every line of a section: the columns only show its first line.
+    if any(_critical_warning(line) for line in _section_lines(text, sea_heading)):
         raise ValueError("Weekly marine alert cannot be represented in photo columns")
     if _critical_warning(main_fact) and not _critical_warning(weather_summary):
         raise ValueError("Weekly headline alert would be omitted from photo columns")
+    if any(_critical_warning(line) for line in _section_lines(text, "✨ Главный фон недели")[1:]):
+        raise ValueError("Weekly headline alert on a later line would be omitted from photo columns")
+    if any(_critical_warning(line) for line in _section_lines(text, "🌦 Погода")[1:]):
+        raise ValueError("Weekly weather alert on a later line would be omitted from photo columns")
+    if any(_sport_warning(line) for line in _section_lines(text, "🏄 Вода и спорт")):
+        raise ValueError("Weekly water/sport alert cannot be represented in photo columns")
     temp = _temperature(weather_fact, main_fact)
     sea = _sea(sea_fact)
     facts = [
