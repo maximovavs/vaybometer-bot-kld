@@ -103,8 +103,9 @@ def _generate(root: Path):
 
 
 def _deliver(root: Path, *, generate, evaluate, cover_renderer, events, semantic_qa=None,
-             semantic_qa_facts=None, timeout_s=None, omit_qa=False, presentation_renderer=None):
-    args = _args(root)
+             semantic_qa_facts=None, timeout_s=None, omit_qa=False, presentation_renderer=None,
+             post_type="evening"):
+    args = _args(root, post_type=post_type)
     visibility = {
         "visibility_condition": "reduced_visibility",
         "morning_min_visibility_m": 5500,
@@ -120,7 +121,7 @@ def _deliver(root: Path, *, generate, evaluate, cover_renderer, events, semantic
     return execute_image_delivery(
         args=args,
         message=MESSAGE,
-        initial_payload=build_payload(MESSAGE, "test", post_type="evening", visibility_context=visibility),
+        initial_payload=build_payload(MESSAGE, "test", post_type=post_type, visibility_context=visibility),
         visibility_context=visibility,
         history_path=root / "history.json",
         generate_image=generate,
@@ -194,7 +195,7 @@ def qa_reject_rotates_to_next_candidate() -> None:
         assert events == ["photo:ai-2.branded.png", "history"]
 
 
-def _all_rejected(root: Path, decide, *, facts=FACTS, timeout_s=None):
+def _all_rejected(root: Path, decide, *, facts=FACTS, timeout_s=None, post_type="evening"):
     events: list[str] = []
     calls: list[tuple[bytes, dict]] = []
     outcome = _deliver(
@@ -206,6 +207,7 @@ def _all_rejected(root: Path, decide, *, facts=FACTS, timeout_s=None):
         semantic_qa=_evaluator(calls, decide),
         semantic_qa_facts=facts,
         timeout_s=timeout_s,
+        post_type=post_type,
     )
     return outcome, events, calls
 
@@ -386,6 +388,52 @@ def codex_p2_lunar_phase_shape_matrix_fail_closed() -> None:
             assert outcome["backend"] == "local_informative_cover"
             assert outcome["fallback_reason"] == "semantic_qa_rejected"
             assert not any(event.startswith("photo:ai-") for event in events)
+
+
+def codex_p2_morning_dominant_moon_fail_closed() -> None:
+    """R2r: a dominant Moon never passes semantic QA for a morning post."""
+    morning_facts = dict(FACTS, post_type="morning")
+    dominant = dict(OBSERVATIONS, moon_visibility="visible", moon_shape="crescent",
+                    dominant_moon="yes")
+    controls = (
+        ("morning", morning_facts, dominant, "REJECT", "morning_dominant_moon"),
+        ("morning", morning_facts, dict(dominant, dominant_moon="no"),
+         "ACCEPT", "observed_consistent"),
+        ("evening", FACTS, dominant, "ACCEPT", "observed_consistent"),
+        ("morning", dict(morning_facts, lunar_phase="unknown"), dominant,
+         "UNKNOWN", "lunar_phase_unknown"),
+        ("morning", dict(morning_facts, lunar_phase="full"), dominant,
+         "REJECT", "moon_phase_conflict"),
+        ("morning", morning_facts, OBSERVATIONS, "ACCEPT", "observed_consistent"),
+    )
+    for post_type, facts, observations, decision, reason in controls:
+        result = evaluate_semantic_qa(
+            lambda raw, _facts, observations=observations: _response(raw, observations=observations),
+            b"morning-moon-control", facts, expected_target_date=TARGET_DATE,
+            expected_post_type=post_type,
+        )
+        assert (result.decision, result.reason) == (decision, reason), (post_type, facts, result)
+
+    # Temporal mismatch must prevent evaluator calls even for morning imagery.
+    calls = []
+    mismatched = evaluate_semantic_qa(
+        lambda *_args: calls.append(True), b"wrong-window", morning_facts,
+        expected_target_date=TARGET_DATE, expected_post_type="evening",
+    )
+    assert (mismatched.decision, mismatched.reason, calls) == ("UNKNOWN", "temporal_mismatch", [])
+
+    # Exercise the real candidate -> veto -> curated fallback seam for morning.
+    with TemporaryDirectory() as tmp:
+        outcome, events, calls = _all_rejected(
+            Path(tmp), lambda _n, raw: _response(raw, observations=dominant),
+            facts=morning_facts, post_type="morning",
+        )
+        assert len(calls) == 3
+        assert all((item["decision"], item["reason"]) == ("REJECT", "morning_dominant_moon")
+                   for item in outcome["semantic_qa_results"]), outcome
+        assert outcome["backend"] == "local_informative_cover"
+        assert outcome["fallback_reason"] == "semantic_qa_rejected"
+        assert not any(event.startswith("photo:ai-") for event in events)
 
 
 def temporal_mismatch_is_unknown_without_calling_evaluator() -> None:
@@ -619,6 +667,7 @@ TESTS = [
     malformed_timeout_and_failing_evaluators_fail_closed,
     codex_p2_ambiguous_and_contradictory_accept_fail_closed,
     codex_p2_lunar_phase_shape_matrix_fail_closed,
+    codex_p2_morning_dominant_moon_fail_closed,
     temporal_mismatch_is_unknown_without_calling_evaluator,
     unreadable_image_and_hash_are_bound_to_bytes,
     upstream_guard_rejections_never_invoke_semantic_qa,

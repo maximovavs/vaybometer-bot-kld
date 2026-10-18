@@ -142,6 +142,8 @@ def evaluate_semantic_qa(
                 return verdict("UNKNOWN", "lunar_phase_unknown", version)
             if moon_shape not in _PHASE_SHAPES[lunar]:
                 return verdict("REJECT", "moon_phase_conflict", version)
+            if expected_post_type == "morning" and dominant_moon == "yes":
+                return verdict("REJECT", "morning_dominant_moon", version)
         if str(facts.get("visibility_condition") or "") == "clear" and observations["visibility_appearance"] == "dense_fog":
             return verdict("REJECT", "invented_dense_fog", version)
     return verdict(decision, codes[0] if codes else "observed_consistent", version)
