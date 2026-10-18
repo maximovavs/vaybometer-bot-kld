@@ -269,6 +269,54 @@ def malformed_timeout_and_failing_evaluators_fail_closed() -> None:
                 assert time.monotonic() - started < 2.5, "timeout must bound each QA call"
 
 
+def codex_p2_ambiguous_and_contradictory_accept_fail_closed() -> None:
+    """Codex P2: no uncertain or contradictory ACCEPT can publish an AI image."""
+    cases = (
+        ("unclear_shape", dict(OBSERVATIONS, moon_visibility="visible", moon_shape="unclear"),
+         "insufficient_visual_evidence"),
+        ("unclear_dominance", dict(OBSERVATIONS, moon_visibility="visible", moon_shape="crescent",
+                                   dominant_moon="unclear"), "insufficient_visual_evidence"),
+        ("hidden_full_disk", dict(OBSERVATIONS, moon_visibility="not_visible", moon_shape="full_disk",
+                                  dominant_moon="yes"), "contradictory_observations"),
+        ("hidden_crescent", dict(OBSERVATIONS, moon_visibility="not_visible", moon_shape="crescent"),
+         "contradictory_observations"),
+        ("hidden_but_dominant", dict(OBSERVATIONS, moon_visibility="not_visible",
+                                     moon_shape="not_applicable", dominant_moon="yes"),
+         "contradictory_observations"),
+        ("visible_without_shape", dict(OBSERVATIONS, moon_visibility="visible",
+                                       moon_shape="not_applicable"), "contradictory_observations"),
+    )
+    for label, observations, reason in cases:
+        image = ("codex-p2-" + label).encode("ascii")
+        verdict = evaluate_semantic_qa(
+            lambda raw, _facts: _response(raw, observations=observations), image, FACTS,
+            expected_target_date=TARGET_DATE, expected_post_type="evening",
+        )
+        assert (verdict.decision, verdict.reason) == ("UNKNOWN", reason), (label, verdict)
+        with TemporaryDirectory() as tmp:
+            outcome, events, calls = _all_rejected(
+                Path(tmp), lambda _n, raw: _response(raw, observations=observations)
+            )
+            assert len(calls) == 3, label
+            assert all((item["decision"], item["reason"]) == ("UNKNOWN", reason)
+                       for item in outcome["semantic_qa_results"]), (label, outcome)
+            assert outcome["backend"] == "local_informative_cover", label
+            assert outcome["fallback_reason"] == "semantic_qa_rejected", label
+            assert not any(event.startswith("photo:ai-") for event in events), label
+
+    valid_cases = (
+        dict(OBSERVATIONS, moon_visibility="visible", moon_shape="crescent", dominant_moon="no"),
+        dict(OBSERVATIONS, moon_visibility="not_visible", moon_shape="not_applicable",
+             dominant_moon="no"),
+    )
+    for observations in valid_cases:
+        verdict = evaluate_semantic_qa(
+            lambda raw, _facts: _response(raw, observations=observations), b"valid-moon-control",
+            FACTS, expected_target_date=TARGET_DATE, expected_post_type="evening",
+        )
+        assert (verdict.decision, verdict.reason) == ("ACCEPT", "observed_consistent"), verdict
+
+
 def temporal_mismatch_is_unknown_without_calling_evaluator() -> None:
     for facts in (
         dict(FACTS, target_date="2026-07-19"),
@@ -498,6 +546,7 @@ TESTS = [
     qa_reject_rotates_to_next_candidate,
     qa_unknown_on_every_candidate_uses_curated_fallback,
     malformed_timeout_and_failing_evaluators_fail_closed,
+    codex_p2_ambiguous_and_contradictory_accept_fail_closed,
     temporal_mismatch_is_unknown_without_calling_evaluator,
     unreadable_image_and_hash_are_bound_to_bytes,
     upstream_guard_rejections_never_invoke_semantic_qa,

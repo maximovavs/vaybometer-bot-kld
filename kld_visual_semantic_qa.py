@@ -112,10 +112,17 @@ def evaluate_semantic_qa(
     if decision == "ACCEPT":
         if _CONFLICT_CODES.intersection(codes):
             return verdict("UNKNOWN", "contradictory_verdict", version)
-        if "unclear" in (observations["moon_visibility"],) or "ambiguous" in (
-            observations["visibility_appearance"], observations["weather_appearance"],
-        ):
+        if any(value in {"unclear", "ambiguous"} for value in observations.values()):
             return verdict("UNKNOWN", "insufficient_visual_evidence", version)
+        moon_visibility = observations["moon_visibility"]
+        moon_shape = observations["moon_shape"]
+        dominant_moon = observations["dominant_moon"]
+        if moon_visibility == "not_visible" and (
+            moon_shape != "not_applicable" or dominant_moon == "yes"
+        ):
+            return verdict("UNKNOWN", "contradictory_observations", version)
+        if moon_visibility == "visible" and moon_shape == "not_applicable":
+            return verdict("UNKNOWN", "contradictory_observations", version)
         lunar = str(facts.get("lunar_phase") or "")
         if (lunar in {"waxing_crescent", "waning_crescent"} and observations["moon_visibility"] == "visible"
                 and observations["moon_shape"] == "full_disk"):
