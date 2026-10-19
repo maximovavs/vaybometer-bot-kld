@@ -167,7 +167,10 @@ def test_manual_tamper_is_detected(monkeypatch, tmp_path, field):
         data["origin"]["github_run_id"] = "faked"
     elif field == "interval":
         data["calculation"]["intervals"][0]["kp_raw"] = 7.0
+    # Evidence is created 0444; an unprivileged attacker must chmod first.
+    path.chmod(0o644)
     path.write_text(json.dumps(data), encoding="utf-8")
+    assert json.loads(path.read_text(encoding="utf-8")) == data
     with pytest.raises(EvidenceError):
         verify_evidence(path)
 
