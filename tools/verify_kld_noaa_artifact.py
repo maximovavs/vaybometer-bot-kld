@@ -210,20 +210,95 @@ def verify(root: Path, *, expected_manifest_sha256: str) -> str:
     return actual_sha
 
 
+def receipt_skipped_noaa_capture(*, result_path: Path, metadata_path: Path,
+                                 delivery_dir: Path, production_chat_id: str,
+                                 evidence_dir: Path) -> bool:
+    """Allow an empty capture only for a verified *already-delivered* morning.
+
+    The original publisher has already validated the production receipt before
+    emitting the two skip markers. Re-check the saved receipt and identity here:
+    a missing/partial/invalid marker is never sufficient to bypass `seal`.
+    """
+    if not result_path.is_file():
+        return False  # Ordinary paths still require a real verified snapshot.
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if not isinstance(result, dict):
+        raise ArtifactIntegrityError("invalid morning publication result")
+    if result.get("result") != "skipped_delivery_receipt_complete":
+        return False
+
+    if (not isinstance(production_chat_id, str) or not production_chat_id.strip()
+            or result.get("mode") != "morning"
+            or result.get("delivery_image_present") is not True
+            or result.get("delivery_text_present") is not True
+            or result.get("image_send_skipped_receipt") is not True
+            or result.get("text_send_skipped_receipt") is not True
+            or result.get("preview_succeeded") is not False
+            or result.get("telegram_image_sent") is not False
+            or result.get("text_sent") is not False):
+        raise ArtifactIntegrityError("inconsistent complete-delivery skip marker")
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if (not isinstance(metadata, dict)
+            or metadata.get("status") != "skipped_complete_delivery_receipt"
+            or metadata.get("mode") != "morning"
+            or not isinstance(metadata.get("target_date"), str)):
+        raise ArtifactIntegrityError("invalid complete-delivery skip metadata")
+
+    # Use the same strict receipt validation as the publication idempotency path.
+    from kld_image_first import kld_delivery_path, load_kld_delivery_receipt
+    target_date = metadata["target_date"]
+    receipt = load_kld_delivery_receipt(target_date=target_date, post_type="morning",
+                                        production_chat_id=production_chat_id,
+                                        delivery_dir=delivery_dir)
+    if (receipt is None
+            or receipt.get("image_delivered") is not True
+            or receipt.get("text_delivered") is not True
+            or result.get("delivery_receipt_path") != str(kld_delivery_path(
+                target_date, "morning", delivery_dir=delivery_dir))
+            or result.get("telegram_image_message_id") != receipt.get("telegram_image_message_id")
+            or result.get("telegram_text_message_ids") != receipt.get("telegram_text_message_ids")):
+        raise ArtifactIntegrityError("complete-delivery skip not supported by valid receipt")
+
+    # No snapshot is fabricated, and no unsealed evidence can leak into the
+    # artifact through the upload step's successful-step condition.
+    if evidence_dir.is_symlink() or (evidence_dir.exists()
+                                   and (not evidence_dir.is_dir() or any(evidence_dir.iterdir()))):
+        raise ArtifactIntegrityError("unexpected evidence on receipt-skipped run")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("seal", "verify"))
     parser.add_argument("--dir", required=True)
     parser.add_argument("--expected-manifest-sha256", default="")
+    parser.add_argument("--publication-result", default="")
+    parser.add_argument("--prompt-metadata", default="")
+    parser.add_argument("--delivery-dir", default="")
+    parser.add_argument("--production-chat-id", default="")
     args = parser.parse_args()
     try:
+        skip_options = (args.publication_result, args.prompt_metadata,
+                        args.delivery_dir, args.production_chat_id)
         if args.mode == "seal":
-            if args.expected_manifest_sha256:
-                raise ArtifactIntegrityError("digest argument invalid in seal mode")
+            if args.expected_manifest_sha256 or (any(skip_options) and not all(skip_options)):
+                raise ArtifactIntegrityError("invalid seal arguments")
+            if all(skip_options) and receipt_skipped_noaa_capture(
+                result_path=Path(args.publication_result),
+                metadata_path=Path(args.prompt_metadata),
+                delivery_dir=Path(args.delivery_dir),
+                production_chat_id=args.production_chat_id,
+                evidence_dir=Path(args.dir),
+            ):
+                print("KLD_NOAA_EVIDENCE_INTEGRITY=SKIPPED_COMPLETE_DELIVERY_RECEIPT")
+                return 0
             result = seal(Path(args.dir), run_id=os.environ.get("GITHUB_RUN_ID", ""),
                           attempt=int(os.environ.get("GITHUB_RUN_ATTEMPT", "0")),
                           head_sha=os.environ.get("GITHUB_SHA", ""))
         else:
+            if any(skip_options):
+                raise ArtifactIntegrityError("receipt arguments invalid in verify mode")
             result = verify(Path(args.dir), expected_manifest_sha256=args.expected_manifest_sha256)
     except (ArtifactIntegrityError, EvidenceError, OSError, ValueError, TypeError) as exc:
         # No raw NOAA response, tokens, paths or env secrets appear in messages.

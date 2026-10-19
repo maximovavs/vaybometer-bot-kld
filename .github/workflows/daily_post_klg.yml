@@ -351,7 +351,12 @@ jobs:
       - name: Seal KLD NOAA evidence before artifact upload
         id: kld_noaa_evidence_check
         if: ${{ always() && env.KLD_NOAA_EVIDENCE_DIR != '' }}
-        run: python tools/verify_kld_noaa_artifact.py seal --dir "$KLD_NOAA_EVIDENCE_DIR"
+        run: >
+          python tools/verify_kld_noaa_artifact.py seal --dir "$KLD_NOAA_EVIDENCE_DIR"
+          --publication-result image_result.json
+          --prompt-metadata image_prompt_metadata.json
+          --delivery-dir "$KLD_DELIVERY_DIR"
+          --production-chat-id "$CHANNEL_ID_KLG"
       - name: Upload KLD morning publication diagnostics
         if: always()
         id: kld_morning_diagnostics
