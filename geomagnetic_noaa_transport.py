@@ -14,6 +14,9 @@ a malicious replacement cannot be authenticated by this function.
 from __future__ import annotations
 
 import json
+import os
+import hashlib
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -193,7 +196,29 @@ def load_observed_3h_history(
         raise NoaaTransportError("invalid NOAA JSON") from exc
     _validate_schema(payload)
     # Provenance is asserted ONLY after all HTTPS, response and schema guards.
-    return parse_observed_3h_history(payload, as_of_utc=as_of, source=OBSERVED_SOURCE)
+    history = parse_observed_3h_history(payload, as_of_utc=as_of, source=OBSERVED_SOURCE)
+    # Explicit opt-in only. No second provider call, no change to current-Kp path.
+    evidence_dir = os.environ.get("KLD_NOAA_EVIDENCE_DIR", "")
+    if evidence_dir:
+        # The opt-in directory alone never authorizes 24h-peak evidence.
+        # Preserve the existing morning-only workflow gate (and its exact test).
+        if os.environ.get("KLD_GEOMAG_24H_PEAK_ENABLED", "0") != "1":
+            raise NoaaTransportError("NOAA evidence requires active 24h peak")
+        from geomagnetic_noaa_evidence import write_verified_evidence
+        try:
+            evidence_path = write_verified_evidence(
+                directory=evidence_dir, history=history, response=response,
+                run_id=os.environ.get("GITHUB_RUN_ID", ""),
+                attempt=int(os.environ.get("GITHUB_RUN_ATTEMPT", "0")),
+                commit_sha=os.environ.get("GITHUB_SHA", ""),
+            )
+            logging.info("KLD NOAA evidence %s envelope_sha256=%s raw_sha256=%s",
+                         evidence_path.name,
+                         hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+                         hashlib.sha256(response.body).hexdigest())
+        except Exception as exc:
+            raise NoaaTransportError("NOAA evidence capture failed; fail closed") from exc
+    return history
 
 
 __all__ = ["NOAA_OBSERVED_3H_URL", "MAX_RESPONSE_BYTES", "NOAAResponse",

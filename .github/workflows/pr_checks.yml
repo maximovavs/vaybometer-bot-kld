@@ -137,6 +137,11 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_noaa_transport.py
+      - name: KLD R3/R4 NOAA immutable evidence regressions (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py -m pytest -q tools/test_geomagnetic_noaa_evidence.py
+          python tools/ci_offline_guard/runner.py -m pytest -q tools/test_verify_kld_noaa_artifact.py
       - name: KLD H2-A incident reconciliation regressions (offline)
         run: |
           set -euo pipefail

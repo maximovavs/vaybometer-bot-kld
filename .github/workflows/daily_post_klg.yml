@@ -130,6 +130,9 @@ jobs:
       # Morning-only opt-in: exact repository variable value '1' enables the peak.
       # Missing or any other value keeps it OFF.
       KLD_GEOMAG_24H_PEAK_ENABLED: ${{ true && vars.KLD_GEOMAG_24H_PEAK_ENABLED == '1' && '1' || '0' }}
+      # Independent opt-in. The NOAA transport requires the existing morning
+      # peak flag to equal '1' before evidence can be written; mismatch fails closed.
+      KLD_NOAA_EVIDENCE_DIR: ${{ vars.KLD_NOAA_EVIDENCE_ENABLED == '1' && 'outputs/kld_noaa_evidence' || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Restore KLD delivery receipts
@@ -341,8 +344,22 @@ jobs:
           sys.argv = args
           runpy.run_path("post_kld.py", run_name="__main__")
           PY
+      # Verify raw NOAA bytes, all UTC bars, per-file digests, run identity,
+      # and a write-once manifest before any NOAA evidence may be uploaded.
+      # Failure is a failing step, even if the post already ran; never upload
+      # unverified NOAA evidence. Other diagnostics are still retained.
+      - name: Seal KLD NOAA evidence before artifact upload
+        id: kld_noaa_evidence_check
+        if: ${{ always() && env.KLD_NOAA_EVIDENCE_DIR != '' }}
+        run: >
+          python tools/verify_kld_noaa_artifact.py seal --dir "$KLD_NOAA_EVIDENCE_DIR"
+          --publication-result image_result.json
+          --prompt-metadata image_prompt_metadata.json
+          --delivery-dir "$KLD_DELIVERY_DIR"
+          --production-chat-id "$CHANNEL_ID_KLG"
       - name: Upload KLD morning publication diagnostics
         if: always()
+        id: kld_morning_diagnostics
         uses: actions/upload-artifact@v4
         with:
           name: kld-morning-publication-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
@@ -356,6 +373,12 @@ jobs:
             format_v2_visibility_context.json
             outputs/kld_local_informative_cover.png
             .cache/kld_delivery
+            ${{ steps.kld_noaa_evidence_check.outcome == 'success' && 'outputs/kld_noaa_evidence' || '' }}
+      # Retain the GitHub artifact's own SHA-256 as an external integrity anchor.
+      # The manifest SHA-256 is emitted by the preceding offline verification.
+      - name: Record KLD diagnostics artifact digest
+        if: ${{ always() && steps.kld_morning_diagnostics.outcome == 'success' }}
+        run: echo "KLD_DIAGNOSTICS_ARTIFACT_DIGEST=${{ steps.kld_morning_diagnostics.outputs.artifact-digest }}"
       - name: Upload KLD delivery snapshot
         if: always()
         uses: actions/upload-artifact@v4
