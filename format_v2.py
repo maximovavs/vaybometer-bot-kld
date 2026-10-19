@@ -465,33 +465,41 @@ def _water_range_c(text: str) -> tuple[float, float] | None:
 def _common_sup_water_line(lines: list[str], *, has_storm: bool = False) -> str:
     raw_text = "\n".join(lines)
     text = "\n".join(line for line in lines if not _is_water_sport_recommendation_line(line))
-    has_water_sport = re.search(r"\b(?:SUP|Кайт|Винг|Винд|С[ёе]рф)\b|гидрокостюм|шорти|shorty", raw_text, flags=re.I)
-    wave_range = _wave_range_m(text)
+    has_water_sport = re.search(r"\b(?:SUP|САП|Кайт|Винг|Винд|С[ёе]рф)\b|гидрокостюм|шорти|shorty", raw_text, flags=re.I)
     if not has_water_sport:
         return ""
-    max_wind = _max_wind_ms(text)
-    # The storm-tier water guidance keys on a confirmed storm or a real gust at
-    # the threshold — never on average wind alone. Strong average wind still
-    # makes the guidance strict, but via the "risky" branch below, not the
-    # storm branch (contract: water caution may be strict on wind, but is not
-    # labelled a storm just because the average wind is high).
+    # Only a city-level text forecast reaches this formatter. It has no
+    # authenticated spot orientation, time-aligned wind/gust/wave/swell or
+    # thunder evidence. Never convert surviving wave numbers into a new
+    # positive sport recommendation after upstream safety sanitization.
     max_gust = _max_gust_ms(text)
     stormy = has_storm or (isinstance(max_gust, (int, float)) and max_gust >= _STORM_GUST_MS)
     if stormy:
-        wave = _format_measure_range(wave_range, "м")
-        wave_part = f"волна {wave}, но " if wave else ""
         return (
-            f"🏄 Сёрф: только опытным; {wave_part}выход только после проверки конкретного спота и предупреждений.\n"
+            "🏄 Сёрф: выход не рекомендован при неподтверждённой безопасности; проверьте предупреждения и фактические условия.\n"
             "🛶 SUP: на открытой воде не рекомендован; рассматривать только защищённую акваторию после фактической проверки условий."
         )
-    if wave_range and 0.8 <= wave_range[1] <= 2.0 and (not isinstance(max_wind, (int, float)) or max_wind < 15):
-        return "🏄 Сёрф: есть рабочие окна по волне; проверить конкретный спот."
-    risky = _has_any(text, ("порыв", "дожд", "морось", "ливн", "осад", "шторм", "только опытным")) or (
-        isinstance(max_wind, (int, float)) and max_wind >= 8
+    # A sport-specific STOP must not be promoted to an unrelated sport.
+    stop_lines = []
+    for line in lines:
+        if not re.search(r"\b(?:SUP|САП|С[ёе]рф|Кайт|Винг|Винд)\b", line, flags=re.I):
+            continue
+        for clause in re.split(r"[;•]", line):
+            if not re.search(r"не\s+рекоменд\w*|лучше отложить|не выходить|запрещ|опасн", clause, flags=re.I):
+                continue
+            if re.search(r"\b(?:SUP|САП)\b", clause, flags=re.I):
+                stop_lines.append("🛶 SUP: на открытой воде не рекомендован; рассматривать только защищённую акваторию после фактической проверки условий.")
+            if re.search(r"\bС[ёе]рф\b", clause, flags=re.I):
+                stop_lines.append("🏄 Сёрф: выход не рекомендован; проверьте предупреждения и фактические условия.")
+            for sport in ("Кайт", "Винг", "Винд"):
+                if re.search(rf"\b{sport}\b", clause, flags=re.I):
+                    stop_lines.append(f"🪁 {sport}: выход не рекомендован; проверьте предупреждения и фактические условия.")
+    neutral = (
+        "🏄 Водные активности: безопасность SUP, сёрфа, кайта, винга и виндсёрфинга "
+        "на конкретном споте не подтверждена; рекомендаций к выходу нет. "
+        "Проверьте местный ветер, порывы, направление относительно берега, волны, грозу и время данных."
     )
-    if risky:
-        return "🏄 Вода/ветер: только опытным; короткая сессия после фактической проверки условий. Экипировку выбирать по длительности сессии и индивидуальной переносимости воды."
-    return "🏄 SUP/вода: короткая сессия; экипировку выбирать по длительности сессии, ветру и индивидуальной переносимости воды."
+    return "\n".join([*dict.fromkeys(stop_lines), neutral])
 
 
 def _has_any(text: str, words: tuple[str, ...]) -> bool:

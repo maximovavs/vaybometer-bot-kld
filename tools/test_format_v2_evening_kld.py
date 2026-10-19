@@ -419,7 +419,7 @@ def kld_evening_warm_uncertain_confidence_is_not_high() -> None:
 def kld_evening_sup_guidance_is_common_block() -> None:
     text = build_evening_format_v2("Калининградская область", RAIN_EVENING)
     assert text.count("SUP: на открытой воде не рекомендован") == 1
-    assert "🏄 Сёрф: только опытным; волна 0.8–0.9 м, но выход только после проверки конкретного спота и предупреждений." in text
+    assert "🏄 Сёрф: выход не рекомендован" in text
     assert "после фактической проверки условий" in text
     assert "🧜‍♂️ Отлично: SUP" not in text
     assert "Отлично:" not in text
@@ -489,8 +489,8 @@ def kld_evening_storm_sport_voc_and_background_polish() -> None:
     assert "⚠️ Предупреждение\n" not in text
     assert "Отлично" not in text
     assert "SUP: на открытой воде не рекомендован" in text
-    assert "Сёрф: только опытным" in text
-    assert "проверки конкретного спота" in text
+    assert "Сёрф: выход не рекомендован" in text
+    assert "после фактической проверки условий" in text
     assert "короткий гидрокостюм 2 мм" not in text
     assert "⚫️ VoC: 03.07 17:15–04.07 00:00." in text
     assert "⚠️ Общий фон: неблагоприятный день." in text
@@ -500,9 +500,120 @@ def kld_evening_storm_sport_voc_and_background_polish() -> None:
 def kld_evening_moderate_surf_keeps_cautious_positive() -> None:
     text = build_evening_format_v2("Калининградская область", MODERATE_SURF_EVENING)
     assert "Отлично: Сёрф" not in text
-    assert "🏄 Сёрф: есть рабочие окна по волне; проверить конкретный спот." in text
+    assert "рекомендаций к выходу нет" in text
+    assert "есть рабочие окна" not in text
     assert "SUP: на открытой воде не рекомендован" not in text
     assert text.splitlines()[-1] == "#Калининград #погода #здоровье #море"
+
+
+
+
+def kld_r2_oct16_marine_timeout_and_removed_sup_stay_neutral() -> None:
+    # Actual 2026-10-16 evening: marine fetch timed out; upstream
+    # "Отлично: SUP" was removed; FORMAT_V2 reintroduced a short session.
+    sea = [
+        "Балтийск: 14/9 °C • пасм • 🌊 14°C • волна 0.3 м",
+        "Пионерский: 14/12 °C • пасм • 🌊 16°C • волна 0.6 м",
+        "Янтарный: 14/10 °C • пасм • 🌊 15°C • волна 0.5 м",
+        "Зеленоградск: 13/6 °C • пасм • 🌊 15°C • волна 0.2 м",
+        "🧜‍♂️ Отлично: SUP (S/None) • гидрокостюм 4/3 мм",
+    ]
+    line = format_v2._common_sup_water_line(sea)
+    assert "рекомендаций к выходу нет" in line
+    assert "короткая сессия" not in line
+    assert "Отлично" not in line
+    assert "рабочие окна" not in line
+
+
+def kld_r2_oct17_wave_14_16_missing_wind_removed_surf_kite_stay_neutral() -> None:
+    # Actual 2026-10-17 evening: 1.4–1.6 m coastal waves, wind
+    # missing from sea rows; upstream surf/kite "Отлично" was rejected.
+    sea = [
+        "Янтарный: 13/10 °C • морось • 🌊 15°C • волна 1.4 м",
+        "Балтийск: 13/4 °C • пасм • 🌊 14°C • волна 0.7 м",
+        "Светлогорск: 13/9 °C • морось • 🌊 15°C • волна 1.6 м",
+        "Зеленоградск: 12/8 °C • пасм • 🌊 15°C • волна 1.5 м",
+        "🧜‍♂️ Отлично: Кайт/Винг/Винд; Сёрф (NE/None)",
+    ]
+    line = format_v2._common_sup_water_line(sea)
+    assert "рекомендаций к выходу нет" in line
+    assert "рабочие окна" not in line
+    assert "Отлично" not in line
+    assert "короткая сессия" not in line
+
+
+def kld_r2_independent_storm_or_sup_stop_stays_stop() -> None:
+    sea = ["Балтийск: волна 1.4 м • порывы до 19 м/с", "🧜‍♂️ Отлично: Сёрф"]
+    storm = format_v2._common_sup_water_line(sea, has_storm=True)
+    assert "Сёрф: выход не рекомендован" in storm
+    assert "SUP: на открытой воде не рекомендован" in storm
+    explicit = format_v2._common_sup_water_line(["🛶 SUP: лучше отложить", "Балтийск: волна 0.3 м"])
+    assert "SUP: на открытой воде не рекомендован" in explicit
+    assert "Сёрф: выход не рекомендован" not in explicit
+    assert "рекомендаций к выходу нет" in explicit
+    surf_only = format_v2._common_sup_water_line(["🏄 Сёрф: лучше отложить", "Балтийск: волна 0.3 м"])
+    assert "Сёрф: выход не рекомендован" in surf_only
+    assert "SUP: на открытой воде не рекомендован" not in surf_only
+    assert "рекомендаций к выходу нет" in surf_only
+    kite_only = format_v2._common_sup_water_line(["🪁 Кайт: опасно", "Балтийск: волна 0.3 м"])
+    assert "Кайт: выход не рекомендован" in kite_only
+    assert "Винг: выход не рекомендован" not in kite_only
+    assert "Винд: выход не рекомендован" not in kite_only
+    assert "SUP: на открытой воде не рекомендован" not in kite_only
+    assert "Сёрф: выход не рекомендован" not in kite_only
+    mixed = format_v2._common_sup_water_line(["🛶 SUP: опасно; Сёрф: условия не подтверждены"])
+    assert "SUP: на открытой воде не рекомендован" in mixed
+    assert "Сёрф: выход не рекомендован" not in mixed
+    all_three = format_v2._common_sup_water_line(["⚠️ Кайт/Винг/Винд: опасно"])
+    for sport in ("Кайт", "Винг", "Винд"):
+        assert f"{sport}: выход не рекомендован" in all_three
+
+
+def kld_r23_alias_and_stop_wording_are_preserved() -> None:
+    sup_alias = format_v2._common_sup_water_line(["🛶 САП: опасно"])
+    assert "SUP: на открытой воде не рекомендован" in sup_alias
+    assert "Сёрф: выход не рекомендован" not in sup_alias
+    assert "рекомендаций к выходу нет" in sup_alias
+    sup_wording = format_v2._common_sup_water_line(["🛶 SUP: не рекомендуется"])
+    assert "SUP: на открытой воде не рекомендован" in sup_wording
+    assert "Сёрф: выход не рекомендован" not in sup_wording
+    surf_wording = format_v2._common_sup_water_line(["🏄 Сёрф: не рекомендуется"])
+    assert "Сёрф: выход не рекомендован" in surf_wording
+    assert "SUP: на открытой воде не рекомендован" not in surf_wording
+    mixed = format_v2._common_sup_water_line(["🛶 САП: не рекомендуется; Сёрф: условия не подтверждены"])
+    assert "SUP: на открытой воде не рекомендован" in mixed
+    assert "Сёрф: выход не рекомендован" not in mixed
+    assert "рабочие окна" not in mixed
+
+
+def kld_r23_independent_storm_sources_and_empty_sport_gate() -> None:
+    sea = ["Балтийск: волна 0.3 м", "🧜‍♂️ Отлично: SUP"]
+    from_flag = format_v2._common_sup_water_line(sea, has_storm=True)
+    assert "🏄 Сёрф: выход не рекомендован" in from_flag
+    assert "🛶 SUP: на открытой воде не рекомендован" in from_flag
+    assert "рекомендаций к выходу нет" not in from_flag
+
+    # Gust boundary alone (no has_storm flag) is independently sufficient.
+    gust_limit = format_v2._STORM_GUST_MS
+    gust_only = format_v2._common_sup_water_line(
+        [f"Балтийск: волна 0.3 м • порывы до {gust_limit:g} м/с", "🧜‍♂️ Отлично: SUP"],
+        has_storm=False,
+    )
+    assert "🏄 Сёрф: выход не рекомендован" in gust_only
+    assert "🛶 SUP: на открытой воде не рекомендован" in gust_only
+    assert "рекомендаций к выходу нет" not in gust_only
+
+    below = format_v2._common_sup_water_line(
+        [f"Балтийск: волна 0.3 м • порывы до {gust_limit - 0.1:g} м/с", "🧜‍♂️ Отлично: SUP"],
+        has_storm=False,
+    )
+    assert "рекомендаций к выходу нет" in below
+    assert "🏄 Сёрф: выход не рекомендован" not in below
+    assert "🛶 SUP: на открытой воде не рекомендован" not in below
+
+    no_sport = [f"Балтийск: волна 0.3 м • порывы до {gust_limit:g} м/с"]
+    assert format_v2._common_sup_water_line(no_sport, has_storm=True) == ""
+    assert format_v2._common_sup_water_line(no_sport, has_storm=False) == ""
 
 
 def kld_evening_generic_warning_is_not_storm() -> None:
@@ -815,7 +926,7 @@ def kld_evening_gust19_without_storm_word_is_storm() -> None:
     assert "штормовые порывы" in text
     assert "⚠️ Главный нюанс: на открытом берегу и пирсах порывы до 19 м/с." in text
     assert "Штормовое предупреждение" not in text
-    assert "Сёрф: только опытным" in text
+    assert "Сёрф: выход не рекомендован" in text
     assert _extract_storm_warning(GUST19_NO_STORM_WORD_EVENING) is not None
 
 
@@ -1252,6 +1363,11 @@ def main() -> None:
         kld_evening_heat_gust_polish,
         kld_evening_storm_sport_voc_and_background_polish,
         kld_evening_moderate_surf_keeps_cautious_positive,
+        kld_r2_oct16_marine_timeout_and_removed_sup_stay_neutral,
+        kld_r2_oct17_wave_14_16_missing_wind_removed_surf_kite_stay_neutral,
+        kld_r2_independent_storm_or_sup_stop_stays_stop,
+        kld_r23_alias_and_stop_wording_are_preserved,
+        kld_r23_independent_storm_sources_and_empty_sport_gate,
         kld_evening_generic_warning_is_not_storm,
         kld_evening_rain_warning_is_not_storm,
         kld_evening_safe_postprocess_does_not_promote_wind_nuance_to_storm,
