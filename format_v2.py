@@ -474,11 +474,6 @@ def _common_sup_water_line(lines: list[str], *, has_storm: bool = False) -> str:
     # positive sport recommendation after upstream safety sanitization.
     max_gust = _max_gust_ms(text)
     stormy = has_storm or (isinstance(max_gust, (int, float)) and max_gust >= _STORM_GUST_MS)
-    if stormy:
-        return (
-            "🏄 Сёрф: выход не рекомендован при неподтверждённой безопасности; проверьте предупреждения и фактические условия.\n"
-            "🛶 SUP: на открытой воде не рекомендован; рассматривать только защищённую акваторию после фактической проверки условий."
-        )
     # A sport-specific STOP must not be promoted to an unrelated sport.
     stop_lines = []
     for line in lines:
@@ -494,6 +489,15 @@ def _common_sup_water_line(lines: list[str], *, has_storm: bool = False) -> str:
             for sport in ("Кайт", "Винг", "Винд"):
                 if re.search(rf"\b{sport}\b", clause, flags=re.I):
                     stop_lines.append(f"🪁 {sport}: выход не рекомендован; проверьте предупреждения и фактические условия.")
+    if stormy:
+        # Keep the existing general storm STOPs and any explicit wind-sport
+        # STOPs that the sea-line sanitizer would otherwise remove.
+        storm_lines = [
+            "🏄 Сёрф: выход не рекомендован при неподтверждённой безопасности; проверьте предупреждения и фактические условия.",
+            "🛶 SUP: на открытой воде не рекомендован; рассматривать только защищённую акваторию после фактической проверки условий.",
+        ]
+        storm_lines.extend(line for line in dict.fromkeys(stop_lines) if line.startswith("🪁 "))
+        return "\n".join(storm_lines)
     neutral = (
         "🏄 Водные активности: безопасность SUP, сёрфа, кайта, винга и виндсёрфинга "
         "на конкретном споте не подтверждена; рекомендаций к выходу нет. "

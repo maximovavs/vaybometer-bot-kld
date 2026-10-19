@@ -616,6 +616,73 @@ def kld_r23_independent_storm_sources_and_empty_sport_gate() -> None:
     assert format_v2._common_sup_water_line(no_sport, has_storm=False) == ""
 
 
+def kld_r24_storm_preserves_explicit_wind_sport_stops() -> None:
+    # P2 https://github.com/maximovavs/vaybometer-bot-kld/pull/89#discussion_r4318823364
+    # A storm must not discard wind-sport STOPs when sea sport lines are softened.
+    # The storm flag alone is enough, even without a numerical gust.
+    flag_only = format_v2._common_sup_water_line(["🪁 Кайт: опасно"], has_storm=True)
+    assert "Сёрф: выход не рекомендован" in flag_only
+    assert "SUP: на открытой воде не рекомендован" in flag_only
+    assert "Кайт: выход не рекомендован" in flag_only
+    assert "Винг: выход не рекомендован" not in flag_only
+    assert "Винд: выход не рекомендован" not in flag_only
+
+    # An observed gust at the threshold triggers the same common storm STOPs,
+    # while the individual wing STOP remains visible.
+    limit = format_v2._STORM_GUST_MS
+    at_threshold = format_v2._common_sup_water_line(
+        [f"Балтийск: порывы до {limit:g} м/с", "🪁 Винг: не рекомендуется"],
+        has_storm=False,
+    )
+    assert "Сёрф: выход не рекомендован" in at_threshold
+    assert "SUP: на открытой воде не рекомендован" in at_threshold
+    assert "Винг: выход не рекомендован" in at_threshold
+    assert "Кайт: выход не рекомендован" not in at_threshold
+
+    above_threshold = format_v2._common_sup_water_line(
+        [f"Балтийск: порывы до {limit + 2:g} м/с", "🪁 Винд: лучше отложить"],
+        has_storm=False,
+    )
+    assert "Сёрф: выход не рекомендован" in above_threshold
+    assert "SUP: на открытой воде не рекомендован" in above_threshold
+    assert "Винд: выход не рекомендован" in above_threshold
+    assert "Кайт: выход не рекомендован" not in above_threshold
+
+    # Mixed disciplines must retain their own explicit STOP and not invent
+    # bans for unmentioned wind sports. Repeated clauses must not duplicate STOPs.
+    mixed = format_v2._common_sup_water_line(
+        ["⚠️ Кайт/Винг: опасно; Кайт: не рекомендуется; SUP: лучше отложить"],
+        has_storm=True,
+    )
+    assert mixed.count("Кайт: выход не рекомендован") == 1
+    assert mixed.count("Винг: выход не рекомендован") == 1
+    assert "Винд: выход не рекомендован" not in mixed
+    assert mixed.count("Сёрф: выход не рекомендован") == 1
+    assert mixed.count("SUP: на открытой воде не рекомендован") == 1
+    all_wind = format_v2._common_sup_water_line(
+        ["⚠️ Кайт/Винг/Винд: опасно", f"Балтийск: порывы до {limit:g} м/с"],
+    )
+    for sport in ("Кайт", "Винг", "Винд"):
+        assert f"{sport}: выход не рекомендован" in all_wind
+
+    # No common storm evidence: individual STOP remains independent and
+    # non-STOP/unknown conditions must never produce positive advice.
+    below = format_v2._common_sup_water_line(
+        [f"Балтийск: порывы до {limit - 0.1:g} м/с", "🪁 Кайт: опасно"],
+        has_storm=False,
+    )
+    assert "Кайт: выход не рекомендован" in below
+    assert "Сёрф: выход не рекомендован" not in below
+    assert "SUP: на открытой воде не рекомендован" not in below
+    unknown = format_v2._common_sup_water_line(["🪁 Кайт: условия не подтверждены"])
+    assert "рекомендаций к выходу нет" in unknown
+    assert "Кайт: выход не рекомендован" not in unknown
+    assert format_v2._common_sup_water_line([f"Балтийск: порывы до {limit:g} м/с"], has_storm=True) == ""
+    for result in (flag_only, at_threshold, above_threshold, mixed, all_wind, below, unknown):
+        for positive in ("короткая сессия", "рабочие окна", "только опытным", "Отлично:"):
+            assert positive not in result
+
+
 def kld_evening_generic_warning_is_not_storm() -> None:
     text = build_evening_format_v2("Калининградская область", NONSTORM_WARNING_EVENING)
     assert "штормовые порывы" not in text
@@ -1368,6 +1435,7 @@ def main() -> None:
         kld_r2_independent_storm_or_sup_stop_stays_stop,
         kld_r23_alias_and_stop_wording_are_preserved,
         kld_r23_independent_storm_sources_and_empty_sport_gate,
+        kld_r24_storm_preserves_explicit_wind_sport_stops,
         kld_evening_generic_warning_is_not_storm,
         kld_evening_rain_warning_is_not_storm,
         kld_evening_safe_postprocess_does_not_promote_wind_nuance_to_storm,
