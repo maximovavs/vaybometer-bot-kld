@@ -51,6 +51,8 @@ FACTS = {
     "lunar_target_date": TARGET_DATE,
     "lunar_phase": "waxing_crescent",
     "visibility_condition": "reduced_visibility",
+    "visibility_forecast_window": "tomorrow_morning",
+    "forecast_window": "tomorrow_morning",
 }
 OBSERVATIONS = {
     "moon_visibility": "not_visible",
@@ -392,13 +394,14 @@ def codex_p2_lunar_phase_shape_matrix_fail_closed() -> None:
 
 def codex_p2_morning_dominant_moon_fail_closed() -> None:
     """R2r: a dominant Moon never passes semantic QA for a morning post."""
-    morning_facts = dict(FACTS, post_type="morning")
+    morning_facts = dict(FACTS, post_type="morning", visibility_forecast_window="current_morning",
+                         forecast_window="current_morning")
     dominant = dict(OBSERVATIONS, moon_visibility="visible", moon_shape="crescent",
                     dominant_moon="yes")
     controls = (
         ("morning", morning_facts, dominant, "REJECT", "morning_dominant_moon"),
         ("morning", morning_facts, dict(dominant, dominant_moon="no"),
-         "ACCEPT", "observed_consistent"),
+         "REJECT", "morning_moon_visible"),
         ("evening", FACTS, dominant, "ACCEPT", "observed_consistent"),
         ("morning", dict(morning_facts, lunar_phase="unknown"), dominant,
          "UNKNOWN", "lunar_phase_unknown"),
@@ -435,6 +438,147 @@ def codex_p2_morning_dominant_moon_fail_closed() -> None:
         assert outcome["fallback_reason"] == "semantic_qa_rejected"
         assert not any(event.startswith("photo:ai-") for event in events)
 
+
+def codex_c_morning_moon_and_visibility_window_fail_closed() -> None:
+    """Any visible morning moon is vetoed; reduced visibility must show in its window."""
+    morning = dict(FACTS, post_type="morning", visibility_forecast_window="current_morning",
+                   forecast_window="current_morning")
+    moon = dict(OBSERVATIONS, moon_visibility="visible", moon_shape="crescent", dominant_moon="no")
+
+    def check(facts, observations, post_type, expected):
+        result = evaluate_semantic_qa(
+            lambda raw, _f, observations=observations: _response(raw, observations=observations),
+            repr((sorted(facts.items()), sorted(observations.items()), post_type)).encode(), facts,
+            expected_target_date=TARGET_DATE, expected_post_type=post_type,
+        )
+        assert (result.decision, result.reason) == expected, (facts, observations, post_type, result)
+
+    check(morning, moon, "morning", ("REJECT", "morning_moon_visible"))
+    check(morning, dict(moon, dominant_moon="yes"), "morning", ("REJECT", "morning_dominant_moon"))
+    check(morning, OBSERVATIONS, "morning", ("ACCEPT", "observed_consistent"))
+    check(dict(morning, lunar_phase="unknown"), moon, "morning", ("UNKNOWN", "lunar_phase_unknown"))
+    check(dict(morning, lunar_phase="full"), moon, "morning", ("REJECT", "moon_phase_conflict"))
+    check(FACTS, moon, "evening", ("ACCEPT", "observed_consistent"))
+    check(FACTS, dict(moon, dominant_moon="yes"), "evening", ("ACCEPT", "observed_consistent"))
+
+    normal = dict(OBSERVATIONS, visibility_appearance="normal")
+    for condition in ("dense_fog", "fog", "mist", "reduced_visibility", "dust_haze"):
+        same = dict(FACTS, visibility_condition=condition)
+        check(same, normal, "evening", ("REJECT", "reduced_visibility_not_shown"))
+        check(same, OBSERVATIONS, "evening", ("ACCEPT", "observed_consistent"))
+        other_window = dict(same, forecast_window="current_morning")
+        check(other_window, normal, "evening", ("UNKNOWN", "visibility_window_mismatch"))
+        for window in (None, "", "none", "unknown_window"):
+            missing = dict(same)
+            if window is None:
+                missing.pop("visibility_forecast_window")
+            else:
+                missing["visibility_forecast_window"] = window
+            check(missing, normal, "evening", ("UNKNOWN", "visibility_unknown"))
+    check(dict(FACTS, visibility_condition="clear", visibility_forecast_window="none"), normal,
+          "evening", ("ACCEPT", "observed_consistent"))
+    check(dict(FACTS, visibility_condition="mixed_visibility"), normal, "evening",
+          ("ACCEPT", "observed_consistent"))
+    for facts in (
+        {k: v for k, v in FACTS.items() if k != "visibility_condition"},
+        dict(FACTS, visibility_condition="unknown"),
+        {k: v for k, v in FACTS.items() if k != "forecast_window"},
+        dict(FACTS, forecast_window="none"),
+        dict(FACTS, visibility_condition="clear", forecast_window=""),
+    ):
+        check(facts, OBSERVATIONS, "evening", ("UNKNOWN", "visibility_unknown"))
+    check(dict(FACTS, visibility_condition="clear"), dict(OBSERVATIONS, visibility_appearance="dense_fog"),
+          "evening", ("REJECT", "invented_dense_fog"))
+
+    for facts, observations, post_type, expected in (
+        (morning, moon, "morning", ("REJECT", "morning_moon_visible")),
+        (FACTS, normal, "evening", ("REJECT", "reduced_visibility_not_shown")),
+        ({k: v for k, v in FACTS.items() if k != "forecast_window"}, OBSERVATIONS, "evening",
+         ("UNKNOWN", "visibility_unknown")),
+    ):
+        with TemporaryDirectory() as tmp:
+            outcome, events, calls = _all_rejected(
+                Path(tmp), lambda _n, raw, observations=observations: _response(raw, observations=observations),
+                facts=facts, post_type=post_type,
+            )
+            assert len(calls) == 3, expected
+            assert all((item["decision"], item["reason"]) == expected
+                       for item in outcome["semantic_qa_results"]), (expected, outcome)
+            assert outcome["backend"] == "local_informative_cover"
+            assert outcome["fallback_reason"] == "semantic_qa_rejected"
+            assert not any(event.startswith("photo:ai-") for event in events)
+
+
+
+def codex_c1_forecast_window_fail_closed() -> None:
+    """Unknown or mismatched windows veto ACCEPT, never invent weather facts."""
+    normal = dict(OBSERVATIONS, visibility_appearance="normal")
+    fog = dict(OBSERVATIONS, visibility_appearance="dense_fog")
+
+    def check(facts, observed, decision, reason, *, raw_decision="ACCEPT"):
+        image = repr((facts, observed, raw_decision)).encode("utf-8")
+        result = evaluate_semantic_qa(
+            lambda raw, _f: _response(raw, raw_decision, observations=observed),
+            image, facts, expected_target_date=TARGET_DATE, expected_post_type="evening",
+        )
+        assert (result.decision, result.reason) == (decision, reason), (facts, observed, result)
+
+    for condition in ("dense_fog", "fog", "mist", "reduced_visibility", "dust_haze"):
+        base = dict(FACTS, visibility_condition=condition)
+        check(base, normal, "REJECT", "reduced_visibility_not_shown")
+        check(base, OBSERVATIONS, "ACCEPT", "observed_consistent")
+        mismatched = dict(base, forecast_window="current_morning")
+        for observed in (normal, OBSERVATIONS, fog):
+            check(mismatched, observed, "UNKNOWN", "visibility_window_mismatch")
+        for bad in (None, "", "none", "unknown", "unknown_window", 0, [], {}):
+            check(dict(base, forecast_window=bad), normal, "UNKNOWN", "visibility_unknown")
+            check(dict(base, visibility_forecast_window=bad), normal, "UNKNOWN", "visibility_unknown")
+
+    for condition in ("clear", "mixed_visibility"):
+        base = dict(FACTS, visibility_condition=condition)
+        check(base, normal, "ACCEPT", "observed_consistent")
+        check(dict(base, visibility_forecast_window="none"), normal, "ACCEPT", "observed_consistent")
+        for bad in (None, "", "none", "unknown", "unknown_window", 0, [], {}):
+            check(dict(base, forecast_window=bad), normal, "UNKNOWN", "visibility_unknown")
+        check(dict(base, forecast_window="current_morning"), normal,
+              "UNKNOWN", "visibility_window_mismatch")
+        check(dict(base, visibility_forecast_window="unknown_window"), normal,
+              "UNKNOWN", "visibility_unknown")
+        check(dict(base, visibility_forecast_window=[]), normal,
+              "UNKNOWN", "visibility_unknown")
+
+    check(dict(FACTS, visibility_condition="clear"), fog, "REJECT", "invented_dense_fog")
+    check(dict(FACTS, visibility_condition="clear", forecast_window=""), fog,
+          "UNKNOWN", "visibility_unknown")
+    check(dict(FACTS, visibility_condition="clear", forecast_window="current_morning"), fog,
+          "UNKNOWN", "visibility_window_mismatch")
+    for bad_condition in (None, "", "unknown", 0, [], {}):
+        check(dict(FACTS, visibility_condition=bad_condition), normal,
+              "UNKNOWN", "visibility_unknown")
+
+    # Non-ACCEPT evaluator decisions remain authoritative after validation.
+    check(dict(FACTS, forecast_window="unknown_window"), normal,
+          "REJECT", "fixture_reject", raw_decision="REJECT")
+    check(dict(FACTS, forecast_window="unknown_window"), normal,
+          "UNKNOWN", "fixture_unknown", raw_decision="UNKNOWN")
+
+    # Exercise the real seam, not only the direct verdict normalizer.
+    for facts, observed, expected_reason in (
+        (dict(FACTS, forecast_window="current_morning"), normal, "visibility_window_mismatch"),
+        (dict(FACTS, forecast_window="unknown_window"), OBSERVATIONS, "visibility_unknown"),
+        (dict(FACTS, visibility_condition="clear", forecast_window=""), fog, "visibility_unknown"),
+    ):
+        with TemporaryDirectory() as tmp:
+            outcome, events, calls = _all_rejected(
+                Path(tmp), lambda _n, raw, observed=observed: _response(raw, observations=observed),
+                facts=facts,
+            )
+            assert len(calls) == 3
+            assert all((v["decision"], v["reason"]) == ("UNKNOWN", expected_reason)
+                       for v in outcome["semantic_qa_results"]), outcome
+            assert outcome["backend"] == "local_informative_cover"
+            assert outcome["fallback_reason"] == "semantic_qa_rejected"
+            assert not any(event.startswith("photo:ai-") for event in events)
 
 def temporal_mismatch_is_unknown_without_calling_evaluator() -> None:
     for facts in (
@@ -668,6 +812,8 @@ TESTS = [
     codex_p2_ambiguous_and_contradictory_accept_fail_closed,
     codex_p2_lunar_phase_shape_matrix_fail_closed,
     codex_p2_morning_dominant_moon_fail_closed,
+    codex_c_morning_moon_and_visibility_window_fail_closed,
+    codex_c1_forecast_window_fail_closed,
     temporal_mismatch_is_unknown_without_calling_evaluator,
     unreadable_image_and_hash_are_bound_to_bytes,
     upstream_guard_rejections_never_invoke_semantic_qa,

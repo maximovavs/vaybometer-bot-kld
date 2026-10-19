@@ -39,6 +39,12 @@ _PHASE_SHAPES = {
     "last_quarter": frozenset({"quarter"}),
     "waning_crescent": frozenset({"crescent"}),
 }
+# Vocabulary of visual_context_kld.VisibilityCondition / VisibilityForecastWindow.
+_VISIBILITY_CONDITIONS = frozenset(
+    {"dense_fog", "fog", "mist", "reduced_visibility", "dust_haze", "mixed_visibility", "clear"}
+)
+_REDUCED_VISIBILITY = frozenset({"dense_fog", "fog", "mist", "reduced_visibility", "dust_haze"})
+_VISIBILITY_WINDOWS = frozenset({"current_morning", "tomorrow_morning"})
 
 
 @dataclass(frozen=True)
@@ -142,9 +148,33 @@ def evaluate_semantic_qa(
                 return verdict("UNKNOWN", "lunar_phase_unknown", version)
             if moon_shape not in _PHASE_SHAPES[lunar]:
                 return verdict("REJECT", "moon_phase_conflict", version)
-            if expected_post_type == "morning" and dominant_moon == "yes":
-                return verdict("REJECT", "morning_dominant_moon", version)
-        if str(facts.get("visibility_condition") or "") == "clear" and observations["visibility_appearance"] == "dense_fog":
+            # Editorial morning contract: no visible moon at all, dominant or not.
+            if expected_post_type == "morning":
+                reason = "morning_dominant_moon" if dominant_moon == "yes" else "morning_moon_visible"
+                return verdict("REJECT", reason, version)
+        # A visible-weather claim is meaningful only for the pictured forecast
+        # window.  Unknown window labels cannot substantiate an ACCEPT.
+        visibility = facts.get("visibility_condition")
+        image_window = facts.get("forecast_window")
+        if (not isinstance(visibility, str) or visibility not in _VISIBILITY_CONDITIONS
+                or not isinstance(image_window, str) or image_window not in _VISIBILITY_WINDOWS):
+            return verdict("UNKNOWN", "visibility_unknown", version)
+        visibility_window = facts.get("visibility_forecast_window")
+        if visibility in _REDUCED_VISIBILITY:
+            if not isinstance(visibility_window, str) or visibility_window not in _VISIBILITY_WINDOWS:
+                return verdict("UNKNOWN", "visibility_unknown", version)
+            if visibility_window != image_window:
+                return verdict("UNKNOWN", "visibility_window_mismatch", version)
+            if observations["visibility_appearance"] == "normal":
+                return verdict("REJECT", "reduced_visibility_not_shown", version)
+        elif visibility_window not in (None, "", "none"):
+            # For clear/mixed conditions a dedicated visibility window may be
+            # absent, but any explicitly supplied one must also be aligned.
+            if not isinstance(visibility_window, str) or visibility_window not in _VISIBILITY_WINDOWS:
+                return verdict("UNKNOWN", "visibility_unknown", version)
+            if visibility_window != image_window:
+                return verdict("UNKNOWN", "visibility_window_mismatch", version)
+        if visibility == "clear" and observations["visibility_appearance"] == "dense_fog":
             return verdict("REJECT", "invented_dense_fog", version)
     return verdict(decision, codes[0] if codes else "observed_consistent", version)
 
