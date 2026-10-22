@@ -11,7 +11,14 @@ caller treats both as a hard candidate rejection.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+import json
+import math
+import multiprocessing
+import os
+import signal
+import threading
+import time
+from multiprocessing.connection import Connection
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Callable, Mapping
@@ -24,7 +31,7 @@ _OBSERVATIONS = {
     "moon_shape": {"crescent", "quarter", "gibbous", "full_disk", "unclear", "not_applicable"},
     "dominant_moon": {"yes", "no", "unclear"},
     "visibility_appearance": {"normal", "mist", "dense_fog", "ambiguous"},
-    "weather_appearance": {"cloudy", "rain", "clear", "other", "ambiguous"},
+    "weather_appearance": {"cloudy", "rain", "drizzle", "snow", "fog", "storm", "clear", "other", "ambiguous"},
 }
 _CONFLICT_CODES = {"moon_phase_conflict", "invented_dense_fog", "other_weather_conflict"}
 # Only apparent shape can be checked by the current evaluator schema.
@@ -67,12 +74,113 @@ class SemanticQaVerdict:
         }
 
 
-def _call_with_timeout(evaluator: Callable[..., Any], image: bytes, facts: Mapping[str, Any], timeout_s: float) -> Any:
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kld-semantic-qa")
+# Do not pickle/unpickle arbitrary observer results over IPC. Reject oversized JSON.
+_MAX_REPLY_BYTES = 65_536
+_MAX_QA_SECONDS = 20.0
+
+
+def _qa_child(write_end: Connection, evaluator: Callable[..., Any], image: bytes,
+              facts: Mapping[str, Any], cpu_seconds: int) -> None:
     try:
-        return pool.submit(evaluator, image, dict(facts)).result(timeout=timeout_s)
+        # A separate process group lets timeout cleanup kill spawned descendants.
+        if os.name == "posix":
+            os.setsid()
+        try:
+            import resource
+            soft_cpu, hard_cpu = resource.getrlimit(resource.RLIMIT_CPU)
+            bound = max(1, int(cpu_seconds))
+            if soft_cpu == resource.RLIM_INFINITY or soft_cpu > bound:
+                resource.setrlimit(resource.RLIMIT_CPU, (bound, hard_cpu))
+            # Independent observer is offline at this stage; cap worker virtual
+            # address space without reducing an already tighter limit.
+            if hasattr(resource, "RLIMIT_AS"):
+                old_soft, old_hard = resource.getrlimit(resource.RLIMIT_AS)
+                cap = 2 * 1024 * 1024 * 1024
+                if old_hard != resource.RLIM_INFINITY:
+                    cap = min(cap, old_hard)
+                if old_soft == resource.RLIM_INFINITY or old_soft > cap:
+                    resource.setrlimit(resource.RLIMIT_AS, (cap, old_hard))
+        except (ImportError, OSError, ValueError):
+            pass  # The process deadline is enforced by the parent regardless.
+        raw = evaluator(image, dict(facts))
+        if not isinstance(raw, Mapping):
+            raw = {"_invalid_type": True}
+        payload = json.dumps(dict(raw), ensure_ascii=False, allow_nan=False,
+                             separators=(",", ":")).encode("utf-8")
+        if len(payload) > _MAX_REPLY_BYTES:
+            payload = b'{}'
+        write_end.send_bytes(payload)
+    except BaseException:
+        # A crash or failure is UNKNOWN. No worker tracebacks or secrets cross IPC.
+        pass
     finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+        write_end.close()
+
+
+def _stop_worker(process: multiprocessing.Process) -> None:
+    """Bounded cleanup for the child and its process group. No late work."""
+    if process.pid is None:
+        return
+    if os.name == "posix":
+        # A worker may have returned while a descendant remains alive.
+        # Killing its dedicated group also covers this fast-return case.
+        # Before setsid(), PGID==parent PGID, not worker.pid: killpg(pid)
+        # therefore cannot accidentally target the parent's process group.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.is_alive():
+                process.kill()
+    elif process.is_alive():
+        process.kill()
+    process.join(timeout=0.3)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=0.3)
+
+
+def _call_with_timeout(evaluator: Callable[..., Any], image: bytes,
+                       facts: Mapping[str, Any], timeout_s: float) -> Any:
+    """Run every injected evaluator in a killable POSIX child.
+
+    There is no thread-based legacy fallback: if process isolation is not
+    available, fail closed. The parent controls the wall-clock deadline
+    and discards late results.
+    """
+    if (not isinstance(timeout_s, (float, int)) or isinstance(timeout_s, bool)
+            or not math.isfinite(timeout_s) or not 0 < timeout_s <= _MAX_QA_SECONDS):
+        raise TimeoutError("invalid observer deadline")
+    if os.name != "posix" or "fork" not in multiprocessing.get_all_start_methods():
+        raise RuntimeError("killable observer worker unavailable")
+    if threading.active_count() != 1:
+        raise RuntimeError("fork is unsafe while other threads are running")
+    ctx = multiprocessing.get_context("fork")
+    read_end, write_end = ctx.Pipe(duplex=False)
+    worker = ctx.Process(target=_qa_child,
+                         args=(write_end, evaluator, image, dict(facts), int(timeout_s) + 2),
+                         daemon=True, name="kld-semantic-qa-observer")
+    try:
+        started = time.monotonic()
+        worker.start()
+        write_end.close()
+        remaining = max(0.0, timeout_s - (time.monotonic() - started))
+        if not read_end.poll(remaining):
+            raise TimeoutError("observer deadline expired")
+        payload = read_end.recv_bytes(maxlength=_MAX_REPLY_BYTES)
+        # A reply that arrives after deadline can never promote to ACCEPT.
+        if time.monotonic() - started > timeout_s:
+            raise TimeoutError("observer replied after deadline")
+        return json.loads(payload.decode("utf-8"))
+    except TimeoutError:
+        raise
+    except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("observer child failed") from exc
+    finally:
+        _stop_worker(worker) if worker.pid is not None else None
+        read_end.close()
+        write_end.close()
 
 
 def evaluate_semantic_qa(
@@ -103,7 +211,7 @@ def evaluate_semantic_qa(
             return verdict("UNKNOWN", "temporal_mismatch")
     try:
         raw = _call_with_timeout(evaluator, image, facts, timeout_s)
-    except (FutureTimeout, TimeoutError):
+    except TimeoutError:
         return verdict("UNKNOWN", "qa_timeout")
     except Exception:
         return verdict("UNKNOWN", "qa_unavailable")

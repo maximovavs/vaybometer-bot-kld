@@ -40,7 +40,20 @@ def apply_weather_veto(raw: Any, facts: Mapping[str, Any], *, image: bytes) -> A
     if not isinstance(obs, Mapping):
         return raw
     expected_window = facts.get("weather_window")
-    pictured_weather = obs.get("pictured_weather_window")
+    image_only = raw.get("observation_contract") == "kld_image_only_observer_v1"
+    # Image-only observers CANNOT know the date/time an illustration depicts.
+    # R5 verified facts select the forecast window; the observer supplies only
+    # visible weather. Keep the original R4 pictured-window policy unchanged.
+    if image_only:
+        if (expected_window not in _VALID_WINDOWS
+                or facts.get("forecast_window") != expected_window
+                or not isinstance(facts.get("source_provenance"), Mapping)
+                or set(facts["source_provenance"]) != {"weather", "visibility", "lunar"}):
+            return _fail(raw, "UNKNOWN", "image_window_unknown")
+        if any(k in obs for k in ("pictured_weather_window", "pictured_visibility_window",
+                                   "image_date", "image_timestamp")):
+            return _fail(raw, "UNKNOWN", "observer_claimed_image_time")
+    pictured_weather = expected_window if image_only else obs.get("pictured_weather_window")
     if expected_window not in _VALID_WINDOWS or pictured_weather not in _VALID_IMAGE_WINDOW:
         return _fail(raw, "UNKNOWN", "image_window_unknown")
     if pictured_weather == "unknown":
@@ -50,7 +63,7 @@ def apply_weather_veto(raw: Any, facts: Mapping[str, Any], *, image: bytes) -> A
     visibility_condition = facts.get("visibility_condition")
     if visibility_condition not in {"clear", "mist", "fog", "dense_fog", "reduced_visibility", "dust_haze", "mixed_visibility"}:
         return _fail(raw, "UNKNOWN", "visibility_source_unavailable")
-    pictured_visibility = obs.get("pictured_visibility_window")
+    pictured_visibility = expected_window if image_only else obs.get("pictured_visibility_window")
     if pictured_visibility not in _VALID_IMAGE_WINDOW or pictured_visibility == "unknown":
         return _fail(raw, "UNKNOWN", "image_window_unknown")
     if pictured_visibility != facts.get("forecast_window"):
@@ -62,18 +75,22 @@ def apply_weather_veto(raw: Any, facts: Mapping[str, Any], *, image: bytes) -> A
     # Reasonable ambiguity is UNKNOWN, not optimism.
     if pictured in {None, "other", "ambiguous"} and weather != "storm":
         return _fail(raw, "UNKNOWN", "weather_visual_unknown")
-    if weather == "clear" and pictured == "rain":
+    if weather == "clear" and pictured in {"rain", "drizzle", "snow", "storm"}:
         return _fail(raw, "REJECT", "invented_precipitation")
     if weather == "clear" and pictured == "cloudy":
         return _fail(raw, "REJECT", "unexpected_overcast")
     if visibility_condition == "clear" and obs.get("visibility_appearance") in {"mist", "dense_fog"}:
         return _fail(raw, "REJECT", "invented_reduced_visibility")
-    if weather in {"rain", "drizzle"} and pictured == "clear":
+    if weather in {"rain", "drizzle"} and pictured in {"clear", "snow"}:
         return _fail(raw, "REJECT", "forecast_rain_not_shown")
     if weather in {"rain", "drizzle"} and pictured == "cloudy":
         return _fail(raw, "UNKNOWN", "precipitation_visual_unknown")
-    if weather == "snow" and pictured in {"clear", "rain"}:
+    if weather == "snow" and pictured in {"clear", "rain", "drizzle"}:
         return _fail(raw, "REJECT", "forecast_snow_not_shown")
+    if image_only and weather == "snow" and pictured in {"cloudy", "fog", "other"}:
+        return _fail(raw, "UNKNOWN", "snow_visual_unknown")
+    if image_only and weather == "clear" and pictured == "fog":
+        return _fail(raw, "REJECT", "invented_reduced_visibility")
     if weather == "storm":
         if facts.get("storm_signal") not in {"confirmed_gust", "confirmed_warning", "confirmed_weather"}:
             return _fail(raw, "UNKNOWN", "storm_source_unavailable")
@@ -96,6 +113,9 @@ def wrap_observer(
     def evaluate(image: bytes, facts: Mapping[str, Any]) -> Any:
         raw = observer(image, facts)
         return apply_weather_veto(raw, facts, image=image)
+    # Preserve the process-isolation contract through the R4 weather veto.
+    if getattr(observer, "_kld_killable_image_observer", False):
+        evaluate._kld_killable_image_observer = True
     return evaluate
 
 
