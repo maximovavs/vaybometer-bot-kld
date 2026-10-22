@@ -610,6 +610,7 @@ def get_visibility_weather(
     *,
     tz: str = "Europe/Kaliningrad",
     target_date: str,
+    capture_semantic_facts: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Fetch the local 04:00-10:00 visibility inputs from the existing source.
 
@@ -617,7 +618,7 @@ def get_visibility_weather(
     visibility window (for example, when OpenWeather won the normal fallback
     chain).  Failure is intentionally non-fatal.
     """
-    return _openmeteo_hourly_daily(
+    response = _openmeteo_hourly_daily(
         lat=lat,
         lon=lon,
         tz=tz or "Europe/Kaliningrad",
@@ -625,6 +626,25 @@ def get_visibility_weather(
         end_date=target_date,
         need_sun=False,
     )
+    # R5-A provenance is opt-in for the explicit offline facts sidecar only.
+    # No new request and no change to the default weather/visibility response.
+    if capture_semantic_facts and isinstance(response, dict) and response.get("hourly"):
+        try:
+            from datetime import datetime, timezone
+            from kld_semantic_qa_source import CAPTURE_SCHEMA, SOURCE, canonical_sha256
+            response["_kld_r5_capture"] = {
+                "schema": CAPTURE_SCHEMA,
+                "source_id": SOURCE,
+                "requested_target_date": target_date,
+                "requested_timezone": tz or "Europe/Kaliningrad",
+                "retrieved_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "raw_payload_sha256": canonical_sha256(response),
+            }
+        except Exception as exc:
+            # Fail closed only for the optional QA evidence; never suppress an
+            # otherwise usable legacy visibility/weather response.
+            logging.info("KLD R5 evidence capture skipped: %s", exc)
+    return response
 
 
 # ───────────────────────────── Солнце и УФ ───────────────────────────────────

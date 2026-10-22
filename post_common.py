@@ -742,6 +742,7 @@ def _kld_visibility_for_post(
     target_date: str,
     tz_name: str,
     forecast_air_data: Optional[Dict[str, Any]] = None,
+    semantic_capture: Optional[Dict[str, Any]] = None,
 ) -> tuple[KldVisibilityContext, Optional[str]]:
     payload: Dict[str, Any] = weather_data if isinstance(weather_data, dict) else {}
     if not visibility_payload_has_morning_window(payload, target_date=target_date, tz=tz_name):
@@ -751,16 +752,26 @@ def _kld_visibility_for_post(
                 KLD_LON,
                 tz=tz_name,
                 target_date=target_date,
+                **({"capture_semantic_facts": True} if semantic_capture is not None else {}),
             ) or {}
         except Exception as exc:
             dedicated = {}
             logging.info("KLD visibility source unavailable: %s", exc)
         if dedicated:
+            if semantic_capture is not None and "_kld_r5_capture" in dedicated:
+                # Capture before the legacy path optionally grafts current
+                # values, which would otherwise invalidate the raw hash.
+                import copy
+                semantic_capture["source"] = copy.deepcopy(dedicated)
             if post_type.startswith("morn") and not isinstance(dedicated.get("current"), dict):
                 current = payload.get("current")
                 if isinstance(current, dict):
                     dedicated["current"] = current
             payload = dedicated
+
+    if semantic_capture is not None and "_kld_r5_capture" in payload and "source" not in semantic_capture:
+        import copy
+        semantic_capture["source"] = copy.deepcopy(payload)
 
     # Current AQI/PM describes the observation time, not tomorrow morning.
     # A future forecast must be passed explicitly instead of inheriting
@@ -1873,8 +1884,10 @@ class KldMorningMessage(str):
         *,
         regional_city_temperatures: list[tuple[str, float, float | None]] | None = None,
         visibility_context: KldVisibilityContext | None = None,
+        semantic_qa_source: dict[str, Any] | None = None,
     ):
         obj = str.__new__(cls, text)
+        obj.semantic_qa_source = semantic_qa_source
         obj.regional_city_temperatures = tuple(regional_city_temperatures or ())
         obj.visibility_context = visibility_context
         return obj
@@ -1888,9 +1901,11 @@ class KldEveningMessage(str):
         text: str,
         *,
         visibility_context: KldVisibilityContext | None = None,
+        semantic_qa_source: dict[str, Any] | None = None,
     ):
         obj = str.__new__(cls, text)
         obj.visibility_context = visibility_context
+        obj.semantic_qa_source = semantic_qa_source
         return obj
 
 
@@ -1952,6 +1967,8 @@ def build_message_morning_compact(
     other_label: str,
     other_cities,
     tz: Union[pendulum.Timezone, str],
+    *,
+    semantic_facts_capture: bool = False,
 ) -> str:
     tz_obj = pendulum.timezone(tz) if isinstance(tz, str) else tz
     date_local = pendulum.today(tz_obj)
@@ -2060,9 +2077,11 @@ def build_message_morning_compact(
     if pollen_risk:
         air_line += f" • 🌿 пыльца: {pollen_risk}"
 
+    semantic_capture: Optional[Dict[str, Any]] = {} if semantic_facts_capture else None
     visibility_context, visibility_line = _kld_visibility_for_post(
         wm_klg,
         air,
+        semantic_capture=semantic_capture,
         post_type="morning",
         target_date=date_local.add(days=DAY_OFFSET).to_date_string(),
         tz_name=tz_obj.name,
@@ -2160,6 +2179,7 @@ def build_message_morning_compact(
         "\n".join(P),
         regional_city_temperatures=regional_city_temperatures,
         visibility_context=visibility_context,
+        semantic_qa_source=semantic_capture.get("source") if semantic_capture is not None else None,
     )
 
 # ────────────────────────── Evening (legacy) ──────────────────────────
@@ -2170,6 +2190,8 @@ def build_message_legacy_evening(
     other_label: str,
     other_cities,
     tz: Union[pendulum.Timezone, str],
+    *,
+    semantic_facts_capture: bool = False,
 ) -> str:
     tz_obj = pendulum.timezone(tz) if isinstance(tz, str) else tz
     tz_name = tz_obj.name
@@ -2344,9 +2366,11 @@ def build_message_legacy_evening(
     # (2) Вечером блоки воздуха/космопогоды/Шумана скрыты — остаются только рекомендации.
     air = get_air(KLD_LAT, KLD_LON) or {}
     schu_state = {} if (DISABLE_SCHUMANN) else get_schumann_with_fallback()
+    semantic_capture: Optional[Dict[str, Any]] = {} if semantic_facts_capture else None
     visibility_context, visibility_line = _kld_visibility_for_post(
         wm_main,
         air,
+        semantic_capture=semantic_capture,
         post_type="evening",
         target_date=date_weather.to_date_string(),
         tz_name=tz_name,
@@ -2384,6 +2408,7 @@ def build_message_legacy_evening(
     return KldEveningMessage(
         "\n".join(P),
         visibility_context=visibility_context,
+        semantic_qa_source=semantic_capture.get("source") if semantic_capture is not None else None,
     )
 
 # ────────────────────────── Внешний интерфейс ──────────────────────────
@@ -2395,6 +2420,8 @@ def build_message(
     other_cities,
     tz: Union[pendulum.Timezone, str],
     mode: Optional[str] = None,
+    *,
+    semantic_facts_capture: bool = False,
 ) -> str:
     effective_mode = (mode or POST_MODE or "evening").strip().lower()
 
@@ -2406,10 +2433,12 @@ def build_message(
 
     if effective_mode == "morning":
         return build_message_morning_compact(
-            region_name, sea_label, sea_cities, other_label, other_cities, tz
+            region_name, sea_label, sea_cities, other_label, other_cities, tz,
+            semantic_facts_capture=semantic_facts_capture,
         )
     return build_message_legacy_evening(
-        region_name, sea_label, sea_cities, other_label, other_cities, tz
+        region_name, sea_label, sea_cities, other_label, other_cities, tz,
+        semantic_facts_capture=semantic_facts_capture,
     )
 
 # ────────────────────────── Mood для KLD-картинки ──────────────────────────
