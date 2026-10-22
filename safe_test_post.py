@@ -160,6 +160,40 @@ def _write_visibility_context_sidecar(path_value: str, context: object, *, mode:
     return True
 
 
+def _write_semantic_facts_sidecar(
+    path_value: str, source: object, *, mode: str,
+    target_date: str, publication_target_date: str,
+) -> bool:
+    """Optional R5-A evidence only; fail closed and delete stale sidecars.
+
+    Never invoked by the production workflow (which does not supply the
+    --semantic-facts-out argument). No provider call is performed here.
+    """
+    value = str(path_value or "").strip()
+    if not value:
+        return False
+    path = Path(value)
+    temp_path = path.with_name(path.name + ".tmp")
+    try:
+        from kld_semantic_qa_source import build_trusted_snapshot
+        snapshot = build_trusted_snapshot(
+            source, target_date=target_date, post_type=mode,
+            publication_target_date=publication_target_date,
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(
+            json.dumps(snapshot, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+        return True
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)
+        logging.warning("KLD R5 semantic facts unavailable (sidecar omitted): %s", exc)
+        return False
+
+
 def _env_any(*names: str) -> bool:
     return any(_env_on(name) for name in names)
 
@@ -1582,9 +1616,15 @@ async def main() -> None:
         default="",
         help="Write pre-sanitize structured KLD visibility JSON for a separate image process.",
     )
+    parser.add_argument(
+        "--semantic-facts-out", default="",
+        help="R5-A offline capture only: optional pre-sanitize verified facts JSON; not used by daily workflow.",
+    )
     parser.add_argument("--send", action="store_true", help="Actually send to CHANNEL_ID_TEST / --chat-id. Omit for dry-run.")
     parser.add_argument("--no-test-label", action="store_true", help="Do not prepend the 'Test safe post' label when sending.")
     args = parser.parse_args()
+    if args.semantic_facts_out and args.send:
+        parser.error("--semantic-facts-out is offline-only; omit --send")
 
     mode = (args.mode or "evening").strip().lower()
     os.environ["POST_MODE"] = mode
@@ -1616,6 +1656,7 @@ async def main() -> None:
             other_cities=OTHER_CITIES_ALL,
             tz=TZ_STR,
             mode=mode,
+            semantic_facts_capture=bool(args.semantic_facts_out),
         )
 
     visibility_context = getattr(raw_msg, "visibility_context", None)
@@ -1624,6 +1665,14 @@ async def main() -> None:
         visibility_context,
         mode=mode,
     )
+
+    # Strictly opt-in offline output; no active workflow sets this argument.
+    if args.semantic_facts_out:
+        target = base_date.add(days=day_offset).to_date_string()
+        _write_semantic_facts_sidecar(
+            args.semantic_facts_out, getattr(raw_msg, "semantic_qa_source", None),
+            mode=mode, target_date=target, publication_target_date=target,
+        )
 
     legacy_result = sanitize_post_text(raw_msg)
     final_result = legacy_result

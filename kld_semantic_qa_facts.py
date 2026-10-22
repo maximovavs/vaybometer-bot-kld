@@ -6,7 +6,7 @@ collection code; FORMAT_V2 text, prompt metadata and LLM output are not sources.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping
 
 _ALLOWED_WEATHER = frozenset({"clear", "partly_cloudy", "cloudy", "drizzle", "rain", "fog", "snow", "storm"})
@@ -38,8 +38,14 @@ def _section(snapshot: Mapping[str, Any], name: str, *, target: str, window: str
         stamp = datetime.fromisoformat(retrieved.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         raise FactsUnavailable(f"{name}_source_unavailable") from None
-    if stamp.tzinfo is None:
+    if stamp.tzinfo is None or stamp > datetime.now(timezone.utc) + timedelta(minutes=2):
         raise FactsUnavailable(f"{name}_source_unavailable")
+    # R5 captures have strict producer-side window, location, unit and digest
+    # checks; the legacy R4 fixture contract remains supported offline.
+    if section.get("raw_payload_sha256") is not None:
+        value = section["raw_payload_sha256"]
+        if not isinstance(value, str) or len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+            raise FactsUnavailable(f"{name}_source_unavailable")
     if window is not None and section.get("window") != window:
         raise FactsUnavailable(f"{name}_window_mismatch")
     return section
