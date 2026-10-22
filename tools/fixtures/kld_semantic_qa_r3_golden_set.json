@@ -1,0 +1,1240 @@
+{
+  "schema": "kld_semantic_qa_r3_golden_set_design_v1",
+  "repository": "maximovavs/vaybometer-bot-kld",
+  "reference_main": "8e0c7e987825961ba9e241dbbfd72fc05700a2c0",
+  "reference_merged_pr": 84,
+  "environment": "offline_only",
+  "status": "proposed_unexecuted_on_full_checkout",
+  "note": "current_v1 cases target the merged v1 normalization function; post_wiring cases are design assertions and MUST NOT be considered passing tests before implementation. The evaluator observations are synthetic, NOT verified real photographs.",
+  "default_image_hex": "6b6c642d72332d666978747572652d696d616765",
+  "cases": [
+    {
+      "id": "V1-01",
+      "category": "baseline",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "ACCEPT",
+        "reason": "observed_consistent"
+      }
+    },
+    {
+      "id": "V1-02",
+      "category": "moon",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "visible",
+        "moon_shape": "crescent",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "ACCEPT",
+        "reason": "observed_consistent"
+      }
+    },
+    {
+      "id": "V1-03",
+      "category": "moon",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "visible",
+        "moon_shape": "full_disk",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "moon_phase_conflict"
+      }
+    },
+    {
+      "id": "V1-04",
+      "category": "moon",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "morning",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "current_morning",
+        "forecast_window": "current_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "visible",
+        "moon_shape": "crescent",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "morning_moon_visible"
+      }
+    },
+    {
+      "id": "V1-05",
+      "category": "moon",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "morning",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "current_morning",
+        "forecast_window": "current_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "visible",
+        "moon_shape": "crescent",
+        "dominant_moon": "yes",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "morning_dominant_moon"
+      }
+    },
+    {
+      "id": "V1-06",
+      "category": "moon",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "unknown",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "visible",
+        "moon_shape": "crescent",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "lunar_phase_unknown"
+      }
+    },
+    {
+      "id": "V1-07",
+      "category": "moon",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "new",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "visible",
+        "moon_shape": "crescent",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "moon_phase_conflict"
+      }
+    },
+    {
+      "id": "V1-08",
+      "category": "moon",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "new",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "ACCEPT",
+        "reason": "observed_consistent"
+      }
+    },
+    {
+      "id": "V1-09",
+      "category": "visibility",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "normal",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "reduced_visibility_not_shown"
+      }
+    },
+    {
+      "id": "V1-10",
+      "category": "temporal",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "current_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "visibility_window_mismatch"
+      }
+    },
+    {
+      "id": "V1-11",
+      "category": "temporal",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "visibility_unknown"
+      }
+    },
+    {
+      "id": "V1-12",
+      "category": "visibility",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "clear",
+        "visibility_forecast_window": "none",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "dense_fog",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "invented_dense_fog"
+      }
+    },
+    {
+      "id": "V1-13",
+      "category": "visibility",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "clear",
+        "visibility_forecast_window": "none",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "normal",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "ACCEPT",
+        "reason": "observed_consistent"
+      }
+    },
+    {
+      "id": "V1-14",
+      "category": "visibility_known_gap",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "clear",
+        "visibility_forecast_window": "none",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "ACCEPT",
+        "reason": "observed_consistent"
+      },
+      "note": "Current v1 allows invented mist in a clear forecast; redesign must decide severity and policy."
+    },
+    {
+      "id": "V1-15",
+      "category": "observations",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "unclear",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "insufficient_visual_evidence"
+      }
+    },
+    {
+      "id": "V1-16",
+      "category": "observations",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "crescent",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "contradictory_observations"
+      }
+    },
+    {
+      "id": "V1-17",
+      "category": "hash",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "image_hash_mismatch"
+      },
+      "response_overrides": {
+        "raw_image_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "V1-18",
+      "category": "temporal",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-24",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "temporal_mismatch"
+      }
+    },
+    {
+      "id": "V1-19",
+      "category": "temporal",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-24",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "temporal_mismatch"
+      }
+    },
+    {
+      "id": "V1-20",
+      "category": "temporal",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-24",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "temporal_mismatch"
+      }
+    },
+    {
+      "id": "V1-21",
+      "category": "temporal",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-24",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "temporal_mismatch"
+      }
+    },
+    {
+      "id": "V1-22",
+      "category": "provider",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "fixture_unknown"
+      },
+      "response_overrides": {
+        "decision": "UNKNOWN",
+        "reason_codes": [
+          "fixture_unknown"
+        ]
+      }
+    },
+    {
+      "id": "V1-23",
+      "category": "provider",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "other_weather_conflict"
+      },
+      "response_overrides": {
+        "decision": "REJECT",
+        "reason_codes": [
+          "other_weather_conflict"
+        ]
+      }
+    },
+    {
+      "id": "V1-24",
+      "category": "schema",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "schema_error"
+      },
+      "response_overrides": {
+        "qa_schema_version": "bad_schema"
+      }
+    },
+    {
+      "id": "V1-25",
+      "category": "schema",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "contradictory_verdict"
+      },
+      "response_overrides": {
+        "reason_codes": [
+          "other_weather_conflict"
+        ]
+      }
+    },
+    {
+      "id": "V1-26",
+      "category": "schema",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "missing_observations"
+      },
+      "response_overrides": {
+        "observations": null
+      }
+    },
+    {
+      "id": "V1-27",
+      "category": "observations",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "ambiguous"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "insufficient_visual_evidence"
+      }
+    },
+    {
+      "id": "V1-28",
+      "category": "temporal",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "clear",
+        "visibility_forecast_window": "current_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "visibility_window_mismatch"
+      }
+    },
+    {
+      "id": "V1-29",
+      "category": "visibility",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "unknown",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "visibility_unknown"
+      }
+    },
+    {
+      "id": "V1-30",
+      "category": "image",
+      "stage": "current_v1",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "image_unreadable"
+      },
+      "image_bytes": null
+    },
+    {
+      "id": "R3-01",
+      "category": "weather_storm",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "clear",
+        "visibility_forecast_window": "none",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "storm",
+        "weather_window": "tomorrow_morning",
+        "storm_signal": "confirmed_gust"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "normal",
+        "weather_appearance": "clear",
+        "sea_appearance": "calm",
+        "wind_appearance": "calm"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "storm_conditions_not_shown"
+      },
+      "note": "Storm may be driven by strong wind, not necessarily lightning or rain; reject a serene calm scene."
+    },
+    {
+      "id": "R3-02",
+      "category": "weather_rain",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "clear",
+        "visibility_forecast_window": "none",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "rain",
+        "weather_window": "tomorrow_morning"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "normal",
+        "weather_appearance": "clear",
+        "pictured_weather_window": "tomorrow_morning"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "forecast_rain_not_shown"
+      },
+      "note": "Match interval before enforcing, require observed precipitation or wet-weather cues per defined policy."
+    },
+    {
+      "id": "R3-03",
+      "category": "weather_clear",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "clear",
+        "visibility_forecast_window": "none",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "clear",
+        "weather_window": "tomorrow_morning"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "normal",
+        "weather_appearance": "rain",
+        "pictured_weather_window": "tomorrow_morning"
+      },
+      "expected": {
+        "decision": "REJECT",
+        "reason": "invented_precipitation"
+      }
+    },
+    {
+      "id": "R3-04",
+      "category": "weather_window",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "rain",
+        "weather_window": "tomorrow_morning"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "rain",
+        "pictured_weather_window": "current_morning"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "weather_window_mismatch"
+      }
+    },
+    {
+      "id": "R3-05",
+      "category": "visibility_provenance",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "unknown",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy",
+        "visibility_source_status": "missing"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "normal",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "visibility_source_unavailable"
+      },
+      "note": "Builder must not coerce missing structured visibility sidecar to clear."
+    },
+    {
+      "id": "R3-06",
+      "category": "lunar_provenance",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "unknown",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy",
+        "lunar_source_status": "missing"
+      },
+      "observations": {
+        "moon_visibility": "visible",
+        "moon_shape": "crescent",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "lunar_source_unavailable"
+      }
+    },
+    {
+      "id": "R3-07",
+      "category": "post_target_alignment",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy",
+        "publication_target_date": "2026-10-24"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "publication_target_mismatch"
+      },
+      "note": "Orchestrator receipt target_date and semantic facts target_date must agree before evaluator call."
+    },
+    {
+      "id": "R3-08",
+      "category": "visibility_image_window",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "fog",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "dense_fog",
+        "weather_appearance": "cloudy",
+        "pictured_visibility_window": "unknown"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "image_window_unknown"
+      },
+      "note": "Model must independently classify photographed timeframe; cannot echo facts forecast_window."
+    },
+    {
+      "id": "R3-09",
+      "category": "storm_unknown",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "storm",
+        "storm_signal": "confirmed_gust"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "other",
+        "wind_appearance": "unclear"
+      },
+      "expected": {
+        "decision": "UNKNOWN",
+        "reason": "storm_visual_unknown"
+      },
+      "note": "Do not accept if strong-wind visual evidence cannot be identified."
+    },
+    {
+      "id": "R3-10",
+      "category": "delivery_fallback",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "GUARDED_FALLBACK",
+        "reason": "all_ai_unknown_then_local_or_text"
+      },
+      "note": "End-to-end fake providers: UNKNOWN/REJECT -> next provider -> curated cover -> text-only when cover rejected; not a scalar evaluator test."
+    },
+    {
+      "id": "R3-11",
+      "category": "receipt_idempotency",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "NO_DUPLICATE",
+        "reason": "existing_receipt_skips_send"
+      },
+      "note": "End-to-end fake send: complete receipt skips image/text without evaluator or generation."
+    },
+    {
+      "id": "R3-12",
+      "category": "delivery_ambiguity",
+      "stage": "post_wiring",
+      "facts": {
+        "target_date": "2026-10-23",
+        "post_type": "evening",
+        "weather_target_date": "2026-10-23",
+        "visibility_target_date": "2026-10-23",
+        "lunar_target_date": "2026-10-23",
+        "lunar_phase": "waxing_crescent",
+        "visibility_condition": "reduced_visibility",
+        "visibility_forecast_window": "tomorrow_morning",
+        "forecast_window": "tomorrow_morning",
+        "weather_main": "cloudy"
+      },
+      "observations": {
+        "moon_visibility": "not_visible",
+        "moon_shape": "not_applicable",
+        "dominant_moon": "no",
+        "visibility_appearance": "mist",
+        "weather_appearance": "cloudy"
+      },
+      "expected": {
+        "decision": "NO_RETRY",
+        "reason": "ambiguous_photo_send"
+      },
+      "note": "Existing receipt-based idempotency is NOT sufficient when a photo send has an ambiguous result and no receipt; this test is an unmet future requirement, not a proven current behavior."
+    }
+  ]
+}
