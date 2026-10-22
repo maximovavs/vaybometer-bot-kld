@@ -61,6 +61,7 @@ from kld_visual_policy import (  # noqa: E402
     scene_policy_rejection,
 )
 from kld_visual_semantic_qa import DEFAULT_TIMEOUT_S as SEMANTIC_QA_TIMEOUT_S, evaluate_semantic_qa  # noqa: E402
+from kld_semantic_qa_wiring import select_semantic_injection  # noqa: E402
 from visual_context_kld import build_visual_context  # noqa: E402
 from visual_rules import apply_visual_rules, build_prompt_from_cues, to_json  # noqa: E402
 
@@ -1311,6 +1312,19 @@ def main(argv: list[str] | None = None) -> int:
     history_path = kld_visual_history_path(namespace)
     print(f"KLD_IMAGE_HISTORY_NAMESPACE: {namespace}")
     print(f"KLD_IMAGE_HISTORY_PATH: {history_path}")
+    # R4 local wiring candidate only: OFF by default; no vision provider and
+    # no dated weather-source sidecar yet. Opt-in without both fails closed
+    # for AI imagery and retains the existing validated curated/text ladder.
+    semantic_injection = select_semantic_injection(
+        enabled=os.getenv("KLD_SEMANTIC_QA_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"},
+        source_snapshot=None,
+        target_date=str(payload["metadata"]["target_date"]),
+        post_type=args.post_type,
+        publication_target_date=str(payload["metadata"]["target_date"]),
+        observer=None,
+    )
+    if semantic_injection.status == "fail_closed":
+        print(f"WARNING: KLD semantic QA image fail-closed: {semantic_injection.reason}")
     try:
         outcome = execute_image_delivery(
             args=args,
@@ -1318,6 +1332,8 @@ def main(argv: list[str] | None = None) -> int:
             initial_payload=payload,
             visibility_context=visibility_context,
             history_path=history_path,
+            semantic_qa=semantic_injection.evaluator,
+            semantic_qa_facts=semantic_injection.facts,
         )
     except Exception as exc:
         traceback.print_exc()

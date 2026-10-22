@@ -3,7 +3,7 @@
 """Offline checks for the injection-only KLD semantic QA seam.
 
 The real ``execute_image_delivery`` ladder is exercised with fixture
-providers and an injected evaluator.  Production never injects one.
+providers and an injected evaluator.  Production OFF-by-default; explicit opt-in without sourced facts fails closed.
 """
 
 from __future__ import annotations
@@ -767,7 +767,7 @@ def default_without_evaluator_is_unchanged() -> None:
     assert results[0] == results[1]
 
 
-def production_call_site_never_injects_semantic_qa() -> None:
+def production_call_site_off_default_and_fail_closed_without_sources() -> None:
     source = (ROOT / "tools" / "kld_visual_fixture_image.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     calls = [
@@ -775,7 +775,33 @@ def production_call_site_never_injects_semantic_qa() -> None:
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "execute_image_delivery"
     ]
     assert len(calls) == 1
-    assert not any(kw.arg and kw.arg.startswith("semantic_qa") for kw in calls[0].keywords)
+    # R4 explicitly injects the result of a selector. The production call site
+    # must never directly construct an evaluator or promote an unset flag.
+    kwargs = {kw.arg: kw.value for kw in calls[0].keywords}
+    assert isinstance(kwargs["semantic_qa"], ast.Attribute)
+    assert isinstance(kwargs["semantic_qa_facts"], ast.Attribute)
+    assert isinstance(kwargs["semantic_qa"].value, ast.Name)
+    assert kwargs["semantic_qa"].value.id == "semantic_injection"
+    assert isinstance(kwargs["semantic_qa_facts"].value, ast.Name)
+    assert kwargs["semantic_qa_facts"].value.id == "semantic_injection"
+    selects = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+               and getattr(node.func, "id", "") == "select_semantic_injection"]
+    assert len(selects) == 1, "only the known fail-closed selector may inject"
+    selector_args = {kw.arg: kw.value for kw in selects[0].keywords}
+    assert isinstance(selector_args["source_snapshot"], ast.Constant) and selector_args["source_snapshot"].value is None
+    assert isinstance(selector_args["observer"], ast.Constant) and selector_args["observer"].value is None
+    assert 'os.getenv("KLD_SEMANTIC_QA_ENABLED", "")' in source
+    assert 'in {"1", "true", "yes", "on"}' in source
+    from kld_semantic_qa_wiring import select_semantic_injection
+    off = select_semantic_injection(enabled=False, source_snapshot=None,
+        target_date=TARGET_DATE, post_type="evening", publication_target_date=TARGET_DATE, observer=None)
+    assert off.status == "disabled" and off.evaluator is None and off.facts is None
+    on = select_semantic_injection(enabled=True, source_snapshot=None,
+        target_date=TARGET_DATE, post_type="evening", publication_target_date=TARGET_DATE, observer=None)
+    assert on.status == "fail_closed" and callable(on.evaluator)
+    result = evaluate_semantic_qa(on.evaluator, b"raw-image", on.facts,
+        expected_target_date=TARGET_DATE, expected_post_type="evening")
+    assert (result.decision, result.reason) == ("UNKNOWN", "qa_unavailable")
     seam = next(
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "execute_image_delivery"
@@ -787,7 +813,8 @@ def production_call_site_never_injects_semantic_qa() -> None:
         for path in ROOT.rglob("*.py")
         if ".git" not in path.parts and "kld_visual_semantic_qa" in path.read_text(encoding="utf-8", errors="ignore")
     ]
-    assert sorted(importers) == ["tools/kld_visual_fixture_image.py", "tools/test_kld_semantic_qa_seam.py"], importers
+    production_importers = sorted(path for path in importers if not path.startswith("tools/test_"))
+    assert production_importers == ["kld_semantic_qa_evaluator.py", "tools/kld_visual_fixture_image.py"], production_importers
     qa_source = (ROOT / "kld_visual_semantic_qa.py").read_text(encoding="utf-8")
     imported = {
         alias.name.split(".")[0]
@@ -822,7 +849,7 @@ TESTS = [
     qa_accept_keeps_presentation_failure_fallback,
     existing_receipts_skip_image_step_and_semantic_qa,
     default_without_evaluator_is_unchanged,
-    production_call_site_never_injects_semantic_qa,
+    production_call_site_off_default_and_fail_closed_without_sources,
     network_attempt_ledger_is_empty,
 ]
 

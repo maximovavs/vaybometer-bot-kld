@@ -229,6 +229,12 @@ jobs:
           python tools/ci_offline_guard/runner.py tools/test_kld_image_first.py
           python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_seam.py
           python tools/ci_offline_guard/runner.py tools/test_kld_visual_workflow.py
+      - name: KLD semantic QA R4 regressions (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r4_offline.py
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r4_wiring.py
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r4_e2e.py
       - name: Verify zero attempted network connections in PR regressions
         if: always()
         run: |
