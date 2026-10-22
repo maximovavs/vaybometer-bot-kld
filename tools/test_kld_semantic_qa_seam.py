@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
+import multiprocessing
 import socket
 import time
 from hashlib import sha256
@@ -76,7 +77,39 @@ def _response(image: bytes, decision: str = "ACCEPT", **overrides):
     return payload
 
 
-def _evaluator(calls: list[tuple[bytes, dict]], decide):
+class _ProcessCalls:
+    """Fork-safe call ledger. R4 assertions examine real child-side calls.
+
+    No Manager TCP/UNIX socket or network access: use a one-way OS pipe and
+    a shared integer. The evaluator increments in the child, then the parent
+    reads exactly the recorded arguments after the child's bounded shutdown.
+    """
+    def __init__(self) -> None:
+        self._reader, self._writer = multiprocessing.Pipe(duplex=False)
+        self._counter = multiprocessing.Value("i", 0, lock=False)
+        self._seen = []
+
+    def append(self, args) -> None:
+        self._writer.send(args)
+        self._counter.value += 1
+
+    def __len__(self) -> int:
+        return self._counter.value
+
+    def _drain(self) -> None:
+        while self._reader.poll(0):
+            self._seen.append(self._reader.recv())
+
+    def __getitem__(self, index):
+        self._drain()
+        return self._seen[index]
+
+    def __eq__(self, other):
+        self._drain()
+        return self._seen == other
+
+
+def _evaluator(calls: _ProcessCalls, decide):
     def evaluate(image: bytes, facts):
         calls.append((image, dict(facts)))
         return decide(len(calls), image)
@@ -144,7 +177,7 @@ def qa_accept_publishes_hash_bound_raw_candidate() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         events: list[str] = []
-        calls: list[tuple[bytes, dict]] = []
+        calls = _ProcessCalls()
         outcome = _deliver(
             root,
             generate=_generate(root),
@@ -171,7 +204,7 @@ def qa_reject_rotates_to_next_candidate() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         events: list[str] = []
-        calls: list[tuple[bytes, dict]] = []
+        calls = _ProcessCalls()
 
         def decide(n, image):
             if n == 1:
@@ -199,7 +232,7 @@ def qa_reject_rotates_to_next_candidate() -> None:
 
 def _all_rejected(root: Path, decide, *, facts=FACTS, timeout_s=None, post_type="evening"):
     events: list[str] = []
-    calls: list[tuple[bytes, dict]] = []
+    calls = _ProcessCalls()
     outcome = _deliver(
         root,
         generate=_generate(root),
@@ -624,7 +657,7 @@ def upstream_guard_rejections_never_invoke_semantic_qa() -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             events: list[str] = []
-            calls: list[tuple[bytes, dict]] = []
+            calls = _ProcessCalls()
             outcome = _deliver(
                 root,
                 generate=_generate(root),
@@ -648,7 +681,7 @@ def qa_rejections_keep_terminal_relaxation_for_older_near_duplicates() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         events: list[str] = []
-        calls: list[tuple[bytes, dict]] = []
+        calls = _ProcessCalls()
         outcome = _deliver(
             root,
             generate=_generate(root),
@@ -676,7 +709,7 @@ def qa_rejections_with_blocked_covers_remain_text_only() -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             events: list[str] = []
-            calls: list[tuple[bytes, dict]] = []
+            calls = _ProcessCalls()
             outcome = _deliver(
                 root,
                 generate=_generate(root),
@@ -703,7 +736,7 @@ def qa_accept_keeps_presentation_failure_fallback() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         events: list[str] = []
-        calls: list[tuple[bytes, dict]] = []
+        calls = _ProcessCalls()
 
         def fail_presentation(*_a, **_k):
             raise RuntimeError("fixture presentation failure")
@@ -822,7 +855,17 @@ def production_call_site_off_default_and_fail_closed_without_sources() -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in (node.names if isinstance(node, ast.Import) else [ast.alias(node.module or "")])
     }
-    assert imported <= {"__future__", "concurrent", "dataclasses", "hashlib", "typing"}, imported
+    assert imported <= {
+        "__future__", "dataclasses", "hashlib", "typing", "json",
+        "math", "multiprocessing", "os", "resource", "signal", "threading", "time",
+    }, imported
+    assert "concurrent" not in imported, "legacy unkillable thread pool forbidden"
+    # Required imports for POSIX process isolation only; network clients,
+    # provider SDKs and subprocess spawn are excluded by the exact allowlist.
+    assert not ({"socket", "requests", "urllib", "http", "aiohttp", "openai",
+                 "subprocess", "concurrent"} & imported)
+    assert "ThreadPoolExecutor" not in qa_source
+    assert "_kld_killable_image_observer" not in qa_source, "no marker bypass"
     for path in (ROOT / ".github" / "workflows").glob("*.y*ml"):
         assert "semantic_qa" not in path.read_text(encoding="utf-8") or path.name == "pr_checks.yml", path.name
 

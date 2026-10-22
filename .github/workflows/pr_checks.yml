@@ -240,6 +240,10 @@ jobs:
           set -euo pipefail
           python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5_source.py
           python tools/ci_offline_guard/runner.py tools/test_visibility_kld.py
+      - name: KLD semantic QA R5-B1 image-only observer and hard timeout (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5b_observer.py
       - name: Verify zero attempted network connections in PR regressions
         if: always()
         run: |
