@@ -244,6 +244,10 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5b_observer.py
+      - name: KLD R5-C1 verified facts to image-only observer seam (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5c_integration.py
       - name: Verify zero attempted network connections in PR regressions
         if: always()
         run: |
