@@ -50,3 +50,68 @@ def select_semantic_injection(
     if observer is None:
         return Injection(fail_closed_observer, facts, "fail_closed", "evaluator_unavailable")
     return Injection(wrap_observer(observer), facts, "ready_offline_injection", "")
+
+
+def select_offline_collector_injection(
+    *,
+    enabled: bool,
+    collector_response: Mapping[str, Any] | None,
+    collector_run_id: str,
+    expected_run_id: str,
+    expected_raw_sha256: str,
+    target_date: str,
+    post_type: str,
+    publication_target_date: str,
+    image_observer: Callable[[bytes], Any] | None,
+    now_utc: Any = None,
+) -> Injection:
+    """Offline-only direct collector -> observer seam; never used by image CLI.
+
+    The two independent expectations MUST come from the trusted caller's
+    in-memory run context, not from the response/sidecar or an image model.
+    An unsigned JSON file and a self-consistent digest are not authenticated
+    provider evidence. This contract does not establish provider identity.
+    """
+    if not enabled:
+        return Injection(None, None, "disabled", "flag_off")
+    from hmac import compare_digest
+    from kld_semantic_qa_source import build_trusted_snapshot
+    from kld_semantic_qa_observer import wrap_image_only_observer
+
+    def refuse(reason: str) -> Injection:
+        return Injection(fail_closed_observer, None, "fail_closed", reason)
+
+    if (not isinstance(collector_run_id, str) or not isinstance(expected_run_id, str)
+            or not 0 < len(expected_run_id) <= 128
+            or not compare_digest(collector_run_id, expected_run_id)):
+        return refuse("collector_run_mismatch")
+    if (not isinstance(expected_raw_sha256, str) or len(expected_raw_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in expected_raw_sha256)):
+        return refuse("collector_digest_unavailable")
+    if not isinstance(collector_response, Mapping):
+        return refuse("collector_source_unavailable")
+    envelope = collector_response.get("_kld_r5_capture")
+    if (not isinstance(envelope, Mapping) or
+            not isinstance(envelope.get("raw_payload_sha256"), str) or
+            not compare_digest(envelope["raw_payload_sha256"], expected_raw_sha256)):
+        return refuse("collector_digest_mismatch")
+    try:
+        snapshot = build_trusted_snapshot(
+            collector_response, target_date=target_date,
+            post_type=post_type, publication_target_date=publication_target_date,
+            now_utc=now_utc,
+        )
+    except (FactsUnavailable, TypeError, ValueError, KeyError) as exc:
+        return refuse(exc.reason if isinstance(exc, FactsUnavailable) else "collector_source_invalid")
+    if image_observer is None or not callable(image_observer):
+        return select_semantic_injection(
+            enabled=True, source_snapshot=snapshot,
+            target_date=target_date, post_type=post_type,
+            publication_target_date=publication_target_date, observer=None,
+        )
+    return select_semantic_injection(
+        enabled=True, source_snapshot=snapshot,
+        target_date=target_date, post_type=post_type,
+        publication_target_date=publication_target_date,
+        observer=wrap_image_only_observer(image_observer),
+    )

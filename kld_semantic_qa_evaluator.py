@@ -75,6 +75,30 @@ def apply_weather_veto(raw: Any, facts: Mapping[str, Any], *, image: bytes) -> A
     # Reasonable ambiguity is UNKNOWN, not optimism.
     if pictured in {None, "other", "ambiguous"} and weather != "storm":
         return _fail(raw, "UNKNOWN", "weather_visual_unknown")
+    # An image-only observer has no independent forecast evidence.  Keep the
+    # R4 legacy pictured-window contract intact, but forbid a positive verdict
+    # when verified R5 facts contradict a concrete appearance in the image.
+    if image_only:
+        if pictured == "other":
+            return _fail(raw, "UNKNOWN", "weather_visual_unknown")
+        contradiction = {
+            "partly_cloudy": {"drizzle", "rain", "snow", "storm"},
+            "cloudy": {"clear", "drizzle", "rain", "snow", "storm"},
+            "rain": {"storm"},
+            "drizzle": {"storm"},
+            "snow": {"storm"},
+            "fog": {"clear", "drizzle", "rain", "snow", "storm"},
+        }
+        if pictured in contradiction.get(weather, set()):
+            return _fail(raw, "REJECT", "forecast_visual_weather_conflict")
+        # Partial cloud cover, precipitation intensity, and obscured scenes
+        # cannot prove a match, even when they are not decisive contradictions.
+        if ((weather == "partly_cloudy" and pictured in {"clear", "cloudy", "fog"})
+                or (weather == "cloudy" and pictured == "fog")
+                or (weather in {"rain", "drizzle"} and pictured in {"rain", "drizzle", "fog"}
+                    and pictured != weather)
+                or (weather == "fog" and pictured == "cloudy")):
+            return _fail(raw, "UNKNOWN", "weather_visual_uncertain")
     if weather == "clear" and pictured in {"rain", "drizzle", "snow", "storm"}:
         return _fail(raw, "REJECT", "invented_precipitation")
     if weather == "clear" and pictured == "cloudy":
@@ -92,8 +116,18 @@ def apply_weather_veto(raw: Any, facts: Mapping[str, Any], *, image: bytes) -> A
     if image_only and weather == "clear" and pictured == "fog":
         return _fail(raw, "REJECT", "invented_reduced_visibility")
     if weather == "storm":
-        if facts.get("storm_signal") not in {"confirmed_gust", "confirmed_warning", "confirmed_weather"}:
+        storm_signal = facts.get("storm_signal")
+        if storm_signal not in {"confirmed_gust", "confirmed_warning", "confirmed_weather"}:
             return _fail(raw, "UNKNOWN", "storm_source_unavailable")
+        # Confirmed WMO storm codes (95/96/99) carry thunderstorm evidence.
+        # Strong wind/rough seas cannot make a clear-sky illustration match
+        # that forecast. A gust or warning signal is not proof that those
+        # WMO codes are absent: gust takes precedence in the R5 producer.
+        # Without separate verified storm-origin evidence, fail closed.
+        if image_only and pictured == "clear":
+            if storm_signal == "confirmed_weather":
+                return _fail(raw, "REJECT", "confirmed_storm_weather_not_shown")
+            return _fail(raw, "UNKNOWN", "storm_origin_unresolved")
         wind = obs.get("wind_appearance")
         sea = obs.get("sea_appearance")
         if wind not in _VALID_WIND or sea not in _VALID_SEA or "unclear" in (wind, sea):
