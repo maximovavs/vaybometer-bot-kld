@@ -1254,6 +1254,8 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Optional JSON sidecar written by safe_test_post.py.",
     )
+    parser.add_argument("--semantic-source-file", default="",
+                        help="Optional run-authenticated R5-E collector handoff; ON only")
     parser.add_argument("--post-type", choices=("evening", "morning"), default="evening")
     parser.add_argument("--generate", action="store_true", help="Generate local image but do not send")
     parser.add_argument("--send-to-test", action="store_true", help="Generate and send image. Defaults to CHANNEL_ID_TEST unless --chat-id is provided")
@@ -1312,17 +1314,25 @@ def main(argv: list[str] | None = None) -> int:
     history_path = kld_visual_history_path(namespace)
     print(f"KLD_IMAGE_HISTORY_NAMESPACE: {namespace}")
     print(f"KLD_IMAGE_HISTORY_PATH: {history_path}")
-    # R4 local wiring candidate only: OFF by default; no vision provider and
-    # no dated weather-source sidecar yet. Opt-in without both fails closed
-    # for AI imagery and retains the existing validated curated/text ladder.
-    semantic_injection = select_semantic_injection(
-        enabled=os.getenv("KLD_SEMANTIC_QA_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"},
-        source_snapshot=None,
-        target_date=str(payload["metadata"]["target_date"]),
-        post_type=args.post_type,
-        publication_target_date=str(payload["metadata"]["target_date"]),
-        observer=None,
-    )
+    # OFF is byte-for-byte the legacy R4 injection path. No sidecar reads,
+    # evaluator invocation or extra collector work when the flag is OFF.
+    semantic_enabled = os.getenv("KLD_SEMANTIC_QA_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    if semantic_enabled:
+        from kld_semantic_qa_run_bridge import select_run_injection
+        semantic_injection = select_run_injection(
+            enabled=True, source_file=args.semantic_source_file,
+            target_date=str(payload["metadata"]["target_date"]),
+            post_type=args.post_type,
+            image_observer=None,  # No provider/model: ON stays fail-closed.
+        )
+    else:
+        semantic_injection = select_semantic_injection(
+            enabled=False, source_snapshot=None,
+            target_date=str(payload["metadata"]["target_date"]),
+            post_type=args.post_type,
+            publication_target_date=str(payload["metadata"]["target_date"]),
+            observer=None,
+        )
     if semantic_injection.status == "fail_closed":
         print(f"WARNING: KLD semantic QA image fail-closed: {semantic_injection.reason}")
     try:

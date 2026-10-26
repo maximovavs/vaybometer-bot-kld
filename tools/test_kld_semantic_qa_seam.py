@@ -12,6 +12,7 @@ import ast
 import json
 import multiprocessing
 import socket
+import textwrap
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -867,7 +868,142 @@ def production_call_site_off_default_and_fail_closed_without_sources() -> None:
     assert "ThreadPoolExecutor" not in qa_source
     assert "_kld_killable_image_observer" not in qa_source, "no marker bypass"
     for path in (ROOT / ".github" / "workflows").glob("*.y*ml"):
-        assert "semantic_qa" not in path.read_text(encoding="utf-8") or path.name == "pr_checks.yml", path.name
+        workflow_source = path.read_text(encoding="utf-8")
+        if path.name == "daily_post_klg.yml":
+            assert 'semantic_enabled = os.getenv("KLD_SEMANTIC_QA_ENABLED", "")' in workflow_source
+            assert "if semantic_enabled:" in workflow_source
+            assert "prepare_run_context(os.environ)" in workflow_source
+            assert 'os.environ["KLD_SEMANTIC_QA_ENABLED"]' not in workflow_source
+        elif path.name != "pr_checks.yml":
+            assert "semantic_qa" not in workflow_source, path.name
+
+
+_FLAG_ASSIGNMENTS = {
+    "semantic_enabled = os.getenv('KLD_SEMANTIC_QA_ENABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')",
+    "semantic_enabled = os.getenv('KLD_SEMANTIC_QA_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}",
+}
+_RUN_BRIDGE_NAMES = {"kld_semantic_qa_run_bridge", "prepare_run_context", "write_run_handoff",
+                     "select_run_injection", "semantic_source_file"}
+
+
+def _workflow_python_blocks(text: str) -> tuple[list[str], list[str]]:
+    blocks: list[str] = []
+    shell: list[str] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if current is None:
+            shell.append(line)
+            if stripped.startswith("python") and stripped.endswith("<<'PY'"):
+                current = []
+        elif stripped == "PY":
+            blocks.append(textwrap.dedent("\n".join(current)))
+            current = None
+        else:
+            current.append(line)
+    assert current is None, "unterminated workflow heredoc"
+    return blocks, shell
+
+
+def _semantic_markers(node: ast.AST, *, any_semantic: bool) -> list[str]:
+    found = []
+    for sub in ast.walk(node):
+        names = []
+        if isinstance(sub, ast.Name) and sub.id != "semantic_enabled":
+            names.append(sub.id)
+        elif isinstance(sub, ast.Attribute):
+            names.append(sub.attr)
+        elif isinstance(sub, ast.alias):
+            names.append(sub.name)
+        elif isinstance(sub, ast.ImportFrom):
+            names.append(sub.module or "")
+        elif any_semantic and isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            names.append(sub.value)
+        for name in names:
+            if name in _RUN_BRIDGE_NAMES or (any_semantic and "semantic" in name.lower()):
+                found.append(name)
+    return found
+
+
+def _assert_flag_gated(tree: ast.AST, label: str, *, any_semantic: bool, allow_else: bool,
+                       flag_params: set[str] = frozenset()) -> int:
+    """Every semantic reference must sit in the body of a bare ``if semantic_enabled:``."""
+    gates = 0
+
+    def visit_body(body: list[ast.stmt], assigned: bool, gated: bool) -> None:
+        nonlocal gates
+        for stmt in body:
+            if isinstance(stmt, ast.Assign) and ast.unparse(stmt) in _FLAG_ASSIGNMENTS:
+                assigned = True
+                continue
+            if isinstance(stmt, ast.If) and isinstance(stmt.test, ast.Name) and stmt.test.id == "semantic_enabled":
+                assert assigned, f"{label}: gate before flag assignment (line {stmt.lineno})"
+                assert allow_else or not stmt.orelse, f"{label}: OFF branch added (line {stmt.lineno})"
+                gates += 1
+                visit_body(stmt.body, assigned, True)
+                visit_body(stmt.orelse, assigned, gated)
+                continue
+            visit_stmt(stmt, assigned, gated)
+
+    def visit_stmt(stmt: ast.stmt, assigned: bool, gated: bool) -> None:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = {arg.arg for arg in stmt.args.args + stmt.args.kwonlyargs}
+            assert "semantic_enabled" not in params or stmt.name in flag_params, f"{label}: {stmt.name}"
+            visit_body(stmt.body, "semantic_enabled" in params, gated)
+            return
+        for name in ("body", "orelse", "finalbody", "handlers"):
+            if hasattr(stmt, name):
+                children = getattr(stmt, name)
+                if name == "handlers":
+                    for handler in children:
+                        visit_body(handler.body, assigned, gated)
+                else:
+                    visit_body(children, assigned, gated)
+        shallow = [value for field, value in ast.iter_fields(stmt)
+                   if field not in ("body", "orelse", "finalbody", "handlers")]
+        for value in shallow:
+            for node in value if isinstance(value, list) else [value]:
+                if not isinstance(node, ast.AST):
+                    continue
+                for sub in ast.walk(node):
+                    assert not (isinstance(sub, ast.Name) and sub.id == "semantic_enabled"), \
+                        f"{label}: flag used outside a bare gate (line {stmt.lineno})"
+                if not gated:
+                    markers = _semantic_markers(node, any_semantic=any_semantic)
+                    assert not markers, f"{label}: ungated {markers} (line {stmt.lineno})"
+
+    visit_body(tree.body, False, False)
+    return gates
+
+
+def production_semantic_references_are_flag_gated() -> None:
+    """R5-E: OFF must be the legacy path; every semantic reference is behind the flag."""
+    workflow = (ROOT / ".github" / "workflows" / "daily_post_klg.yml").read_text(encoding="utf-8")
+    blocks, shell = _workflow_python_blocks(workflow)
+    assert not [line for line in shell if "semantic" in line.lower()], "flag/semantic outside Python"
+    gates = [_assert_flag_gated(ast.parse(block), f"daily_post_klg.yml#{index}", any_semantic=True,
+                                allow_else=False) for index, block in enumerate(blocks)]
+    assert [count for count in gates if count] == [3, 3], gates  # morning + evening publication
+    for block, count in zip(blocks, gates):
+        assert not count or any(isinstance(node, ast.Import) and "os" in {alias.name for alias in node.names}
+                                for node in ast.parse(block).body), "flag assignment needs os"
+    fixture = ast.parse((ROOT / "tools" / "kld_visual_fixture_image.py").read_text(encoding="utf-8"))
+    assert _assert_flag_gated(fixture, "kld_visual_fixture_image.py", any_semantic=False, allow_else=True) == 1
+    selects = [node for node in ast.walk(fixture) if isinstance(node, ast.Call)
+               and getattr(node.func, "id", "") == "select_semantic_injection"]
+    enabled = {kw.arg: kw.value for kw in selects[0].keywords}["enabled"]
+    assert isinstance(enabled, ast.Constant) and enabled.value is False, "OFF selector must stay disabled"
+    safe = ast.parse((ROOT / "safe_test_post.py").read_text(encoding="utf-8"))
+    assert _assert_flag_gated(safe, "safe_test_post.py", any_semantic=False, allow_else=False,
+                              flag_params={"_write_semantic_facts_sidecar"}) == 1
+    writer = next(node for node in safe.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "_write_semantic_facts_sidecar")
+    defaults = {arg.arg: value for arg, value in zip(writer.args.kwonlyargs, writer.args.kw_defaults)}
+    assert isinstance(defaults["semantic_enabled"], ast.Constant) and defaults["semantic_enabled"].value is False
+    for call in ast.walk(safe):
+        if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "_write_semantic_facts_sidecar":
+            flag = {kw.arg: kw.value for kw in call.keywords}.get("semantic_enabled")
+            assert flag is None or ast.unparse(flag) == "_env_on('KLD_SEMANTIC_QA_ENABLED')", ast.unparse(call)
 
 
 def network_attempt_ledger_is_empty() -> None:
@@ -893,6 +1029,7 @@ TESTS = [
     existing_receipts_skip_image_step_and_semantic_qa,
     default_without_evaluator_is_unchanged,
     production_call_site_off_default_and_fail_closed_without_sources,
+    production_semantic_references_are_flag_gated,
     network_attempt_ledger_is_empty,
 ]
 

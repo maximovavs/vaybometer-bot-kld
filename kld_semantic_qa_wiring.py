@@ -65,12 +65,11 @@ def select_offline_collector_injection(
     image_observer: Callable[[bytes], Any] | None,
     now_utc: Any = None,
 ) -> Injection:
-    """Offline-only direct collector -> observer seam; never used by image CLI.
+    """Collector-to-observer seam; real CLI uses this only behind verified HMAC.
 
-    The two independent expectations MUST come from the trusted caller's
-    in-memory run context, not from the response/sidecar or an image model.
-    An unsigned JSON file and a self-consistent digest are not authenticated
-    provider evidence. This contract does not establish provider identity.
+    The expected run id and digest MUST come from a trusted run-local context,
+    never unsigned response fields. R5-E's consumer verifies an ephemeral
+    producer HMAC first. This does not establish external provider identity.
     """
     if not enabled:
         return Injection(None, None, "disabled", "flag_off")

@@ -163,6 +163,7 @@ def _write_visibility_context_sidecar(path_value: str, context: object, *, mode:
 def _write_semantic_facts_sidecar(
     path_value: str, source: object, *, mode: str,
     target_date: str, publication_target_date: str,
+    semantic_enabled: bool = False,
 ) -> bool:
     """Optional R5-A evidence only; fail closed and delete stale sidecars.
 
@@ -175,6 +176,15 @@ def _write_semantic_facts_sidecar(
     path = Path(value)
     temp_path = path.with_name(path.name + ".tmp")
     try:
+        # The ON path can ONLY transfer a verified collector response sealed
+        # with a per-run secret minted by the trusted parent process.
+        if semantic_enabled:
+            from kld_semantic_qa_run_bridge import write_run_handoff
+            write_run_handoff(value, source, post_type=mode,
+                              target_date=target_date,
+                              publication_target_date=publication_target_date)
+            return True
+        # OFF/legacy offline sidecar behavior is intentionally unchanged.
         from kld_semantic_qa_source import build_trusted_snapshot
         snapshot = build_trusted_snapshot(
             source, target_date=target_date, post_type=mode,
@@ -1672,6 +1682,7 @@ async def main() -> None:
         _write_semantic_facts_sidecar(
             args.semantic_facts_out, getattr(raw_msg, "semantic_qa_source", None),
             mode=mode, target_date=target, publication_target_date=target,
+            semantic_enabled=_env_on("KLD_SEMANTIC_QA_ENABLED"),
         )
 
     legacy_result = sanitize_post_text(raw_msg)
