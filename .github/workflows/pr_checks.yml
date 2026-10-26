@@ -248,6 +248,11 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5c_integration.py
+      - name: KLD semantic QA R5-E per-run authenticated handoff (offline)
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5e_bridge.py
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5e_real_capture.py
       - name: Verify zero attempted network connections in PR regressions
         if: always()
         run: |

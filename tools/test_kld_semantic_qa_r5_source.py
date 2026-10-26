@@ -261,9 +261,13 @@ def main():
         assert "--semantic-facts-out is offline-only" in safe_source
         calls=[n for n in ast.walk(m) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="build_message"]
         assert len(calls)==1 and any(k.arg=="semantic_facts_capture" for k in calls[0].keywords)
-        # No workflow can request capture or change the inactive QA flag.
+        # R5-E permits capture only behind the existing OFF-by-default flag.
+        # It must not be enabled by the workflow itself.
         wf=(ROOT/".github/workflows/daily_post_klg.yml").read_text(encoding="utf-8")
-        assert "--semantic-facts-out" not in wf and "KLD_SEMANTIC_QA_ENABLED" not in wf
+        assert 'semantic_enabled = os.getenv("KLD_SEMANTIC_QA_ENABLED", "")' in wf
+        assert 'if semantic_enabled:' in wf
+        assert "--semantic-facts-out" in wf and "--semantic-source-file" in wf
+        assert 'os.environ["KLD_SEMANTIC_QA_ENABLED"]' not in wf
         pr=(ROOT/".github/workflows/pr_checks.yml").read_text(encoding="utf-8")
         for filename in ("test_kld_semantic_qa_r5_source.py", "test_visibility_kld.py"):
             assert f"runner.py tools/{filename}" in pr

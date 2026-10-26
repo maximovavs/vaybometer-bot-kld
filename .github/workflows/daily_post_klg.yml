@@ -286,12 +286,18 @@ jobs:
               target_date = base_day.to_date_string()
 
               if image_enabled and send_chat:
+                  semantic_enabled = os.getenv("KLD_SEMANTIC_QA_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+                  if semantic_enabled:
+                      from kld_semantic_qa_run_bridge import prepare_run_context
+                      prepare_run_context(os.environ)
                   preview_args = [
                       "safe_test_post.py", "--mode", "morning", "--format-v2",
                       "--visibility-context-out", "format_v2_visibility_context.json",
                   ]
                   if wd:
                       preview_args += ["--date", wd]
+                  if semantic_enabled:
+                      preview_args += ["--semantic-facts-out", "format_v2_semantic_source.json"]
                   preview_cmd = [sys.executable] + preview_args
 
                   caption = "Визуальный вайб сегодняшнего утра над Балтикой 🌊"
@@ -312,6 +318,8 @@ jobs:
                       "--result-file", "image_result.json",
                       "--prompt-metadata-file", "image_prompt_metadata.json",
                   ]
+                  if semantic_enabled:
+                      img_cmd += ["--semantic-source-file", "format_v2_semantic_source.json"]
                   add_test_label = to_test and not chat_override and not scheduled_run
                   run_image_first_publication(
                       mode="morning",
@@ -560,12 +568,18 @@ jobs:
               target_date = base_day.add(days=1).to_date_string()
 
               if image_enabled and send_chat:
+                  semantic_enabled = os.getenv("KLD_SEMANTIC_QA_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+                  if semantic_enabled:
+                      from kld_semantic_qa_run_bridge import prepare_run_context
+                      prepare_run_context(os.environ)
                   preview_args = [
                       "safe_test_post.py", "--mode", "evening", "--format-v2",
                       "--visibility-context-out", "format_v2_visibility_context.json",
                   ]
                   if wd:
                       preview_args += ["--date", wd]
+                  if semantic_enabled:
+                      preview_args += ["--semantic-facts-out", "format_v2_semantic_source.json"]
                   preview_cmd = [sys.executable] + preview_args
 
                   history_namespace = "test" if to_test else "prod"
@@ -581,6 +595,8 @@ jobs:
                       "--result-file", "image_result.json",
                       "--prompt-metadata-file", "image_prompt_metadata.json",
                   ]
+                  if semantic_enabled:
+                      img_cmd += ["--semantic-source-file", "format_v2_semantic_source.json"]
                   if to_test:
                       img_cmd += ["--caption-prefix", "🧪"]
                   add_test_label = to_test and not chat_override and not scheduled_run

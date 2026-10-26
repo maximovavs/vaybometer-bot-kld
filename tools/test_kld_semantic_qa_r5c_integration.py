@@ -236,7 +236,9 @@ def check_cli_remains_unwired_and_read_only():
     wf=(ROOT/".github/workflows/daily_post_klg.yml").read_text(encoding="utf-8")
     assert "source_snapshot=None" in image_src and "observer=None" in image_src
     assert "KLD_SEMANTIC_QA_ENABLED" in image_src
-    assert "--semantic-facts-out" not in wf and "KLD_SEMANTIC_QA_ENABLED" not in wf
+    assert "if semantic_enabled:" in image_src
+    assert "--semantic-facts-out" in wf and "--semantic-source-file" in wf
+    assert "prepare_run_context(os.environ)" in wf
     assert not ATTEMPTS
 
 
