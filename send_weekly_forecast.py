@@ -305,8 +305,9 @@ def _sea_line(sea_temps: list[float] | None) -> str:
 
 
 def _water_sport_lines(metrics: dict[str, Any]) -> list[str]:
+    # Aggregate weekly weather cannot authorize any spot/time SUP window.
     return [
-        "SUP: короткие окна в защищённых местах.",
+        "SUP: безопасность по спотам и времени не подтверждена; выход без локальной проверки не планировать.",
         "Кайт/винг/винд: только опытным; проверять порывы и направление.",
         "Серф: по фактической волне; Балтика быстро меняется.",
     ]

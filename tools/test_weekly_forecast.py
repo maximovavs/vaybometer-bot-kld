@@ -97,7 +97,8 @@ def test_weekly_forecast_structure_without_optional_config() -> None:
     assert "SUP:" in text
     assert "Кайт/винг/винд:" in text
     assert "Серф:" in text
-    assert "SUP: короткие окна в защищённых местах." in text
+    assert "SUP: безопасность по спотам и времени не подтверждена; выход без локальной проверки не планировать." in text
+    assert "SUP: короткие окна" not in text
     assert "Кайт/винг/винд: только опытным; проверять порывы и направление." in text
     assert "Серф: по фактической волне; Балтика быстро меняется." in text
     assert "🏭 Воздух сейчас" in text
@@ -255,6 +256,32 @@ def test_weekly_generated_sport_lines_are_not_photo_alerts() -> None:
     for metrics in ({}, {"gust_max": 25.0, "wave_max": 3.0, "rain": True}):
         lines = weekly_module._water_sport_lines(metrics)
         assert lines and not any(photo_module._sport_warning(line) for line in lines), lines
+
+
+def test_weekly_water_safety_no_positive_sup_without_spot_evidence() -> None:
+    for metrics in (
+        {},
+        {"coverage_complete": False},
+        {"coverage_complete": True, "gust_max": 5.0, "wave_max": 0.0},
+        {"coverage_complete": True, "gust_max": 25.0, "wave_max": 3.0, "rain": True},
+    ):
+        lines = weekly_module._water_sport_lines(metrics)
+        assert len(lines) == 3
+        assert "SUP: безопасность по спотам и времени не подтверждена" in lines[0]
+        assert "SUP: короткие окна" not in "\n".join(lines)
+        assert "Кайт/винг/винд: только опытным; проверять порывы" in lines[1]
+        assert "Балтика быстро меняется" in lines[2]
+    assert "SUP: безопасность по спотам и времени не подтверждена" in _base_text()
+
+
+def test_weekly_water_safety_incomplete_weather_does_not_restore_sup_windows() -> None:
+    text = build_weekly_forecast(
+        date(2026, 7, 1), weather_payload={}, air_data=AIR,
+        sea_temps=[], kp_tuple=KP, lunar_data=LUNAR,
+        astro_events_paths=[Path("__missing_astro_events.json")],
+    )
+    assert "SUP: безопасность по спотам и времени не подтверждена" in text
+    assert "SUP: короткие" not in text
 
 
 def _weekly_api_fixture(dates: list[str]) -> dict:
@@ -567,6 +594,8 @@ def main() -> None:
         test_weekly_send_survives_image_send_failure,
         test_weekly_text_failure_never_publishes_orphan_cover,
         test_weekly_generated_sport_lines_are_not_photo_alerts,
+        test_weekly_water_safety_no_positive_sup_without_spot_evidence,
+        test_weekly_water_safety_incomplete_weather_does_not_restore_sup_windows,
     )
     for check in checks:
         check()
