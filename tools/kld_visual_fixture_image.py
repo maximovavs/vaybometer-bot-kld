@@ -677,6 +677,7 @@ def execute_image_delivery(
     semantic_qa: Callable[[bytes, Mapping[str, Any]], Any] | None = None,
     semantic_qa_facts: Mapping[str, Any] | None = None,
     semantic_qa_timeout_s: float = SEMANTIC_QA_TIMEOUT_S,
+    p1_capture: Callable[..., Mapping[str, Any]] | None = None,  # explicit offline injection; OFF by default
 ) -> dict[str, Any]:
     """Try two providers, then a validated factual cover, without fatal image-only exits."""
     if generate_image is None:
@@ -791,6 +792,22 @@ def execute_image_delivery(
                 f"backend={backend} variation={candidate['variation_attempt']} "
                 f"scene={metadata['scene_family']} composition={metadata['composition']} path={img_path}"
             )
+            # R5-G1 offline-only P1 capture hook: no call or extra work if OFF.
+            # Capture failures are diagnostic only and cannot change delivery.
+            if p1_capture is not None:
+                from kld_semantic_qa_p1_capture import invoke_injected_capture
+                fingerprint = hashlib.sha256(json.dumps(
+                    {"prompt": generation_kwargs["prompt"],
+                     "negative_prompt": generation_kwargs.get("negative_prompt", "")},
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")).hexdigest()
+                capture_result = invoke_injected_capture(
+                    p1_capture, image_path=img_path, backend=backend,
+                    variation_attempt=int(candidate["variation_attempt"]),
+                    post_type=args.post_type, target_date=str(metadata["target_date"]),
+                    prompt_metadata_sha256=fingerprint,
+                )
+                outcome.setdefault("p1_capture_results", []).append(capture_result)
             try:
                 duplicate = evaluate_candidate(
                     img_path,
