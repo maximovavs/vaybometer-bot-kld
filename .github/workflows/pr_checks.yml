@@ -253,6 +253,12 @@ jobs:
           set -euo pipefail
           python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5e_bridge.py
           python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5e_real_capture.py
+      - name: KLD semantic QA R5-G7 preliminary offline Golden Set (offline)
+        # Skip only where the R5-G7 fixture test is absent; mandatory once it exists.
+        if: ${{ hashFiles('tools/test_kld_semantic_qa_r5g7_min.py') != '' }}
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5g7_min.py
       - name: Verify zero attempted network connections in PR regressions
         if: always()
         run: |
