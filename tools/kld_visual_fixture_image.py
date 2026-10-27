@@ -1319,11 +1319,12 @@ def main(argv: list[str] | None = None) -> int:
     semantic_enabled = os.getenv("KLD_SEMANTIC_QA_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
     if semantic_enabled:
         from kld_semantic_qa_run_bridge import select_run_injection
+        from kld_semantic_qa_vision_provider import make_image_observer
         semantic_injection = select_run_injection(
             enabled=True, source_file=args.semantic_source_file,
             target_date=str(payload["metadata"]["target_date"]),
             post_type=args.post_type,
-            image_observer=None,  # No provider/model: ON stays fail-closed.
+            image_observer=make_image_observer(),  # Cold image-only; absent => fail closed.
         )
     else:
         semantic_injection = select_semantic_injection(
