@@ -1,0 +1,38 @@
+{
+  "schema": "kld_r5g7_manifest_compact_v1",
+  "status": "OFFLINE_PRELIMINARY_NOT_HUMAN_GOLD",
+  "original_g6_json_sha256": "47bdffbd67bfde46f97a2838a1bad6f1be733202f7ac23b6f0e856428a120eb9",
+  "original_g6_evidence_zip_sha256": "485c18868a551f204d457a50a0d5971af8c6f91851493cf506acac3e329c6e6a",
+  "original_g2_contexts_sha256": "725c246c3b758a790656f0650fb4409e5a359d7a1b1b5ee1f8aae0a402fe2476",
+  "source_git_blobs": {
+    "assets/fallback/kld/atlas_v1.part00.b64": "7254b90a114cf44c88e0987275c6b2bdce3e732a",
+    "assets/fallback/kld/atlas_v1.part01.b64": "a9ea3ec98022aafca064ce2216a51f59873b5387",
+    "assets/fallback/kld/atlas_v1.part02.b64": "494a585cf8fbb0f21e929c9720019a1deba4ec29",
+    "assets/fallback/kld/atlas_v1.part03.b64": "fff301855fa959baebeb0b3f909ee641d7ca928a",
+    "assets/fallback/kld/atlas_v1.part04.b64": "96175374656ba9aebc264318db01913cbbc93c24",
+    "assets/fallback/kld/atlas_v1.part05.b64": "28446f9788b1c0f8cabc8db8c71ba89df78b1fa8",
+    "assets/fallback/kld/manifest.json": "bcd6d550bc3e40fdcc818d12f51af8ba8cbd44d5",
+    "assets/weekly/kld/kld_baltic_coast.jpg": "e931ec4d50722507f1bb8352519f13e5b1ae5f4e",
+    "assets/weekly/kld/kld_blue_evening.jpg": "a35b646494edd748e745328408bcf4ec38b500cb",
+    "assets/weekly/kld/kld_golden_city.jpg": "470454190dcda682356d962ae42887c7f58d7b74"
+  },
+  "eight_changed_cases": [
+    "G2-007",
+    "G2-009",
+    "G2-010",
+    "G2-013",
+    "G2-016",
+    "G2-020",
+    "G2-025",
+    "G2-032"
+  ],
+  "synthetic_summer_snow_cases": [
+    "G2-009",
+    "G2-011",
+    "G2-028",
+    "G2-033"
+  ],
+  "real_vision_calls": 0,
+  "real_vision_accuracy": "NOT_TESTED",
+  "policy": "KLD_SEMANTIC_QA_ENABLED_OFF"
+}
