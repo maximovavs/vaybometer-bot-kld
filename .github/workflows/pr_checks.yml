@@ -259,6 +259,12 @@ jobs:
         run: |
           set -euo pipefail
           python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_r5g7_min.py
+      - name: KLD semantic QA R5-G8 P1 pre-upload capture regressions (offline)
+        # Skip only where the PR #97 P1 capture test is absent; mandatory once it exists.
+        if: ${{ hashFiles('tools/test_kld_semantic_qa_p1_capture.py') != '' }}
+        run: |
+          set -euo pipefail
+          python tools/ci_offline_guard/runner.py tools/test_kld_semantic_qa_p1_capture.py
       - name: Verify zero attempted network connections in PR regressions
         if: always()
         run: |
