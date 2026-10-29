@@ -258,5 +258,111 @@ class CaptureTests(unittest.TestCase):
 
 
 
+
+
+class P1DeliveryFailureIsolationTests(unittest.TestCase):
+    """Execute the P1 hook extracted from the actual delivery source AST.
+
+    Surrounding dedup/fallback is covered by the existing visual suite; here
+    we verify that the optional hook never blocks reaching the next call.
+    """
+
+    @staticmethod
+    def _hook_code():
+        import ast
+        source = (ROOT / "tools/kld_visual_fixture_image.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+        functions = [n for n in module.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                     and n.name == "execute_image_delivery"]
+        assert len(functions) == 1
+        target = None
+        for n in ast.walk(functions[0]):
+            if not isinstance(n, ast.If) or not isinstance(n.test, ast.Compare):
+                continue
+            if not isinstance(n.test.left, ast.Name) or n.test.left.id != "p1_capture":
+                continue
+            if not n.test.ops or not isinstance(n.test.ops[0], ast.IsNot):
+                continue
+            if not n.test.comparators or not isinstance(n.test.comparators[0], ast.Constant):
+                continue
+            if n.test.comparators[0].value is not None:
+                continue
+            target = n
+        assert target is not None, "P1 hook must remain opt-in"
+        # Safety: P1 injection must precede the existing candidate dedup check.
+        tail = source.splitlines()[target.end_lineno:target.end_lineno + 4]
+        assert any("duplicate = evaluate_candidate(" in line for line in tail), tail
+        return compile(ast.fix_missing_locations(ast.Module(body=[target], type_ignores=[])),
+                       "<exact-delivery-hook>", "exec")
+
+    def _replay(self, *, capture, prompt="valid prompt", import_failure=False):
+        import builtins
+        import hashlib
+        from types import SimpleNamespace
+        source = self._hook_code()
+        context = dict(
+            p1_capture=capture,
+            generation_kwargs={"prompt": prompt, "negative_prompt": ""},
+            candidate={"variation_attempt": 0},
+            args=SimpleNamespace(post_type="morning"),
+            metadata={"target_date": "2026-10-29"},
+            backend="pollinations",
+            img_path="/tmp/synthetic-no-io.png",
+            outcome={},
+            json=json,
+            hashlib=hashlib,
+        )
+        actual_import = builtins.__import__
+        def deny_optional(name, *args, **kwargs):
+            if name == "kld_semantic_qa_p1_capture":
+                raise ImportError("synthetic optional capture dependency unavailable")
+            return actual_import(name, *args, **kwargs)
+        with patch("builtins.__import__", side_effect=deny_optional if import_failure else actual_import):
+            exec(source, context)
+        return context["outcome"]
+
+    def test_hook_off_does_not_load_optional_module(self):
+        actual = self._replay(capture=None, import_failure=True)
+        self.assertEqual(actual, {})
+
+    def test_optional_import_failure_is_diagnostic_not_delivery_failure(self):
+        actual = self._replay(capture=lambda **kw: {"status": "QUARANTINED"}, import_failure=True)
+        self.assertEqual(actual["p1_capture_results"],
+                         [{"status": "NOT_CAPTURED", "reason": "capture_failed"}])
+
+    def test_fingerprint_serialization_failure_is_diagnostic(self):
+        # The fake provider can return a candidate even with an odd prompt.
+        # P1 must not introduce a second publishing failure path.
+        actual = self._replay(capture=lambda **kw: None, prompt=object())
+        self.assertEqual(actual["p1_capture_results"],
+                         [{"status": "NOT_CAPTURED", "reason": "capture_failed"}])
+
+    def test_missing_prompt_is_diagnostic(self):
+        # This exercises missing capture-only provenance without changing safety.
+        source = self._hook_code()
+        import hashlib
+        from types import SimpleNamespace
+        context = dict(p1_capture=lambda **kw: None, generation_kwargs={},
+                       candidate={"variation_attempt": 0}, args=SimpleNamespace(post_type="morning"),
+                       metadata={"target_date": "2026-10-29"}, backend="pollinations",
+                       img_path="/tmp/synthetic-no-io.png", outcome={}, json=json, hashlib=hashlib)
+        exec(source, context)
+        self.assertEqual(context["outcome"]["p1_capture_results"],
+                         [{"status": "NOT_CAPTURED", "reason": "capture_failed"}])
+
+    def test_callback_failure_is_sanitized_and_nonblocking(self):
+        def fail_callback(**kwargs):
+            raise RuntimeError("SYNTHETIC_SECRET_MUST_NOT_LEAK")
+        actual = self._replay(capture=fail_callback)
+        self.assertEqual(actual["p1_capture_results"],
+                         [{"status": "NOT_CAPTURED", "reason": "capture_failed"}])
+        self.assertNotIn("SYNTHETIC_SECRET", str(actual))
+
+    def test_callback_success_preserves_quarantine(self):
+        actual = self._replay(capture=lambda **kw: {"status": "QUARANTINED", "image_sha256": "a" * 64})
+        self.assertEqual(actual["p1_capture_results"],
+                         [{"status": "QUARANTINED", "image_sha256": "a" * 64}])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

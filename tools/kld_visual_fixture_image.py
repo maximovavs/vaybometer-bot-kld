@@ -795,18 +795,22 @@ def execute_image_delivery(
             # R5-G1 offline-only P1 capture hook: no call or extra work if OFF.
             # Capture failures are diagnostic only and cannot change delivery.
             if p1_capture is not None:
-                from kld_semantic_qa_p1_capture import invoke_injected_capture
-                fingerprint = hashlib.sha256(json.dumps(
-                    {"prompt": generation_kwargs["prompt"],
-                     "negative_prompt": generation_kwargs.get("negative_prompt", "")},
-                    sort_keys=True, separators=(",", ":"),
-                ).encode("utf-8")).hexdigest()
-                capture_result = invoke_injected_capture(
-                    p1_capture, image_path=img_path, backend=backend,
-                    variation_attempt=int(candidate["variation_attempt"]),
-                    post_type=args.post_type, target_date=str(metadata["target_date"]),
-                    prompt_metadata_sha256=fingerprint,
-                )
+                try:
+                    from kld_semantic_qa_p1_capture import invoke_injected_capture
+                    fingerprint = hashlib.sha256(json.dumps(
+                        {"prompt": generation_kwargs["prompt"],
+                         "negative_prompt": generation_kwargs.get("negative_prompt", "")},
+                        sort_keys=True, separators=(",", ":"),
+                    ).encode("utf-8")).hexdigest()
+                    capture_result = invoke_injected_capture(
+                        p1_capture, image_path=img_path, backend=backend,
+                        variation_attempt=int(candidate["variation_attempt"]),
+                        post_type=args.post_type, target_date=str(metadata["target_date"]),
+                        prompt_metadata_sha256=fingerprint,
+                    )
+                except Exception:
+                    # Optional diagnostics cannot interrupt validation or fallback.
+                    capture_result = {"status": "NOT_CAPTURED", "reason": "capture_failed"}
                 outcome.setdefault("p1_capture_results", []).append(capture_result)
             try:
                 duplicate = evaluate_candidate(
