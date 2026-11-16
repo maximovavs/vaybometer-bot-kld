@@ -570,6 +570,13 @@ def test_weekly_snapshot_workflow_contract_is_production_only_and_30_days() -> N
     assert "weekly-snapshot-kld-" in workflow and "canonical-exists" in workflow
 
 
+def test_weekly_prepared_payload_in_canonical_suite() -> None:
+    import runpy
+    suite = runpy.run_path(str(ROOT / "tools" / "test_weekly_prepared_payload.py"), run_name="kld_weekly_prepared_ci")
+    for check in suite["TESTS"]:
+        check()
+
+
 def main() -> None:
     checks = (
         test_weekly_snapshot_serialization_and_validation,
@@ -596,6 +603,7 @@ def main() -> None:
         test_weekly_generated_sport_lines_are_not_photo_alerts,
         test_weekly_water_safety_no_positive_sup_without_spot_evidence,
         test_weekly_water_safety_incomplete_weather_does_not_restore_sup_windows,
+        test_weekly_prepared_payload_in_canonical_suite,
     )
     for check in checks:
         check()

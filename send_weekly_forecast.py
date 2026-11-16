@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import html
 import json
 import os
 import re
 import sys
-from datetime import date, datetime, timedelta
+import tempfile
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -530,6 +533,95 @@ def build_weekly_forecast(
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+PREPARED_SCHEMA = "kld-weekly-payload-v1"
+PREPARED_MAX_AGE_SECONDS = 30 * 60
+
+
+def _prepared_digest(document: dict[str, Any]) -> str:
+    canonical = json.dumps(document, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _write_prepared(path: Path, start: date, text: str, candidate: dict[str, Any] | None) -> None:
+    """Freeze all published facts and the snapshot candidate in one atomic file."""
+    payload = {
+        "schema": PREPARED_SCHEMA,
+        "region": SNAPSHOT_REGION,
+        "week_start": start.isoformat(),
+        "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "github_run_id": os.getenv("GITHUB_RUN_ID", ""),
+        "text": text,
+        "snapshot_candidate": candidate,
+    }
+    payload["sha256"] = _prepared_digest(payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _read_prepared(path: Path, expected_start: date | None = None) -> tuple[date, str, dict[str, Any] | None]:
+    """Fail closed before any Telegram call; consumer must not fetch weather."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            raise ValueError("not an object")
+        checksum = document.get("sha256")
+        unsigned = {key: value for key, value in document.items() if key != "sha256"}
+        if not isinstance(checksum, str) or not hmac.compare_digest(checksum, _prepared_digest(unsigned)):
+            raise ValueError("checksum mismatch")
+        if document.get("schema") != PREPARED_SCHEMA or document.get("region") != SNAPSHOT_REGION:
+            raise ValueError("schema/region mismatch")
+        start = date.fromisoformat(document["week_start"])
+        if expected_start is not None and start != expected_start:
+            raise ValueError("week_start mismatch")
+        timestamp = datetime.fromisoformat(document["created_at_utc"])
+        if timestamp.tzinfo is None:
+            raise ValueError("missing timezone")
+        age = (datetime.now(timezone.utc) - timestamp).total_seconds()
+        if age < -60 or age > PREPARED_MAX_AGE_SECONDS:
+            raise ValueError("prepared payload expired or from future")
+        current_run = os.getenv("GITHUB_RUN_ID", "")
+        if current_run and document.get("github_run_id") != current_run:
+            raise ValueError("GitHub run mismatch")
+        text = document["text"]
+        candidate = document["snapshot_candidate"]
+        if not isinstance(text, str) or not text.startswith(f"🗓 Вайб недели: {_fmt_week_range(start)}"):
+            raise ValueError("text/week mismatch")
+        if HASHTAGS not in text or "SUP: безопасность по спотам и времени не подтверждена" not in text:
+            raise ValueError("missing required KLD sections")
+        if candidate is not None and (not isinstance(candidate, dict) or
+            candidate.get("region") != SNAPSHOT_REGION or candidate.get("week_start") != start.isoformat()):
+            raise ValueError("snapshot/week mismatch")
+        if candidate is not None and "Полный прогноз на все 7 дней пока" in text:
+            raise ValueError("complete snapshot paired with incomplete weather text")
+        return start, text, candidate
+    except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
+        raise SystemExit(f"KLD_WEEKLY_PREPARED_REJECTED: {type(exc).__name__}: {exc}") from exc
+
+
+def _build_prepared(start: date) -> tuple[str, dict[str, Any] | None]:
+    weather_payload = _fetch_weather(start)
+    air_data = _fetch_air()
+    sea_temps = _fetch_sea_temps()
+    kp_tuple = _fetch_kp()
+    lunar_data = _load_lunar_calendar()
+    candidate = _build_snapshot_candidate(start, weather_payload, sea_temps)
+    previous = load_snapshot_file(Path(os.getenv("WEEKLY_PREVIOUS_SNAPSHOT", "weekly_snapshot_state/previous.json")),
+        region=SNAPSHOT_REGION, expected_week_start=(start-timedelta(days=7)).isoformat())
+    delta_lines = derive_delta_lines(candidate, previous, region=SNAPSHOT_REGION) if candidate else []
+    text = build_weekly_forecast(start, weather_payload=weather_payload, air_data=air_data,
+        sea_temps=sea_temps, kp_tuple=kp_tuple, lunar_data=lunar_data, delta_lines=delta_lines)
+    return text, candidate
+
 async def _send(
     text: str, chat_id: str, start: date, *, snapshot_candidate: dict[str, Any] | None = None,
     production_snapshot_out: Path | None = None, production_chat_id: str = "",
@@ -563,16 +655,20 @@ async def main() -> None:
     parser.add_argument("--chat-id",default=os.getenv("CHANNEL_ID_KLG",""))
     parser.add_argument("--cover-out",default="",help="Optional path for a deterministic weekly cover preview.")
     parser.add_argument("--production-snapshot-out",default="",help="Write authoritative WeeklySnapshot only after successful production text send.")
+    parser.add_argument("--prepared-out",default="",help="Freeze forecast text and snapshot candidate for later sends.")
+    parser.add_argument("--prepared-in",default="",help="Send/preview only the validated frozen payload; never refetch.")
     args=parser.parse_args()
-    start=datetime.strptime(args.date,"%Y-%m-%d").date() if args.date else _today()
-    weather_payload=_fetch_weather(start); air_data=_fetch_air(); sea_temps=_fetch_sea_temps(); kp_tuple=_fetch_kp(); lunar_data=_load_lunar_calendar()
-    candidate=_build_snapshot_candidate(start,weather_payload,sea_temps)
-    previous=load_snapshot_file(Path(os.getenv("WEEKLY_PREVIOUS_SNAPSHOT","weekly_snapshot_state/previous.json")),
-        region=SNAPSHOT_REGION,expected_week_start=(start-timedelta(days=7)).isoformat())
-    delta_lines=derive_delta_lines(candidate,previous,region=SNAPSHOT_REGION) if candidate else []
-    text=build_weekly_forecast(start,weather_payload=weather_payload,air_data=air_data,sea_temps=sea_temps,kp_tuple=kp_tuple,
-        lunar_data=lunar_data,delta_lines=delta_lines)
-    print(text)
+    if args.prepared_out and (args.prepared_in or args.send):
+        parser.error("--prepared-out cannot be combined with --prepared-in or --send")
+    if args.prepared_in:
+        expected = date.fromisoformat(args.date) if args.date else None
+        start, text, candidate = _read_prepared(Path(args.prepared_in), expected_start=expected)
+    else:
+        start=datetime.strptime(args.date,"%Y-%m-%d").date() if args.date else _today()
+        text, candidate = _build_prepared(start)
+        if args.prepared_out:
+            _write_prepared(Path(args.prepared_out), start, text, candidate)
+    print(text, flush=True)
     if args.cover_out:
         metadata=render_weekly_cover(text,start=start,output_path=args.cover_out)
         print("WEEKLY_COVER: "+json.dumps(metadata,ensure_ascii=False,sort_keys=True))
