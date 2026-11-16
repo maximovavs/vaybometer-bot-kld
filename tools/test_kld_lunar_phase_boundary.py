@@ -3,11 +3,12 @@
 """Focused regression for the KLD Last Quarter civil-date boundary."""
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
-import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pendulum
 import swisseph as swe
@@ -37,8 +38,15 @@ def main() -> None:
     assert lunar._last_quarter_event_on_kld_date(oct2) is False
     assert lunar._last_quarter_event_on_kld_date(oct3) is True
 
-    payload = json.loads(Path("lunar_calendar.json").read_text("utf-8"))
-    days = payload.get("days", payload)
+    # lunar_calendar.json is rolling production data, not an October fixture.
+    # Exercise October generation with LLM and VoC transport fully mocked.
+    async def offline_long(phase: str, _extra: str) -> str:
+        return lunar.FALLBACK_LONG[phase]
+
+    with patch.object(lunar, "gpt_long", offline_long), \
+         patch.object(lunar, "find_voc_intervals_for_month", return_value=[]):
+        payload = asyncio.run(lunar.generate(2026, 10))
+    days = payload["days"]
     rec2 = days["2026-10-02"]
     rec3 = days["2026-10-03"]
     assert rec2["phase_name"] == "Убывающая Луна"

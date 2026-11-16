@@ -4,16 +4,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("GEN_SKIP_SHORT", "1")
+# Short texts are skipped so only the long_desc LLM path is exercised.
+os.environ["GEN_SKIP_SHORT"] = "1"
 
 import gen_lunar_calendar as lunar  # noqa: E402
 
@@ -30,6 +31,7 @@ EXPECTED_DATES = {
 
 
 def main() -> None:
+    assert lunar.SKIP_SHORT is True
     fallback = lunar.FALLBACK_LONG["Убывающая Луна"]
 
     original = lunar.gpt_complete
@@ -42,11 +44,20 @@ def main() -> None:
         lunar.gpt_complete = lambda **_kwargs: complete
         result = asyncio.run(lunar.gpt_long("Убывающая Луна", ""))
         assert result == complete, result
+
+        # lunar_calendar.json is rolling production data, not an October
+        # fixture: generate October 2026 offline through the real gpt_long
+        # with a malformed LLM answer and no VoC transport.
+        calls = []
+        lunar.gpt_complete = lambda **kwargs: calls.append(kwargs) or MALFORMED
+        with patch.object(lunar, "find_voc_intervals_for_month", return_value=[]):
+            payload = asyncio.run(lunar.generate(2026, 10))
+        assert calls, "October generation must exercise the real gpt_long path"
     finally:
         lunar.gpt_complete = original
 
-    payload = json.loads((ROOT / "lunar_calendar.json").read_text("utf-8"))
-    days = payload.get("days", payload)
+    days = payload["days"]
+    assert len(days) == 31 and all(day.startswith("2026-10-") for day in days), sorted(days)
     affected = {
         date
         for date, rec in days.items()

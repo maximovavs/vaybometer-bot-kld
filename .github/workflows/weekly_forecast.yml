@@ -158,8 +158,9 @@ jobs:
             args+=("--date" "$WEEK_START_DATE")
           fi
 
-          echo "Weekly forecast preview:"
-          python "${args[@]}" | tee weekly_forecast_preview.log
+          prepared_payload="weekly_snapshot_state/prepared_payload.json"
+          echo "Weekly forecast preview (single frozen source):"
+          python "${args[@]}" --prepared-out "$prepared_payload" | tee weekly_forecast_preview.log
 
           intended=()
           if [ -n "${CHANNEL_ID_OVERRIDE:-}" ]; then
@@ -221,7 +222,7 @@ jobs:
 
           for i in "${!targets[@]}"; do
             echo "Weekly forecast target: ${labels[$i]}"
-            send_args=("${args[@]}" "--send" "--chat-id" "${targets[$i]}")
+            send_args=("${args[@]}" "--prepared-in" "$prepared_payload" "--send" "--chat-id" "${targets[$i]}")
             if [ "${labels[$i]}" = "production" ] && [ -n "${WEEK_START_DATE:-}" ]; then
               send_args+=("--production-snapshot-out" "weekly_snapshot_state/current.json")
             fi
